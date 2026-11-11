@@ -15,7 +15,7 @@ type Io = Parameters<typeof moverParaVistoria>[3];
  * O que faltar a extensão deixa em branco, salva o resto e o CRM avisa a equipe (nota + push) — nada é pedido ao cliente sozinho.
  * DPS (declaração de saúde): seguradora Itaú (padrão do Fabio 03/11). As perguntas de saúde o portal avisa que omitir/errar pode cancelar a indenização,
  *   então só vão marcadas "nenhuma doença" com o OK da equipe no card (customFields._vistItauDpsOk = true); sem isso ficam em branco e entram no "falta".
- * Estado: customFields._vistItau = { status: REQUESTED | RUNNING | PARTIAL | SAVED | FAILED, requestedAt, by, claimedAt, at, faltando, erro, etapa }.
+ * Estado: customFields._vistItau = { status: REQUESTED | RUNNING | PARTIAL | SAVED | SENT (formulários enviados) | FAILED, requestedAt, by, claimedAt, at, faltando, erro, etapa }.
  */
 
 type Cf = Record<string, any>;
@@ -285,7 +285,7 @@ export async function claimItauVistoria(accountId: string): Promise<{ leadId: st
 }
 
 /** Resultado da extensão. event: step (sinal de vida) | saved (salvou; `completo` = o portal deu os formulários como completos) | failed. */
-export async function reportItauVistoria(accountId: string, leadId: string, d: { event: string; detail?: string; reason?: string; completo?: boolean; faltando?: string[]; etapa?: string; secoes?: Record<string, boolean> }, io?: Io) {
+export async function reportItauVistoria(accountId: string, leadId: string, d: { event: string; detail?: string; reason?: string; completo?: boolean; enviado?: boolean; faltando?: string[]; etapa?: string; secoes?: Record<string, boolean> }, io?: Io) {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!lead) throw new Error('Card não encontrado');
   const st = (((lead.customFields || {}) as Cf)._vistItau || {}) as St;
@@ -301,7 +301,12 @@ export async function reportItauVistoria(accountId: string, leadId: string, d: {
   // saved
   const faltando = Array.from(new Set((Array.isArray(d.faltando) ? d.faltando : st.faltando || []).map((x) => s(x)).filter(Boolean))).slice(0, 40);
   const secoes = d.secoes ? Object.entries(d.secoes).map(([k, v]) => `${v ? '✅' : '⏳'} ${k}`).join(' · ') : '';
-  if (d.completo) {
+  if (d.enviado) {
+    // "Revisar Formulários" → aceite da DPS → "Confirmar envio dos formulários" feito pela extensão (Fabio 11/11).
+    await salvaSt(leadId, { ...st, status: 'SENT', at: agora, erro: null, faltando: [] });
+    await note(leadId, `✅ Formulários digitais do Itaú ENVIADOS (proposta ${st.proposta || '?'}): a extensão revisou e confirmou o envio no portal. ${secoes}\nPróximo passo no portal: "Envio de Documentos — Mesa de entrada"; depois o Itaú faz a análise dos documentos e a avaliação (vistoria) do imóvel.`);
+    push(accountId, '✅ Itaú: formulários enviados', `${lead.name}: próximo passo é o envio dos documentos (Mesa de entrada)`, leadId);
+  } else if (d.completo) {
     await salvaSt(leadId, { ...st, status: 'SAVED', at: agora, erro: null, faltando: [] });
     await note(leadId, `✅ Formulários digitais do Itaú preenchidos e salvos no portal (proposta ${st.proposta || '?'}). ${secoes}\nPróximo passo no portal: "Envio de Documentos — Mesa de entrada"; depois o Itaú faz a análise dos documentos e a avaliação (vistoria) do imóvel.`);
     push(accountId, '✅ Itaú: formulários salvos', `${lead.name}: falta o envio dos documentos (Mesa de entrada)`, leadId);

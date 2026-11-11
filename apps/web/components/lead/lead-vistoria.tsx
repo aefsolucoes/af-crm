@@ -430,6 +430,7 @@ export function LeadVistoriaItau({ leadId }: { leadId: string }) {
   const naFila = s.status === 'REQUESTED' || s.status === 'RUNNING';
   const texto = s.status === 'REQUESTED' ? `Na fila da extensão desde ${fmt(s.requestedAt)}.`
     : s.status === 'RUNNING' ? `A extensão está preenchendo${s.etapa ? ` (${s.etapa})` : ''}.`
+    : s.status === 'SENT' ? `Formulários enviados ao Itaú em ${fmt(s.at)}. Próximo: envio dos documentos (Mesa de entrada).`
     : s.status === 'SAVED' ? `Formulários completos e salvos em ${fmt(s.at)}. Próximo: envio dos documentos (Mesa de entrada).`
     : s.status === 'PARTIAL' ? `Salvos em parte em ${fmt(s.at)}.`
     : s.status === 'FAILED' ? `Não preencheu: ${s.erro || 'erro'}.`
@@ -458,7 +459,7 @@ export function LeadVistoriaItau({ leadId }: { leadId: string }) {
       <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
         <ClipboardCheck className="h-3.5 w-3.5" /> Vistoria do imóvel (Itaú{st.proposta ? ` — proposta ${st.proposta}` : ''})
       </div>
-      <div className={`mb-2 text-xs ${s.status === 'FAILED' ? 'text-red-600' : s.status === 'SAVED' ? 'text-emerald-700' : s.status === 'PARTIAL' ? 'text-amber-700' : 'text-slate-500'}`}>{texto}</div>
+      <div className={`mb-2 text-xs ${s.status === 'FAILED' ? 'text-red-600' : s.status === 'SAVED' || s.status === 'SENT' ? 'text-emerald-700' : s.status === 'PARTIAL' ? 'text-amber-700' : 'text-slate-500'}`}>{texto}</div>
       {s.status === 'PARTIAL' && !!s.faltando?.length && (
         <ul className="mb-2 space-y-0.5 text-xs text-amber-700">{s.faltando.slice(0, 12).map((f) => <li key={f}>• {f}</li>)}</ul>
       )}
