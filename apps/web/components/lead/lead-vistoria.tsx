@@ -413,3 +413,52 @@ function AbrirArquivo({ a }: { a: { id: string; path: string } }) {
     <a href={`https://drive.google.com/file/d/${a.id}/view`} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="ml-auto shrink-0 text-af-mid hover:underline" title="Abrir o arquivo no Drive">abrir</a>
   );
 }
+
+/* Vistoria do Itaú (Fabio 11/11). No portal Itaú Imóveis a vistoria não se pede por e-mail: depois da aprovação a proposta fica em "Formulários Digitais"
+ * (compradores, vendedor, imóvel com o contato da vistoria, seguro). O clique põe na fila da extensão "Financiamento Itaú", que preenche e salva no portal;
+ * o que faltar vem numa nota. Ver vistoria-itau.service.ts. */
+type ItauStatus = { aplicavel: boolean; proposta: string | null; st: { status?: string; requestedAt?: string; at?: string; faltando?: string[]; erro?: string | null; etapa?: string } | null };
+
+export function LeadVistoriaItau({ leadId }: { leadId: string }) {
+  const [st, setSt] = useState<ItauStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const carregar = () => api.get<ItauStatus>('/api/vistorias/itau/status', { params: { leadId } }).then((r) => setSt(r.data)).catch(() => {});
+  useEffect(() => { carregar(); }, [leadId]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!st || !st.aplicavel) return null;
+  const s = st.st || {};
+  const fmt = (iso?: string) => (iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '');
+  const naFila = s.status === 'REQUESTED' || s.status === 'RUNNING';
+  const texto = s.status === 'REQUESTED' ? `Na fila da extensão desde ${fmt(s.requestedAt)}.`
+    : s.status === 'RUNNING' ? `A extensão está preenchendo${s.etapa ? ` (${s.etapa})` : ''}.`
+    : s.status === 'SAVED' ? `Formulários completos e salvos em ${fmt(s.at)}. Próximo: envio dos documentos (Mesa de entrada).`
+    : s.status === 'PARTIAL' ? `Salvos em parte em ${fmt(s.at)}.`
+    : s.status === 'FAILED' ? `Não preencheu: ${s.erro || 'erro'}.`
+    : 'Ainda não preenchidos. A extensão preenche compradores, vendedor, imóvel (com o contato da vistoria) e o seguro no portal do Itaú.';
+
+  async function pedir() {
+    if (!window.confirm(`Pedir à extensão "Financiamento Itaú" que preencha e salve os formulários digitais da proposta ${st?.proposta || ''} no portal do Itaú?`)) return;
+    setBusy(true);
+    try {
+      await api.post('/api/vistorias/itau/request', { leadId });
+      toast('Formulários do Itaú na fila da extensão', 'success');
+      carregar();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir os formulários do Itaú', 'error');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+        <ClipboardCheck className="h-3.5 w-3.5" /> Vistoria do imóvel (Itaú{st.proposta ? ` — proposta ${st.proposta}` : ''})
+      </div>
+      <div className={`mb-2 text-xs ${s.status === 'FAILED' ? 'text-red-600' : s.status === 'SAVED' ? 'text-emerald-700' : s.status === 'PARTIAL' ? 'text-amber-700' : 'text-slate-500'}`}>{texto}</div>
+      {s.status === 'PARTIAL' && !!s.faltando?.length && (
+        <ul className="mb-2 space-y-0.5 text-xs text-amber-700">{s.faltando.slice(0, 12).map((f) => <li key={f}>• {f}</li>)}</ul>
+      )}
+      <button onClick={pedir} disabled={busy || naFila} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
+        {busy ? 'Pedindo…' : naFila ? 'Na fila da extensão' : s.status ? 'Preencher de novo' : 'Preencher formulários do Itaú'}
+      </button>
+    </div>
+  );
+}

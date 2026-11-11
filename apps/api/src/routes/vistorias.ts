@@ -4,6 +4,7 @@ import { vistoriaPreview, solicitarVistoria, laudoPreview, claimLaudo, reportLau
 import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
 import { vistoriaCreditasStatus, vistoriaCreditasPreview, solicitarVistoriaCreditas, pedirContatoVistoria } from '../services/vistoria-creditas.service';
 import { pedirLaudoPeloBotao } from '../services/laudo-ask.service';
+import { itauVistoriaStatus, itauVistoriaPreview, requestItauVistoria, claimItauVistoria, reportItauVistoria } from '../services/vistoria-itau.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
 const router = Router();
@@ -85,6 +86,23 @@ router.get('/santander/preview', async (req: AuthRequest, res: Response) => {
 });
 router.post('/santander/run', async (req: AuthRequest, res: Response) => {
   try { res.json(await executarVistoriaSantander(req.user!.accountId, String(req.body?.leadId || ''), (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro ao avançar a vistoria do Santander'); }
+});
+
+// ── Vistoria do Itaú (Fabio 11/11) — a extensão "Financiamento Itaú" preenche os formulários digitais da proposta; ver vistoria-itau.service.ts ──
+router.get('/itau/status', async (req: AuthRequest, res: Response) => {
+  try { res.json(await itauVistoriaStatus(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao ler a vistoria do Itaú'); }
+});
+router.get('/itau/preview', async (req: AuthRequest, res: Response) => {
+  try { res.json(await itauVistoriaPreview(req.user!.accountId, String(req.query.leadId || ''))); } catch (err) { fail(res, err, 'Erro ao montar os formulários do Itaú'); }
+});
+router.post('/itau/request', async (req: AuthRequest, res: Response) => {
+  try { res.json(await requestItauVistoria(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id)); } catch (err) { fail(res, err, 'Erro ao pedir os formulários do Itaú'); }
+});
+router.get('/itau/queue', async (req: AuthRequest, res: Response) => {
+  try { res.json({ job: await claimItauVistoria(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila do Itaú', 500); }
+});
+router.post('/itau/:leadId/report', async (req: AuthRequest, res: Response) => {
+  try { res.json(await reportItauVistoria(req.user!.accountId, req.params.leadId, req.body || {}, (req as any).app.get('io'))); } catch (err) { fail(res, err, 'Erro ao registrar os formulários do Itaú'); }
 });
 
 // ── Questionário da contratação do Inter (vistoria concluída) — ver inter-questionario.service.ts ──
