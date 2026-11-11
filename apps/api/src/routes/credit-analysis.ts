@@ -88,6 +88,37 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }
 });
 
+// "Ajustar" do Financiamento (Fabio 11/11, Jaime): no FH os valores vêm do CARD (regra de 05/11) — grava só estas chaves no card (jsonb, sem regravar o resto) e deixa nota.
+router.put('/fh-valores', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true, customFields: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    const num = (v: unknown) => { const t = String(v ?? '').trim(); if (!t) return null; const n = Number(t.includes(',') ? t.replace(/\./g, '').replace(',', '.') : t.replace(/[^\d.]/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
+    const v = (req.body?.valores || {}) as Record<string, unknown>;
+    const novo: Record<string, string> = {};
+    const imovel = num(v.valor_imovel), credito = num(v.valor_credito), renda1 = num(v.renda_1), renda2 = num(v.renda_2), prazo = num(v.prazo);
+    if (imovel) novo.valor_imovel = String(imovel);
+    if (credito) novo.valor_credito = String(credito);
+    // Entrada = imóvel − financiamento: a extensão lê a entrada antes do financiamento, então as duas andam juntas.
+    const im = imovel || num(cf.valor_imovel), cr = credito || num(cf.valor_credito);
+    if ((imovel || credito) && im && cr && im > cr) novo.valor_entrada = String(Math.round((im - cr) * 100) / 100);
+    if (renda1) novo.renda_1 = String(renda1);
+    if (renda2) novo.renda_2 = String(renda2);
+    if (prazo) { if (prazo < 60 || prazo > 420) return res.status(400).json({ error: 'Prazo entre 60 e 420 meses' }); novo._fhPrazo = String(Math.round(prazo)); }
+    if (!Object.keys(novo).length) return res.status(400).json({ error: 'Nada para ajustar' });
+    await prisma.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || $1::jsonb WHERE id = $2`, JSON.stringify(novo), leadId);
+    const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+    const rot: Record<string, string> = { valor_imovel: 'valor do imóvel', valor_credito: 'financiamento', valor_entrada: 'entrada', renda_1: 'renda do 1º', renda_2: 'renda do 2º', _fhPrazo: 'prazo (meses)' };
+    const brl = (x: unknown) => (num(x) ? `R$ ${num(x)!.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—');
+    const linhas = Object.entries(novo).map(([k, val]) => `• ${rot[k]}: ${k === '_fhPrazo' ? (cf[k] || '—') : brl(cf[k])} → ${k === '_fhPrazo' ? val : brl(val)}`);
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✎ ${quem} ajustou o Financiamento (vale na próxima rodada):\n${linhas.join('\n')}` } }).catch(() => {});
+    emit(req, { leadId });
+    res.json({ ok: true, valores: novo });
+  } catch (err) { fail(res, err, 'Erro ao ajustar o Financiamento'); }
+});
+
 // CAIXA/BRB do Financiamento rodam à mão (ainda sem extensão): a equipe registra o resultado aqui (Fabio 29/10 — "só após aprovar na CAIXA" mandam os próximos passos).
 router.post('/fh-manual-result', async (req: AuthRequest, res: Response) => {
   try {

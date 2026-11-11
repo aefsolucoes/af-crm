@@ -134,6 +134,25 @@ export function ago(d: string | null | undefined): string {
   return new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
 }
 
+/** "11/11 13:52" (com o ano quando não é o ano corrente). */
+export function dataHora(d: string | null | undefined): string {
+  if (!d) return '';
+  const dt = new Date(d);
+  const mesmoAno = dt.getFullYear() === new Date().getFullYear();
+  return dt.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', ...(mesmoAno ? {} : { year: '2-digit' }), hour: '2-digit', minute: '2-digit' }).replace(',', '');
+}
+/** Quando a análise rodou e quando chegou o último retorno (Fabio 11/11: "coloca a hora e datas das análises de crédito de cada cliente"). */
+export function QuandoRodou({ a }: { a: Pick<Analysis, 'kind' | 'requestedAt' | 'createdAt' | 'finishedAt' | 'updatedAt'> }) {
+  const inicio = a.requestedAt || a.createdAt;
+  const fim = a.finishedAt || a.updatedAt;
+  const mostraFim = !!fim && !!inicio && new Date(fim).getTime() - new Date(inicio).getTime() > 2 * 60_000;
+  return (
+    <div className="text-[10px] leading-snug text-slate-400" title={`Pedido: ${dataHora(inicio)}${fim ? ` · último retorno: ${dataHora(fim)}` : ''}`}>
+      {a.kind === 'CHECK' ? 'conferido' : 'rodou'} {dataHora(inicio)}{mostraFim ? <> · retorno {dataHora(fim)}</> : null}
+    </div>
+  );
+}
+
 export const isDesqualificado = (detail?: string | null) => /N[ÃA]O RODEI|n[aã]o conformidade|recusou antes de consultar|CPF j[aá] possui uma proposta ativa na Creditas/i.test(detail || '');
 
 /** Resumo de UMA linha do que aconteceu (erro, recusa, motivo): o trecho útil do detalhe, sem o "Titular na análise: …". Vazio quando não há o que explicar. */
@@ -186,7 +205,7 @@ export function Badge({ a, scrLock }: { a?: Analysis; scrLock?: boolean }) {
   if (a.cadDiv && a.status !== 'APPROVED' && a.status !== 'CONDITIONAL' && a.status !== 'REJECTED') return (
     <div className="space-y-0.5">
       <div className="flex items-center gap-1"><span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700" title="O banco acusou divergência no cadastro (nome, CPF ou data de nascimento). Confirme os dados com o cliente e corrija o card; a análise é refeita.">Cadastro divergente</span></div>
-      <div className="text-[11px] text-slate-400">{ago(a.updatedAt)}</div>
+      <QuandoRodou a={a} />
     </div>
   );
   const baseStatus = STATUS[a.status] || { label: a.status, cls: 'bg-slate-100 text-slate-500' };
@@ -201,10 +220,8 @@ export function Badge({ a, scrLock }: { a?: Analysis; scrLock?: boolean }) {
         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${s.cls}`}>{s.label}</span>
         {a.chosen && <Star size={13} className="text-amber-500 fill-amber-400" />}
       </div>
-      <div className="text-[11px] text-slate-400">
-        {(a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue ? <span className="text-slate-600 font-medium">{formatCurrency(a.approvedValue)} · </span> : null}
-        {ago(a.updatedAt)}
-      </div>
+      {(a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue ? <div className="text-[11px] text-slate-600 font-medium">{formatCurrency(a.approvedValue)}</div> : null}
+      <QuandoRodou a={a} />
     </div>
   );
 }

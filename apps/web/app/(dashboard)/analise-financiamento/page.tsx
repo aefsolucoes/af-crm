@@ -10,10 +10,11 @@ import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { STATUS, ago, fmtCpf, type Bank } from '@/components/credit/shared';
+import { FhAdjustModal } from '@/components/credit/fh-adjust-modal';
 import { EscritorioBancos } from '@/components/credit/escritorio-bancos';
 import { ProdutoSwitch } from '@/components/credit/produto-switch';
 import { pingExtensions } from '@/lib/credit-extensions';
-import { ChevronDown, ChevronRight, MessageSquare, Play, RefreshCw, AlertTriangle, FileText } from 'lucide-react';
+import { ChevronDown, ChevronRight, MessageSquare, Play, RefreshCw, AlertTriangle, FileText, Square, SlidersHorizontal } from 'lucide-react';
 import api from '@/lib/api';
 
 /* Análise de Crédito — Financiamento Imobiliário (Fabio 27/10; tela igual à do Home Equity em 29/10).
@@ -34,6 +35,8 @@ const FILAS: { key: string; label: string; short: string; ext: ExtFila }[] = [
   { key: 'ITAU_FH', label: 'Itaú (portal Itaú Imóveis)', short: 'Itaú', ext: 'ITAU_FH' },
 ];
 const ROTULO_FILA: Record<string, string> = { CREDIMORAR_FH: 'Credimorar', INTER_FH: 'Inter', ITAU_FH: 'Itaú', CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
+// Banco da coluna → fila que roda ele (Bradesco e Santander saem juntos da simulação do Credimorar).
+const FILA_DO_BANCO: Record<string, string> = { Bradesco: 'CREDIMORAR_FH', Santander: 'CREDIMORAR_FH', Inter: 'INTER_FH', 'Itaú': 'ITAU_FH', CAIXA: 'CAIXA_FH', BRB: 'BRB_FH' };
 
 interface FhHistorico { id: string; bank: string; kind: string; status: string; detail: string | null; createdAt: string; proposalNumber: string | null; dryRun: boolean }
 interface FhLead {
@@ -49,6 +52,9 @@ interface FhLead {
   card: { name1: string | null; cpf1: string | null; name2: string | null; cpf2: string | null };
   inPre: boolean;
   history: FhHistorico[];
+  autoPaused?: boolean;
+  /** Última análise de cada fila (CREDIMORAR_FH, INTER_FH, ITAU_FH, CAIXA_FH, BRB_FH) — data e hora na célula do banco. */
+  ultimas?: Record<string, { kind: string; status: string; createdAt: string; updatedAt: string }>;
 }
 type FhExt = { lastSeenAt: string | null; online: boolean; extId?: string | null; loginNeeded?: boolean };
 interface FhBoard { leads: FhLead[]; extension: FhExt | null; extensions?: Record<string, FhExt> }
@@ -70,19 +76,28 @@ const dataHora = (d: string) => new Date(d).toLocaleString('pt-BR', { day: '2-di
 /** Data do último pedido do cliente (histórico vem do mais novo pro mais antigo, mas não confio na ordem). */
 const ultimaRodada = (l: FhLead) => Math.max(0, ...l.history.map((h) => new Date(h.createdAt).getTime()), l.last ? new Date(l.last.updatedAt).getTime() : 0);
 
+/** "rodou 11/11 13:52 · retorno 11/11 14:10" da última análise da fila do banco (Fabio 11/11). */
+function QuandoFila({ u }: { u?: { kind: string; createdAt: string; updatedAt: string } }) {
+  if (!u) return null;
+  const mostraFim = new Date(u.updatedAt).getTime() - new Date(u.createdAt).getTime() > 2 * 60_000;
+  return <div className="text-[10px] leading-snug text-slate-400" title={`Pedido: ${dataHora(u.createdAt)} · último retorno: ${dataHora(u.updatedAt)}`}>{u.kind === 'CHECK' ? 'conferido' : 'rodou'} {dataHora(u.createdAt)}{mostraFim ? ` · retorno ${dataHora(u.updatedAt)}` : ''}</div>;
+}
+
 function BancoCell({ nome, lead }: { nome: string; lead: FhLead }) {
   const b = lead.bancos[nome];
+  const u = lead.ultimas?.[FILA_DO_BANCO[nome]];
   if (b) {
     const n = numeroProposta(b.texto);
     return (
       <div className="space-y-0.5" title={b.texto}>
         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${tom(b.status)}`}>{b.status}</span>
         {n && <div className="text-[10px] text-slate-400">nº {n}</div>}
+        <QuandoFila u={u} />
       </div>
     );
   }
   if (SO_COM_DOCUMENTACAO.has(nome)) return <span className="text-[11px] text-slate-400 leading-tight block">com a documentação completa</span>;
-  if (lead.active) return <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">{lead.last?.status === 'RUNNING' ? 'Rodando' : 'Na fila'}</span>;
+  if (lead.active) return <div className="space-y-0.5"><span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">{lead.last?.status === 'RUNNING' ? 'Rodando' : 'Na fila'}</span><QuandoFila u={u} /></div>;
   return <span className="text-xs text-slate-300">—</span>;
 }
 
@@ -104,6 +119,7 @@ export default function AnaliseFinanciamentoPage() {
   const [busca, setBusca] = useState(''); // "Buscar": nome (titular ou 2º participante), CPF ou nº da proposta (Fabio 29/10)
   const [pedindo, setPedindo] = useState<string | null>(null); // botão da linha em andamento (leadId + tipo)
   const [pdfBusy, setPdfBusy] = useState<string | null>(null);
+  const [ajustar, setAjustar] = useState<FhLead | null>(null);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['credit-fh-board'] });
 
@@ -200,6 +216,32 @@ export default function AnaliseFinanciamentoPage() {
     } catch (err: any) {
       toast(err?.response?.data?.error || 'Erro ao pedir a análise', 'error');
     } finally { setPedindo(null); }
+  }
+
+  // Conferir UM banco (Fabio 11/11): só lê a situação naquela fila, sem criar proposta.
+  async function conferirFila(l: FhLead, fila: string) {
+    setPedindo(l.id + 'CHECK' + fila);
+    try {
+      const r = (await api.post('/api/credit-analysis/fh-request', { leadId: l.id, kind: 'CHECK', banks: [fila] })).data;
+      toast(r.created ? `Conferência do ${ROTULO_FILA[fila]} na fila` : `Já tem um pedido do ${ROTULO_FILA[fila]} desse cliente na fila`, r.created ? 'success' : 'warning');
+      avisarExtensoes([fila]);
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao pedir a conferência', 'error');
+    } finally { setPedindo(null); }
+  }
+
+  // STOP TOTAL só deste cliente (mesmo botão do Home Equity).
+  async function togglePausa(l: FhLead) {
+    const next = !l.autoPaused;
+    if (next && !window.confirm(`Parar TUDO deste cliente (${l.name})?\n\n• Rodadas em andamento nos bancos são interrompidas no meio (o banco pode ficar com um rascunho/proposta incompleta).\n• Nada roda, refaz, confere nem avisa o cliente sozinho; a IA para de responder.\n• Só ele: os outros clientes seguem normalmente.`)) return;
+    try {
+      const { data: r } = await api.put('/api/credit-analysis/pause', { leadId: l.id, paused: next });
+      toast(next ? `${l.name}: PARADO${r?.interrompidas ? ` — ${r.interrompidas} rodada(s) interrompida(s)` : ''}` : `${l.name}: retomado`, 'success');
+      refresh();
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao parar o cliente', 'error');
+    }
   }
 
   // Simulação em PDF pro cliente: manda ao WhatsApp do cliente (só banco aprovado).
@@ -307,6 +349,7 @@ export default function AnaliseFinanciamentoPage() {
                                 2º participante: <span className="font-medium text-slate-600">{l.card?.name2 || l.participante2}</span>{l.card?.cpf2 && <span className="text-slate-400"> · CPF {fmtCpf(l.card.cpf2)}</span>}
                               </div>
                             )}
+                            {l.autoPaused && <div className="text-[11px] font-semibold text-red-600">⏹ PARADO — nada roda, confere, avisa nem responde (IA) sozinho</div>}
                             {l.restricaoSerasa === true && <div className="mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-50 text-red-700 text-[11px]"><AlertTriangle size={11} /> Restrição no Serasa</div>}
                           </td>
                           {BANCOS.map((b) => <td key={b} className="px-3 py-3 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}><BancoCell nome={b} lead={l} /></td>)}
@@ -318,9 +361,18 @@ export default function AnaliseFinanciamentoPage() {
                               </button>
                               {jaRodou(l) && (
                                 <button onClick={() => pedir(l, 'CHECK')} disabled={!!pedindo || l.active} title="Ler de novo a situação dos bancos (não cria proposta nova)" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-                                  <RefreshCw size={11} className={pedindo === l.id + 'CHECK' ? 'animate-spin' : ''} /> Conferir
+                                  <RefreshCw size={11} className={pedindo === l.id + 'CHECK' ? 'animate-spin' : ''} /> Conferir todos
                                 </button>
                               )}
+                              {FILAS.filter((f) => l.ultimas?.[f.key]).map((f) => (
+                                <button key={f.key} onClick={() => conferirFila(l, f.key)} disabled={!!pedindo} title={`Ler agora a situação no ${f.short} (não cria proposta nova)`} className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-indigo-300 text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">
+                                  <RefreshCw size={11} className={pedindo === l.id + 'CHECK' + f.key ? 'animate-spin' : ''} /> Conferir {f.short}
+                                </button>
+                              ))}
+                              <button onClick={() => setAjustar(l)} title="Valores (imóvel, financiamento, renda, prazo) e quem entra na análise — e rodar de novo nos bancos que escolher" className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border border-af-border text-slate-600 hover:bg-slate-50"><SlidersHorizontal size={11} /> Ajustar</button>
+                              <button onClick={() => togglePausa(l)} title={l.autoPaused ? 'Voltar o automático (e a IA, se estava ligada) pra este cliente' : 'STOP TOTAL só deste cliente: derruba as rodadas em andamento e para tudo, inclusive a IA'} className={`flex items-center gap-1 text-xs px-2.5 py-1 rounded-lg border ${l.autoPaused ? 'border-emerald-300 text-emerald-700 hover:bg-emerald-50' : l.active ? 'border-red-600 bg-red-600 text-white font-semibold hover:opacity-90' : 'border-red-300 text-red-600 hover:bg-red-50'}`}>
+                                {l.autoPaused ? <><Play size={11} /> Retomar</> : <><Square size={11} className="fill-current" /> STOP</>}
+                              </button>
                             </div>
                           </td>
                           <td className="px-3 py-3 text-slate-400 cursor-pointer" onClick={() => setOpen(expanded ? null : l.id)}>{expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</td>
@@ -396,6 +448,7 @@ export default function AnaliseFinanciamentoPage() {
         <p className="text-xs text-slate-400 pb-2">Card novo na Pré-Análise roda sozinho; aqui você roda de novo, confere ou manda a simulação em PDF. O cliente só recebe o que você mandar.</p>
       </div>
 
+      {ajustar && <FhAdjustModal lead={ajustar} onClose={() => setAjustar(null)} onSaved={() => { avisarExtensoes(FILAS.map((f) => f.key)); refresh(); }} />}
       {confirm && (
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
