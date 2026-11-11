@@ -225,12 +225,24 @@ export async function itauVistoriaStatus(accountId: string, leadId: string) {
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Cf;
   const proposta = await propostaDoItau(leadId, cf);
-  return { aplicavel: !!proposta || !!cf._vistItau, proposta: proposta || null, st: (cf._vistItau || null) as St | null };
+  return { aplicavel: !!proposta || !!cf._vistItau, proposta: proposta || null, st: (cf._vistItau || null) as St | null, dpsOk: cf._vistItauDpsOk === true };
 }
 
 export async function itauVistoriaPreview(accountId: string, leadId: string) {
   const { dados, faltando } = await montarDadosItau(accountId, leadId);
   return { proposta: dados.proposta, faltando, compradores: dados.compradores.map((c) => c.nome), vendedores: dados.vendedores.map((v) => v.nome), contato: dados.contato, imovel: dados.imovel };
+}
+
+/** Declaração de saúde (DPS) "nenhuma doença" pros compradores — só com o OK da equipe (Fabio 11/11: "sim" pro Pedro e a Euma). Grava só a chave. */
+export async function autorizarDpsItau(accountId: string, leadId: string, userId: string, ok: boolean) {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  await prisma.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_vistItauDpsOk}', $1::jsonb, true) WHERE id = $2`, JSON.stringify(ok), leadId);
+  const quem = (await prisma.user.findUnique({ where: { id: userId }, select: { name: true } }))?.name || 'a equipe';
+  await note(leadId, ok
+    ? `🩺 ${quem} autorizou a declaração de saúde (DPS) do Itaú com "nenhuma doença" e "não" nas perguntas de invalidez/acidente pra todos os compradores. Vale no próximo "Preencher formulários do Itaú".`
+    : `🩺 ${quem} retirou a autorização da DPS "nenhuma doença" do Itaú: as perguntas de saúde ficam em branco.`);
+  return { ok: true, dpsOk: ok };
 }
 
 /** Clique em "Preencher formulários do Itaú": vai pra fila da extensão (ela salva o que tiver e devolve o que faltou). */

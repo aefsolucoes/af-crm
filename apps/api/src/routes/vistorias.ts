@@ -4,7 +4,7 @@ import { vistoriaPreview, solicitarVistoria, laudoPreview, claimLaudo, reportLau
 import { santanderPreview, executarVistoriaSantander } from '../services/vistoria-santander.service';
 import { vistoriaCreditasStatus, vistoriaCreditasPreview, solicitarVistoriaCreditas, pedirContatoVistoria } from '../services/vistoria-creditas.service';
 import { pedirLaudoPeloBotao } from '../services/laudo-ask.service';
-import { itauVistoriaStatus, itauVistoriaPreview, requestItauVistoria, claimItauVistoria, reportItauVistoria } from '../services/vistoria-itau.service';
+import { itauVistoriaStatus, itauVistoriaPreview, requestItauVistoria, claimItauVistoria, reportItauVistoria, autorizarDpsItau } from '../services/vistoria-itau.service';
 
 /** Botão "Solicitar vistoria" do card — ver vistoria-inter.service.ts. */
 const router = Router();
@@ -97,6 +97,9 @@ router.get('/itau/preview', async (req: AuthRequest, res: Response) => {
 });
 router.post('/itau/request', async (req: AuthRequest, res: Response) => {
   try { res.json(await requestItauVistoria(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id)); } catch (err) { fail(res, err, 'Erro ao pedir os formulários do Itaú'); }
+});
+router.post('/itau/dps-ok', async (req: AuthRequest, res: Response) => {
+  try { res.json(await autorizarDpsItau(req.user!.accountId, String(req.body?.leadId || ''), req.user!.id, req.body?.ok !== false)); } catch (err) { fail(res, err, 'Erro ao autorizar a declaração de saúde'); }
 });
 router.get('/itau/queue', async (req: AuthRequest, res: Response) => {
   try { res.json({ job: await claimItauVistoria(req.user!.accountId) }); } catch (err) { fail(res, err, 'Erro ao buscar a fila do Itaú', 500); }

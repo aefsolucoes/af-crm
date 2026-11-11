@@ -417,7 +417,7 @@ function AbrirArquivo({ a }: { a: { id: string; path: string } }) {
 /* Vistoria do Itaú (Fabio 11/11). No portal Itaú Imóveis a vistoria não se pede por e-mail: depois da aprovação a proposta fica em "Formulários Digitais"
  * (compradores, vendedor, imóvel com o contato da vistoria, seguro). O clique põe na fila da extensão "Financiamento Itaú", que preenche e salva no portal;
  * o que faltar vem numa nota. Ver vistoria-itau.service.ts. */
-type ItauStatus = { aplicavel: boolean; proposta: string | null; st: { status?: string; requestedAt?: string; at?: string; faltando?: string[]; erro?: string | null; etapa?: string } | null };
+type ItauStatus = { aplicavel: boolean; proposta: string | null; dpsOk?: boolean; st: { status?: string; requestedAt?: string; at?: string; faltando?: string[]; erro?: string | null; etapa?: string } | null };
 
 export function LeadVistoriaItau({ leadId }: { leadId: string }) {
   const [st, setSt] = useState<ItauStatus | null>(null);
@@ -434,6 +434,12 @@ export function LeadVistoriaItau({ leadId }: { leadId: string }) {
     : s.status === 'PARTIAL' ? `Salvos em parte em ${fmt(s.at)}.`
     : s.status === 'FAILED' ? `Não preencheu: ${s.erro || 'erro'}.`
     : 'Ainda não preenchidos. A extensão preenche compradores, vendedor, imóvel (com o contato da vistoria) e o seguro no portal do Itaú.';
+
+  async function dps(ok: boolean) {
+    if (ok && !window.confirm('Confirmar que o cliente declarou NENHUMA doença (e não é aposentado por invalidez nem teve acidente/doença que alterou a rotina)? Resposta errada pode cancelar a indenização do seguro.')) return;
+    setBusy(true);
+    try { await api.post('/api/vistorias/itau/dps-ok', { leadId, ok }); carregar(); } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao gravar a declaração de saúde', 'error'); } finally { setBusy(false); }
+  }
 
   async function pedir() {
     if (!window.confirm(`Pedir à extensão "Financiamento Itaú" que preencha e salve os formulários digitais da proposta ${st?.proposta || ''} no portal do Itaú?`)) return;
@@ -456,6 +462,10 @@ export function LeadVistoriaItau({ leadId }: { leadId: string }) {
       {s.status === 'PARTIAL' && !!s.faltando?.length && (
         <ul className="mb-2 space-y-0.5 text-xs text-amber-700">{s.faltando.slice(0, 12).map((f) => <li key={f}>• {f}</li>)}</ul>
       )}
+      <label className="mb-2 flex items-start gap-1.5 text-xs text-slate-600">
+        <input type="checkbox" className="mt-0.5" checked={!!st.dpsOk} disabled={busy} onChange={(e) => dps(e.target.checked)} />
+        <span>Declaração de saúde: &quot;nenhuma doença&quot; para todos os compradores (confirmado com o cliente)</span>
+      </label>
       <button onClick={pedir} disabled={busy || naFila} className="rounded bg-orange-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-orange-700 disabled:opacity-50">
         {busy ? 'Pedindo…' : naFila ? 'Na fila da extensão' : s.status ? 'Preencher de novo' : 'Preencher formulários do Itaú'}
       </button>
