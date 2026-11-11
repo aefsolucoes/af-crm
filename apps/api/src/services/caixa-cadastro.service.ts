@@ -555,7 +555,7 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
@@ -571,8 +571,9 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
 export async function gravarAvaliacao(accountId: string, leadId: string, r: { status: string; texto: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!l) return;
+  const enquadramento = enquadramentoDaOperacao(r.texto); // SBPE/MCMV da tela da operação (Fabio 11/11) — as telas seguintes não trazem, fica o que já foi lido
   await salvar(leadId, (x) => {
-    x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString() };
+    x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString(), ...(enquadramento ? { enquadramento } : {}) };
     // Condicionada → PRICE: a extensão só marca "condicionada na PRICE" quando trocou mesmo a prestação e a amortização na tela (o status final sobrescreve).
     if (x.avaliacao.ajuste && /condicionada na PRICE/i.test(r.status)) x.avaliacao.ajuste = { ...x.avaliacao.ajuste, aplicado: true };
     delete x.atual;
@@ -700,6 +701,19 @@ export function imovelNovo(cf: Cf): boolean {
  *  MCMV Classe Média (FGTS, "PMCMV - Imóvel Usado Individual - Classe Média") ou SBPE ("CCSBPE SFH - TR - Aquisição de Imóvel Residencial Usado").
  *  Limites do programa (renda bruta familiar / valor do imóvel) confirmados pelo Fabio 02/11; fora deles — ou com outro imóvel na mesma região — é SBPE. */
 export const MCMV_LIMITES = { outrasClasses: { renda: 8_600, imovel: 350_000 }, classeMedia: { renda: 12_000, imovel: 500_000 } };
+
+/** SBPE ou MCMV da operação que foi pra CAIXA (Fabio 11/11: "além de mostrar aprovado na CAIXA precisa mostrar se foi SBPE ou MCMV"), lido das linhas que a
+ *  extensão manda da tela da operação ("• produto: CCSBPE SFH - …", "• origem do recurso: SBPE", "Enquadramento: …"). Home Equity (EGI) → null. Pura. */
+export function enquadramentoDaOperacao(texto: string | null | undefined): 'SBPE' | 'MCMV' | 'MCMV Classe Média' | null {
+  const t = String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const campo = (re: RegExp) => (re.exec(t) || [])[1] || '';
+  const origem = campo(/origem do recurso\s*:\s*([^\n]+)/);
+  for (const s of [campo(/produto\s*:\s*([^\n]+)/), campo(/enquadramento\s*:\s*([^;\n]+)/), origem]) {
+    if (/mcmv/.test(s)) return /classe media/.test(s) ? 'MCMV Classe Média' : 'MCMV';
+    if (/sbpe/.test(s)) return 'SBPE';
+  }
+  return /fgts/.test(origem) ? 'MCMV' : null;
+}
 /** Taxa anual usada SÓ pra estimar a 1ª parcela da SAC e decidir SAC x PRICE (não vai pra CAIXA). */
 const TAXA_ESTIMADA = { SBPE: 0.12, MCMV_CM: 0.105, MCMV: 0.085 };
 export const PRAZO_MAX_FH = 420;

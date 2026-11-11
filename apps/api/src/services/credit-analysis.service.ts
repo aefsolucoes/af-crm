@@ -1194,6 +1194,11 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
   // Financiamento exige NOME LIMPO (Fabio 27/10): a proposta do site traz "Restrição no Serasa: Sim/Não".
   const propostas = leads.length ? await db.message.findMany({ where: { leadId: { in: leads.map((l) => l.id) }, content: { contains: 'Serasa' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
   const restricao = new Map(propostas.map((m) => { const r = /Restri[cç][aã]o no Serasa:\s*\**\s*(Sim|N[aã]o)/i.exec(m.content); return [m.leadId, r ? /^sim/i.test(r[1]) : null] as const; }));
+  // SBPE ou MCMV da CAIXA (Fabio 11/11): gravado na avaliação desde 11/11; nas enviadas antes, lido da anotação do envio (linhas da tela da operação).
+  const { enquadramentoDaOperacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const semEnq = leads.filter((l) => { const cf = (l.customFields || {}) as Record<string, any>; return cf._caixaResultado && !cf._caixaCadastro?.avaliacao?.enquadramento; }).map((l) => l.id);
+  const notasOp = semEnq.length ? await db.note.findMany({ where: { leadId: { in: semEnq }, content: { contains: 'origem do recurso', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
+  const enqNota = new Map(notasOp.map((n) => [n.leadId, enquadramentoDaOperacao(n.content)] as const));
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
     const cred = l.creditAnalyses.filter((r) => r.bank === FH_BANK);
@@ -1210,6 +1215,8 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     const caixa = caixaNoFinanciamento(cf._caixaResultado);
     const manualCaixa = l.creditAnalyses.find((x) => x.bank === 'CAIXA_FH');
     if (caixa && (!manualCaixa || !caixa.em || new Date(manualCaixa.updatedAt).getTime() < new Date(caixa.em).getTime())) bancos.CAIXA = { status: caixa.status, texto: caixa.texto };
+    const enq = cf._caixaResultado ? cf._caixaCadastro?.avaliacao?.enquadramento || enqNota.get(l.id) : null;
+    if (bancos.CAIXA && enq) bancos.CAIXA = { ...bancos.CAIXA, status: `${bancos.CAIXA.status} · ${enq}` };
     return {
       id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
       // Tela do Financiamento igual à do Home Equity (Fabio 29/10): CPF/nomes do card, se está na Pré-Análise e o número de cada proposta.
