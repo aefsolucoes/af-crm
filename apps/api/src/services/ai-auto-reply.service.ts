@@ -419,7 +419,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "pushColaborador": "<o que o cliente disse, ou null — só conforme a regra SIMULOU NO SITE do bloco CAIXA APROVOU; com ele preenchido NADA vai ao cliente>", "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>}`;
 
 /** "sendSimulation" vindo do JSON da IA: aceita só SANTANDER/INTER (lista ou texto); qualquer outra coisa = null. */
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
@@ -509,6 +509,15 @@ export interface AiAutoReplyResult {
   caixaRota?: boolean;
   /** Junto com caixaRota: o cliente ia seguir pela CAIXA POR FORA (Fabio 08/11) — entra na rota mesmo sem aprovação nossa. */
   caixaConcorrente?: boolean;
+  /** Fabio 11/11 (CAIXA aprovada pelo simulador do site): o cliente disse que simulou direto no site com valor/parcela maior — NADA vai ao cliente (o parse força
+   *  noReply) e quem chamou anota no card e manda push só pro colaborador responsável. Texto = o que ele disse, pro colaborador. */
+  pushColaborador?: string | null;
+}
+
+/** "pushColaborador" vindo do JSON da IA: texto curto (até 300) ou null. */
+function parsePushColaborador(raw: unknown): string | null {
+  const t = typeof raw === 'string' ? raw.trim() : '';
+  return t && t.toLowerCase() !== 'null' ? t.slice(0, 300) : null;
 }
 
 /** Fabio 15/10 (Digmar): "a IA não está aguardando o cliente encaminhar tudo antes de falar o que falta". Card em Aguardando Documentação e o cliente ainda está MANDANDO
@@ -982,8 +991,11 @@ function parseReply(raw: string): AiAutoReplyResult {
     const extractedFields = parsed?.extractedFields && typeof parsed.extractedFields === 'object' && !Array.isArray(parsed.extractedFields)
       ? parsed.extractedFields
       : null;
-    if (parsed && parsed.noReply === true) {
+    // pushColaborador (Fabio 11/11): "não informar nada ao cliente" — vale como noReply mesmo que a IA tenha escrito um texto.
+    const pushColaborador = parsePushColaborador(parsed?.pushColaborador);
+    if (parsed && (parsed.noReply === true || pushColaborador)) {
       return {
+        pushColaborador,
         reply: '',
         noReply: true,
         handoff: false,

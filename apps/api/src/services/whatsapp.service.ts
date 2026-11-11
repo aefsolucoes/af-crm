@@ -1051,6 +1051,17 @@ export function decodeIfUrlEncoded(text: string): string {
   try { const d = decodeURIComponent(t.replace(/\+/g, ' ')); return d.trim() ? d : t; } catch { return t; }
 }
 
+/** Contato(s) compartilhado(s) — cartão/vCard (`type: "contacts"` da API Oficial). Antes era descartado (Fabio 11/11, Jaime mandou o contato do corretor:
+ *  "o CRM não conseguiu identificar esse contato"). Nome + telefone de cada um; o 1º telefone de cada contato. Pura. */
+export function cloudSharedContacts(contacts: any): { nome: string; telefone: string }[] {
+  return (Array.isArray(contacts) ? contacts : []).map((c: any) => {
+    const nome = String(c?.name?.formatted_name || [c?.name?.first_name, c?.name?.last_name].filter(Boolean).join(' ') || c?.org?.company || '').trim();
+    const f = (Array.isArray(c?.phones) ? c.phones : []).find((x: any) => x?.phone || x?.wa_id) || {};
+    const telefone = String(f.phone || (f.wa_id ? `+${f.wa_id}` : '')).trim();
+    return { nome, telefone };
+  }).filter((c) => c.nome || c.telefone);
+}
+
 export function formatCloudLocation(loc: { latitude?: number | string; longitude?: number | string; name?: string; address?: string; url?: string } | null | undefined): string {
   const lat = Number(loc?.latitude), lng = Number(loc?.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return '';
@@ -1118,12 +1129,15 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (await handleCallPermissionReply(msg, accountId, io)) continue;
 
       // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
-      // vídeo/documento/sticker). Ignora location, contacts, etc. — mas
+      // vídeo/documento/sticker). Localização e contato compartilhado viram texto (contato: 11/11). — mas
       // loga o que for descartado por tipo desconhecido (não 'text'), pra
       // não repetir o incidente do call_permission_reply que sumia sem
       // nenhum rastro por causa de um match exato que não bateu.
       const locationText = msg.type === 'location' ? formatCloudLocation(msg.location) : '';
-      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo && !locationText) {
+      // Contato compartilhado (Fabio 11/11): vira mensagem com o cartão (sharedContactName/Phone — a Inbox mostra "Conversar"/"Criar lead").
+      const contatos = msg.type === 'contacts' ? cloudSharedContacts(msg.contacts) : [];
+      const contactText = contatos.map((c) => `📇 Contato: ${c.nome || 'sem nome'}${c.telefone ? ` — ${c.telefone}` : ''}`).join('\n');
+      if (msg.type !== 'text' && !buttonReplyTitle && !mediaInfo && !locationText && !contactText) {
         if (msg.type && msg.type !== 'unknown') {
           console.log(`[WhatsApp] Mensagem tipo="${msg.type}" descartada (não tratada):`, JSON.stringify(msg));
         }
@@ -1133,7 +1147,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       const from = msg.from as string; // e.g. "5561999990001"
       let text = mediaInfo
         ? `📎 ${mediaInfo.fileName}${mediaInfo.caption ? ` — ${mediaInfo.caption}` : ''}`
-        : buttonReplyTitle || locationText || decodeIfUrlEncoded((msg.text?.body as string) || '') || '';
+        : buttonReplyTitle || locationText || contactText || decodeIfUrlEncoded((msg.text?.body as string) || '') || '';
       const externalId = msg.id as string;
       const profileName = normalizeClientName(value.contacts?.[0]?.profile?.name || `+${from}`);
 
@@ -1226,6 +1240,8 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
           externalId,
           status: 'DELIVERED',
           ...(replyToExternalId ? { replyToExternalId, replyToContent, replyToSender } : {}),
+          // Um contato só → cartão na Inbox; vários → o texto lista todos (o cartão esconderia os outros).
+          ...(contatos.length === 1 ? { sharedContactName: contatos[0].nome || null, sharedContactPhone: contatos[0].telefone || null } : {}),
           ...(mediaBuffer && mediaInfo ? {
             attachments: {
               create: { leadId, fileName: mediaInfo.fileName, mimeType: mediaInfo.mimeType, data: mediaBuffer },
@@ -1597,6 +1613,18 @@ const PERGUNTA_RX = /\?|\b(e|é) poss[ií]vel|\bd[aá] (pra|para)\b|\bconsegu|\b
 
 /** A IA escolheu não responder e não levou nada pra equipe (Fabio 30/10, Kelli: perguntou se dava pra tentar o Inter e ficou sem resposta, sem rastro nenhum).
  *  Mensagem com pergunta/pedido → nota no card + push "responda à mão". Sempre deixa log. */
+/** A IA ficou quieta de propósito e o caso é do colaborador do card (pushColaborador — Fabio 11/11, cliente que simulou no site com valor/parcela maior que a
+ *  aprovação da CAIXA): anotação + push só pro responsável. Nada vai ao cliente. */
+async function avisarColaboradorDaIa(accountId: string, leadId: string, motivo: string, textoCliente: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true } });
+  if (!lead) return;
+  const fala = (textoCliente || '').replace(/\s+/g, ' ').trim().slice(0, 300);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔕 A IA NÃO respondeu o cliente (regra do Fabio 11/11) e avisou o colaborador: ${motivo}${fala ? `\nMensagem do cliente: “${fala}”` : ''}` } }).catch(() => {});
+  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_handoff', leadId, leadName: lead.name, summary: `avisou o colaborador sem responder o cliente — ${motivo.slice(0, 120)}` });
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  await sendPushToAccount(accountId, { title: `🔔 ${lead.name}: falar com o cliente`, body: motivo.slice(0, 140), leadId }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+}
+
 async function avisaSilencioDaIa(accountId: string, leadId: string, texto: string, semAcao: boolean): Promise<void> {
   const t = (texto || '').trim();
   console.log(`[IA] ${leadId}: noReply sem askTeam${semAcao ? '' : ' (com ação)'} — "${t.replace(/\s+/g, ' ').slice(0, 80)}"`);
@@ -1781,6 +1809,12 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     if (genResult.noReply) {
       if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
         await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente }, io);
+      }
+      // CAIXA aprovada pelo simulador do site e o cliente diz que simulou no site com valor/parcela maior (Fabio 11/11): "não informar nada ao cliente e
+      // fazer um push informando o colaborador" — anotação no card + push só pro responsável (sem responsável, pra conta).
+      if (genResult.pushColaborador) {
+        await avisarColaboradorDaIa(accountId, leadId, genResult.pushColaborador, textToAnswer).catch((e) => console.error('[IA] push pro colaborador falhou:', e?.message));
+        return;
       }
       // Não sabe responder: não fala nada pro cliente, só pergunta pra equipe
       // — a resposta certa vai pelo balão (Fabio 30/09: nada de "vou verificar").

@@ -220,11 +220,13 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
   const desejado = numeroBr(cf.valor_credito);
   const estimado = creditoMaximoPelaParcela(parcela, he, prazo);
   const valor = Math.floor(Math.min(estimado, desejado > 0 ? desejado : Infinity) / 1000) * 1000;
-  // Fabio 03/11 (Fernanda): "PRECISAMOS DA SIMULAÇÃO ANTES DE PASSAR O RESULTADO" — o aviso fica SEGURADO até a simulação; a estimativa é só pra equipe.
-  await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'SEGURADO', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela simulação (Price em ${prazo} meses, taxa da CAIXA do simulador do site${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''} (estimativa). O cliente ainda NÃO foi avisado: falta a simulação antes de passar o resultado (Fabio 03/11).` } }).catch(() => {});
+  // Fabio 11/11 (substitui o "PRECISAMOS DA SIMULAÇÃO ANTES DE PASSAR O RESULTADO" de 03/11): "Pode encaminhar a aprovação para o cliente de acordo com o
+  // simulador do nosso site. Não é uma simulação oficial e também não precisa informar isso ao cliente." — o aviso vai pra fila (avisarCondicionadaCliente) com o
+  // valor da conta do simulador do site, sem dizer que é estimativa.
+  await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'PENDING', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso com esse valor vai ao cliente (Fabio 11/11: sem esperar simulação oficial e sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Estimativa: uns ${brl(valor)} · falta a simulação antes de avisar o cliente`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
+  sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Uns ${brl(valor)} pelo simulador do site · aviso ao cliente na fila`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
 }
 
 /** Linha do resultado no bloco CAIXA do card (Fabio 03/11: "registrar no card, colocar condicionado e o valor da parcela"): a parcela possível, se dá o
@@ -288,11 +290,15 @@ export function aiCondicionadaContext(cf: Cf): string {
     return `--- CAIXA (aviso ainda não enviado) ---
 A conversa estava fechada e o CRM chamou o cliente pelo template de atualização: assim que ele responder, o CRM manda SOZINHO, logo em seguida, a resposta da CAIXA. Agora responda só UMA frase curta de retorno (ex.: "Oi, tudo bem? Já te explico aqui embaixo."), sem falar da CAIXA.`;
   }
-  if (c?.status !== 'ENVIADO' || !c.enviadoAt || Date.now() - Date.parse(c.enviadoAt) > 3 * 86_400_000) return '';
+  if (c?.status !== 'ENVIADO' || !c.enviadoAt) return '';
+  const dias = (Date.now() - Date.parse(c.enviadoAt)) / 86_400_000;
   if (c.tipo === 'liberado') {
-    return `--- CAIXA APROVOU (aviso enviado ao cliente; Fabio 03/11) ---
-O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(Number(c.valor))}. Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".`;
+    if (dias > 30) return ''; // o "simulei no site" pode vir dias depois (Fabio 11/11)
+    return `--- CAIXA APROVOU (aviso enviado ao cliente; Fabio 03/11 e 11/11) ---
+O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(Number(c.valor))}. Esse é o valor APROVADO: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
+SIMULOU NO SITE (Fabio 11/11): se o cliente disser que fez uma simulação direto no site (da CAIXA ou outro) e conseguiu um valor MAIOR ou uma parcela MAIOR que a aprovada, NÃO responda NADA a ele ("noReply": true, "reply": "", sem "askTeam") e preencha "pushColaborador" com o que ele disse (o valor/a parcela que ele citou, entre aspas) — o CRM avisa o colaborador do card, que fala com ele.`;
   }
+  if (dias > 3) return '';
   return `--- CAIXA CONDICIONADA (aviso enviado ao cliente; Fabio 03/11) ---
 O CRM avisou o cliente que a CAIXA aprovou uma parcela de no máximo ${brl(Number(c.parcela))} por mês${c.motivo ? ' (por outros compromissos financeiros no nome dele)' : ''} e que, com essa parcela, o ${c.he ? 'crédito' : 'financiamento'} ficaria abaixo do mínimo de R$ ${Number(c.minimo) / 1000} mil, então não dá pra seguir pela CAIXA agora. NÃO é restrição no nome: nunca diga isso.
 ${c.seguir ? `O aviso terminou perguntando se ele deseja seguir com o crédito aprovado em outro banco (as outras aprovações continuam valendo).
