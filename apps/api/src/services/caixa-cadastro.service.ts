@@ -92,6 +92,13 @@ export function comRendaInformada(p: any, cf: Cf, n: number): any {
   };
 }
 
+/** Mês/ano do comprovante de residência informado pela equipe (Fabio 11/11, Deborah: a ficha leu o endereço da apólice do seguro, que não tem mês, e a conta
+ *  do mesmo endereço está no nome de outra pessoa) — `comprovante_residencia_N` ("mm/aaaa") manda no da ficha e continua valendo quando ela é refeita. Pura. */
+export function comComprovanteInformado(p: any, cf: Cf, n: number): any {
+  const m = /^(\d{2})\/(\d{4})$/.exec(String(cf[`comprovante_residencia_${n}`] || '').trim());
+  return m ? { ...p, endereco: { ...(p?.endereco || {}), comprovanteMesAno: `${m[1]}/${m[2]}` } } : p;
+}
+
 export const participantesDa = (cf: Cf): any[] => {
   // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
@@ -102,7 +109,7 @@ export const participantesDa = (cf: Cf): any[] => {
     const n = Number(p.ordem) || i + 1;
     // Estado civil informado pela equipe (Fabio 09/11: divórcio recente, sem documento na pasta) manda no da ficha e continua valendo quando ela é refeita.
     const estadoCivil = String(cf[`estado_civil_${n}`] || '').trim();
-    return comRendaInformada({ ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) }, cf, n);
+    return comComprovanteInformado(comRendaInformada({ ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) }, cf, n), cf, n);
   });
   // CPF do cônjuge: a certidão de casamento não traz — se o cônjuge é o outro participante do card, usa o CPF dele (Jézer/Bianca 29/10).
   const primeiroNome = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().split(/\s+/)[0];
@@ -236,12 +243,21 @@ export async function informarEstadoCivil(accountId: string, leadId: string, ord
   return null;
 }
 
-/** CNPJ e/ou data de admissão do emprego de um participante, informados pela equipe (comRendaInformada). */
-export async function informarDadosRenda(accountId: string, leadId: string, ordem: number, dados: { cnpj?: string; admissao?: string }, por: string): Promise<string | null> {
+/** CNPJ e/ou data de admissão do emprego de um participante, informados pela equipe (comRendaInformada); mês/ano do comprovante de residência
+ *  (comComprovanteInformado); `limparCnpj` tira o CNPJ informado antes (Fabio 11/11: CNPJ só o que o cliente confirmar com a instituição, nunca de busca na internet). */
+export async function informarDadosRenda(accountId: string, leadId: string, ordem: number, dados: { cnpj?: string; admissao?: string; comprovante?: string; limparCnpj?: boolean }, por: string): Promise<string | null> {
   const cnpj = String(dados.cnpj || '').replace(/\D/g, '');
   const admissao = String(dados.admissao || '').trim();
-  if (!cnpj && !admissao) return 'Informe o CNPJ e/ou a data de admissão';
+  const comprovante = String(dados.comprovante || '').trim();
+  const limpar = dados.limparCnpj === true && !cnpj;
+  if (!cnpj && !admissao && !comprovante && !limpar) return 'Informe o CNPJ, a data de admissão ou o mês do comprovante de residência';
   if (cnpj && !cnpjValido(cnpj)) return 'CNPJ inválido';
+  if (comprovante) {
+    const m = /^(\d{2})\/(\d{4})$/.exec(comprovante);
+    if (!m || Number(m[1]) < 1 || Number(m[1]) > 12) return 'Mês do comprovante no formato mm/aaaa';
+    const hoje = new Date();
+    if (Number(m[2]) * 12 + Number(m[1]) > hoje.getFullYear() * 12 + hoje.getMonth() + 1) return 'Mês do comprovante no futuro';
+  }
   if (admissao) {
     const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(admissao);
     if (!m) return 'Data de admissão no formato dd/mm/aaaa';
@@ -252,10 +268,11 @@ export async function informarDadosRenda(accountId: string, leadId: string, orde
   if (!l) return 'Lead não encontrado';
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === ordem);
   if (!p) return 'Participante não encontrado';
-  const patch = { ...(cnpj ? { [`cnpj_renda_${ordem}`]: cnpj } : {}), ...(admissao ? { [`admissao_renda_${ordem}`]: admissao } : {}) };
+  const patch = { ...(cnpj ? { [`cnpj_renda_${ordem}`]: cnpj } : {}), ...(limpar ? { [`cnpj_renda_${ordem}`]: null } : {}), ...(admissao ? { [`admissao_renda_${ordem}`]: admissao } : {}), ...(comprovante ? { [`comprovante_residencia_${ordem}`]: comprovante } : {}) };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb WHERE id = ${leadId}`;
   const fonte = p.trabalho?.empregador ? ` (${p.trabalho.empregador})` : '';
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 Renda de ${p.nome || `${ordem}º participante`}${fonte} informada por ${por}: ${[cnpj && `CNPJ ${cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')}`, admissao && `admissão ${admissao}`].filter(Boolean).join(', ')}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
+  const itens = [cnpj && `CNPJ ${cnpj.replace(/^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5')}`, limpar && 'CNPJ retirado (espera o que o cliente confirmar)', admissao && `admissão ${admissao}`, comprovante && `comprovante de residência ${comprovante}`].filter(Boolean);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 Dados de ${p.nome || `${ordem}º participante`}${fonte} informados por ${por}: ${itens.join(', ')}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
   // Só com a CAIXA já pedida (consulta feita/na fila): o cadastro que esperava esse dado sai sozinho; o que parou volta pra fila.
   if ((l.customFields as Cf | null)?._caixaCadastro) {
     await reenfileirarCadastrosPendentes(leadId, 'dado da renda informado pela equipe').catch(() => {});
@@ -462,7 +479,9 @@ export async function reenfileirarComFichaNova(leadId: string, antes: any[]): Pr
 export async function reenfileirarCadastrosPendentes(leadId: string, motivo: string): Promise<void> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cads = (((l?.customFields || {}) as Cf)._caixaCadastro?.cadastros || {}) as Record<string, any>;
-  const voltar = Object.entries(cads).filter(([, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status))).map(([o]) => Number(o));
+  // Só quem não tem mais nada faltando (Fabio 11/11, Deborah: sem o CNPJ o cadastro iria à CAIXA e pararia na renda); o resto espera o próximo dado.
+  const ps = participantesDa((l?.customFields || {}) as Cf);
+  const voltar = Object.entries(cads).filter(([o, v]) => v && !['GRAVADO', 'FILA', 'RODANDO'].includes(String(v.status)) && !faltaParaCadastro(ps.find((p) => p.ordem === Number(o)) || {}).length).map(([o]) => Number(o));
   if (!voltar.length) return;
   if (avaliacaoFeita((l?.customFields || {}) as Cf)) { await segurarPosAvaliacao(leadId, motivo); return; }
   await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}) }; for (const o of voltar) x.cadastros[o] = { status: 'FILA', pedidoEm: new Date().toISOString(), por: `CRM (${motivo})`, ...jaFeito(x.cadastros[o]) }; });

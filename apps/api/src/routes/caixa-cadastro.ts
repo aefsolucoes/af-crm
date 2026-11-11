@@ -112,9 +112,9 @@ router.post('/:leadId/estado-civil', requirePermission('funnel_manage'), async (
 
 // CNPJ e/ou data de admissão do emprego informados pela equipe (Fabio 10/11): valem no lugar da ficha, mesmo quando ela é refeita.
 router.post('/:leadId/dados-renda', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
-  const { ordem, cnpj, admissao } = req.body as { ordem?: number; cnpj?: string; admissao?: string };
+  const { ordem, cnpj, admissao, comprovante, limparCnpj } = req.body as { ordem?: number; cnpj?: string; admissao?: string; comprovante?: string; limparCnpj?: boolean };
   if (!ordem) return res.status(400).json({ error: 'ordem obrigatória' });
-  const erro = await informarDadosRenda(req.user!.accountId, req.params.leadId, Number(ordem), { cnpj, admissao }, await nomeDe(req)).catch((e) => e?.message || 'erro');
+  const erro = await informarDadosRenda(req.user!.accountId, req.params.leadId, Number(ordem), { cnpj, admissao, comprovante, limparCnpj: limparCnpj === true }, await nomeDe(req)).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });

@@ -474,6 +474,7 @@ function faltasDeRenda(participantes: any[]): { chave: string; texto: string; cn
   }
   return out;
 }
+const ORGAO_PUBLICO = /\b(min|ministerio|secretaria|prefeitura|municipio|governo|tribunal|camara|assembleia|senado|policia|universidade federal|instituto federal|inss|ibama|incra|embrapa|detran|exercito|marinha|aeronautica|comando da|forca aerea|defensoria|procuradoria|ministerio publico|advocacia geral)\b/i;
 export async function pedirCnpjAoCliente(accountId: string, leadId: string, participantes: any[], _io?: Io): Promise<void> {
   const faltas = faltasDeRenda(participantes);
   if (!faltas.length) return;
@@ -482,7 +483,10 @@ export async function pedirCnpjAoCliente(accountId: string, leadId: string, part
   const novas = faltas.filter((f) => !ja[f.chave] || /^pendente:/.test(ja[f.chave]));
   if (!novas.length) return;
   const lista = novas.map((f) => f.texto).join('; ');
-  const texto = `Para concluir o seu cadastro no banco, preciso de: ${lista}.${novas.some((f) => f.cnpj) ? ' O CNPJ aparece no contracheque ou no informe de rendimentos — se preferir, pode me mandar a declaração completa do seu Imposto de Renda, que lá também consta.' : ''}`;
+  // Órgão público (Fabio 11/11, Deborah: servidora nova, ainda sem declaração de IR, e o contracheque do SIGEPE não traz CNPJ): ela confirma o CNPJ com a
+  // instituição — nunca CNPJ achado na internet.
+  const orgaoPublico = novas.some((f) => f.cnpj && ORGAO_PUBLICO.test(f.chave.normalize('NFD').replace(/[̀-ͯ]/g, '')));
+  const texto = `Para concluir o seu cadastro no banco, preciso de: ${lista}.${!novas.some((f) => f.cnpj) ? '' : orgaoPublico ? ' O CNPJ do órgão você consegue com o RH (setor de pessoal) da sua instituição — me manda escrito, por favor, que não pode ter erro no cadastro.' : ' O CNPJ aparece no contracheque ou no informe de rendimentos — se preferir, pode me mandar a declaração completa do seu Imposto de Renda, que lá também consta.'}`;
   const agora = new Date().toISOString();
   const marca = { ...ja, ...Object.fromEntries(novas.map((f) => [f.chave, `equipe:${agora}`])) };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fichaCnpjPedido}', ${JSON.stringify(marca)}::jsonb, true) WHERE id = ${leadId}`;
