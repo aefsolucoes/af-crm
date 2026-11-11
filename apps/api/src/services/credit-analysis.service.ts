@@ -2288,8 +2288,18 @@ export async function finishProposalChange(db: Db, leadId: string): Promise<void
       veredito.push({ bank: r.bank, ...c });
     } else veredito.push({ bank: r.bank, status: r.status, detail: r.detail });
   }
-  const aprovou = veredito.filter((v) => v.status === 'APPROVED' || v.status === 'CONDITIONAL');
-  const naoAprovou = veredito.filter((v) => !aprovou.includes(v));
+  // Creditas: o portal não aceita outra proposta pro CPF enquanto a atual está ativa — a extensão só relê a que existe ("não criei outra").
+  // Isso NÃO é a resposta da nova proposta (Hercilia 11/11: pediu R$ 60 mil, voltou a de R$ 85,7 mil como "aprovou" e a IA seguiu prometendo a nova).
+  const naoCriada = veredito.filter((v) => /n[aã]o criei outra/i.test(v.detail || ''));
+  if (naoCriada.length) {
+    const bancos = naoCriada.map((v) => BANKS[v.bank]?.label || v.bank).join(', ');
+    await nota(`⚠️ A nova proposta pedida pelo cliente (${cf._changeAsk || 'outro prazo/valor'}) NÃO foi criada no ${bancos}: o portal não aceita outra proposta pra este CPF enquanto a atual estiver ativa, e a extensão só releu a proposta que já existe (os números são os de antes). Pra rodar o pedido: peça ao consultor do banco que altere o valor/prazo da proposta atual, ou cancele a atual no portal e peça de novo. A aprovação anterior continua valendo — o cliente ainda NÃO foi avisado disso.`);
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: '⚠️ Nova proposta não criada', body: `${bancos}: já existe proposta ativa pro CPF — o pedido do cliente (${cf._changeAsk || 'outro prazo/valor'}) não rodou`, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
+  }
+  const valido = veredito.filter((v) => !naoCriada.includes(v));
+  if (!valido.length) { await salvar((c) => { delete c._changeRound; delete c._changeAsk; }); return; }
+  const aprovou = valido.filter((v) => v.status === 'APPROVED' || v.status === 'CONDITIONAL');
+  const naoAprovou = valido.filter((v) => !aprovou.includes(v));
   for (const v of naoAprovou) {
     const motivo = String(v.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 240);
     await nota(`⚠️ A nova proposta pedida pelo cliente (outro prazo/valor) NÃO foi aprovada no ${BANKS[v.bank]?.label || v.bank} (${v.status}${motivo ? `: ${motivo}` : ''}). A aprovação anterior continua valendo.`);
