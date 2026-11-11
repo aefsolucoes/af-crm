@@ -1235,7 +1235,7 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
   const propostas = leads.length ? await db.message.findMany({ where: { leadId: { in: leads.map((l) => l.id) }, content: { contains: 'Serasa' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
   const restricao = new Map(propostas.map((m) => { const r = /Restri[cç][aã]o no Serasa:\s*\**\s*(Sim|N[aã]o)/i.exec(m.content); return [m.leadId, r ? /^sim/i.test(r[1]) : null] as const; }));
   // SBPE ou MCMV da CAIXA (Fabio 11/11): gravado na avaliação desde 11/11; nas enviadas antes, lido da anotação do envio (linhas da tela da operação).
-  const { enquadramentoDaOperacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const { enquadramentoDaOperacao, andamentoCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const semEnq = leads.filter((l) => { const cf = (l.customFields || {}) as Record<string, any>; return cf._caixaResultado && !cf._caixaCadastro?.avaliacao?.enquadramento; }).map((l) => l.id);
   const notasOp = semEnq.length ? await db.note.findMany({ where: { leadId: { in: semEnq }, content: { contains: 'origem do recurso', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
   const enqNota = new Map(notasOp.map((n) => [n.leadId, enquadramentoDaOperacao(n.content)] as const));
@@ -1262,6 +1262,9 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       // Tela do Financiamento igual à do Home Equity (Fabio 29/10): CPF/nomes do card, se está na Pré-Análise e o número de cada proposta.
       card: { name1: cf.participante_1 ? String(cf.participante_1) : null, cpf1: cf.cpf_1 ? String(cf.cpf_1) : null, name2: cf.participante_2 ? String(cf.participante_2) : null, cpf2: cf.cpf_2 ? String(cf.cpf_2) : null },
       inPre: l.status === 'OPEN' && /^pr[ée]-an/i.test(l.stage?.name || ''),
+      // Aba "Análise CAIXA" (Fabio 11/11): quem está na etapa aparece na tela mesmo sem ter rodado em banco nenhum, com o andamento da CAIXA.
+      inCaixa: l.status === 'OPEN' && /^an[aá]lise\s+caixa/i.test(l.stage?.name || ''),
+      caixaEtapa: l.status === 'OPEN' && /^an[aá]lise\s+caixa/i.test(l.stage?.name || '') ? andamentoCaixa(cf, caixa ? `${caixa.status}${enq ? ` · ${enq}` : ''}` : null) || null : null,
       history: l.creditAnalyses.slice(0, 12).map((r) => ({ id: r.id, bank: r.bank, kind: r.kind, status: r.status, detail: r.detail ? String(r.detail).slice(0, 300) : null, createdAt: r.createdAt, proposalNumber: r.proposalNumber, dryRun: r.dryRun })),
       // STOP TOTAL do cliente e a data/hora da última análise de cada fila do FH (Fabio 11/11: "coloca a hora e datas das análises" + botões Ajustar/STOP/Conferir no FH).
       autoPaused: !!cf._autoPaused,
@@ -1516,6 +1519,8 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   const preNoteAt = new Map<string, Date>();
   for (const n of preNotes) if (!preNoteAt.has(n.leadId)) preNoteAt.set(n.leadId, n.createdAt);
   const autoSetting = await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { enabled: true, enabledAt: true, paused: true } });
+  const { andamentoCaixa: andamentoCaixaHe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const resultadoCaixaHe = (res: any): string | null => caixaNoFinanciamento(res)?.status || null;
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
     const preAnaliseAt = (l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || preNoteAt.get(l.id) || null;
@@ -1524,6 +1529,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
     // Por que NÃO rodou (banco × participante sem análise): a tela mostra a frase no lugar de "Nenhuma análise ainda".
     const card = { name1: String(cf.participante_1 || l.name || ''), name2: String(cf.participante_2 || ''), cpf1: cf.cpf_1, cpf2: cf.cpf_2 };
     const inPre = l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '');
+    const naCaixa = l.status === 'OPEN' && /^an[aá]lise\s+caixa/i.test(l.stage?.name || '');
     const porParticipante = (who: 1 | 2) => l.creditAnalyses.filter((a) => !a.dryRun && whichParticipant(card, a.holderName, a.holderCpf) === who);
     const notRun: Record<string, { p1?: string; p2?: string }> = {};
     for (const bk of BANK_KEYS) {
@@ -1553,6 +1559,9 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       },
       overrides: Object.fromEntries(l.creditOverrides.map((o) => [o.bank, o.data])),
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
+      // Aba "Análise CAIXA" (Fabio 11/11): quem está na etapa aparece na tela mesmo sem ter rodado em banco nenhum, com o andamento da CAIXA.
+      inCaixa: naCaixa,
+      caixaEtapa: naCaixa ? andamentoCaixaHe(cf, resultadoCaixaHe(cf._caixaResultado)) || null : null,
       autoPaused: !!cf._autoPaused,
       scr: cf._scrCreditas ? { status: cf._scrCreditas.status, at: cf._scrCreditas.at || null, askedAt: cf._scrCreditas.askedAt || null, sentAt: cf._scrCreditas.sentAt || null, creditasId: cf._scrCreditas.creditasId || null, holderName: cf._scrCreditas.holderName || null, holderCpf: cf._scrCreditas.holderCpf || null } : null,
       preAnaliseAt,

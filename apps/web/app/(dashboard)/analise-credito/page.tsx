@@ -111,7 +111,7 @@ export default function AnaliseCreditoPage() {
   const [open, setOpen] = useState<string | null>(null);
   const [modal, setModal] = useState<{ lead: BoardLead; bank: Bank; analysis?: Analysis } | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const [view, setView] = useState<'pre' | 'ran'>('pre');
+  const [view, setView] = useState<'pre' | 'caixa' | 'ran'>('pre');
   const [busca, setBusca] = useState(''); // "Buscar": nome (titular ou 2º participante), CPF ou nº da proposta (Fabio 17/10)
   const [adjust, setAdjust] = useState<BoardLead | null>(null);
   const [notify, setNotify] = useState<BoardLead | null>(null);
@@ -203,14 +203,15 @@ export default function AnaliseCreditoPage() {
 
   const allLeads = data?.leads || [];
   const leads = useMemo(() => {
-    const base = view === 'pre'
-      ? allLeads.filter((l) => l.inPre)
-      : allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime());
+    // Três abas sem repetir ninguém: Pré-Análise, Análise CAIXA (Fabio 11/11: quem está na etapa aparece aqui mesmo sem ter rodado em banco nenhum) e Já rodados.
+    const naCaixa = allLeads.filter((l) => l.inCaixa);
+    const jaRodados = allLeads.filter((l) => l.ran && !l.inPre && !l.inCaixa).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime());
+    const base = view === 'pre' ? allLeads.filter((l) => l.inPre) : view === 'caixa' ? naCaixa : jaRodados;
     const q = busca.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     const qDig = q.replace(/\D/g, '');
     if (!q) return base;
-    // Buscando: procura nas DUAS abas (Pré-Análise e Já rodados), não só na que está aberta (Fabio 19/10: "preciso pesquisar clientes").
-    const todos = [...allLeads.filter((l) => l.inPre), ...allLeads.filter((l) => l.ran && !l.inPre).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime())];
+    // Buscando: procura em TODAS as abas, não só na que está aberta (Fabio 19/10: "preciso pesquisar clientes").
+    const todos = [...allLeads.filter((l) => l.inPre), ...naCaixa, ...jaRodados];
     return todos.filter((l) => {
       const texto = [l.name, l.card.name1, l.card.name2, ...Object.values(l.latest).map((a) => a?.holderName || '')].join(' ').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
       const docs = [l.card.cpf1, l.card.cpf2, ...(l.history || []).flatMap((a) => [(a as any).holderCpf, a.proposalNumber])].map((v) => String(v || '').replace(/\D/g, ''));
@@ -401,7 +402,7 @@ export default function AnaliseCreditoPage() {
         {/* Quadro */}
         <div className="tabela-escura rounded-xl overflow-hidden">
           <div className="px-4 pt-3 border-b border-af-border flex items-end gap-1">
-            {([['pre', 'Pré-Análise', allLeads.filter((l) => l.inPre).length], ['ran', 'Já rodados', allLeads.filter((l) => l.ran && !l.inPre).length]] as const).map(([k, label, n]) => (
+            {([['pre', 'Pré-Análise', allLeads.filter((l) => l.inPre).length], ['caixa', 'Análise CAIXA', allLeads.filter((l) => l.inCaixa).length], ['ran', 'Já rodados', allLeads.filter((l) => l.ran && !l.inPre && !l.inCaixa).length]] as const).map(([k, label, n]) => (
               <button key={k} onClick={() => setView(k)} className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${view === k ? 'border-af-accent text-slate-800 font-medium' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
                 {label} <span className="text-xs text-slate-400">({n})</span>
               </button>
@@ -415,16 +416,16 @@ export default function AnaliseCreditoPage() {
                 aria-label="Buscar na análise de crédito"
               />
               {busca && <button onClick={() => setBusca('')} className="ml-1 text-xs text-slate-400 hover:text-slate-600 px-1" aria-label="Limpar a busca">✕</button>}
-              {busca.trim() && <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap">{leads.length} resultado{leads.length === 1 ? '' : 's'} (nas duas abas)</span>}
+              {busca.trim() && <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap">{leads.length} resultado{leads.length === 1 ? '' : 's'} (em todas as abas)</span>}
             </div>
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
-              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
+              {view === 'pre' ? 'Home Equity · clientes na etapa Pré-Análise' : view === 'caixa' ? 'Home Equity · clientes na etapa Análise CAIXA — consulta do nome, cadastro e análise na CAIXA' : 'Home Equity · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise — ajuste ou inverta participantes e rode de novo'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
             </span>
           </div>
           {isLoading ? (
             <div className="p-4"><Skeleton className="h-32" /></div>
           ) : leads.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise e Já rodados).` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise, Análise CAIXA e Já rodados).` : view === 'pre' ? 'Nenhum cliente na Pré-Análise agora.' : view === 'caixa' ? 'Nenhum cliente na etapa Análise CAIXA agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[980px]">
@@ -451,6 +452,7 @@ export default function AnaliseCreditoPage() {
                             <div className="text-[11px] text-slate-400">
                               {l.stage}{l.requested.creditValue ? ` · pediu ${formatCurrency(l.requested.creditValue)}` : ''}{l.requested.term ? ` · ${l.requested.term}` : ''}
                             </div>
+                            {l.caixaEtapa && <div className="text-[11px] text-sky-700" title="Andamento na CAIXA: consulta do nome, cadastro e análise de crédito">🏦 CAIXA: {l.caixaEtapa}</div>}
                             {l.autoPaused && <div className="text-[11px] font-semibold text-red-600">⏹ PARADO — nada roda, confere, avisa nem responde (IA) sozinho</div>}
                             {l.preAnaliseAt && (
                               <div className="text-[11px] text-slate-400" title="Data e hora em que o card entrou na Pré-Análise">

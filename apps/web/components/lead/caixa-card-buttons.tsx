@@ -46,6 +46,37 @@ const curto = (s: string) => s.split(/[:—]/)[0].trim();
 const quando = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 const aguardando = (s: string | null) => !s || s === 'AGUARDANDO_NOVA_AVALIACAO';
 
+/** Dado da renda que a CAIXA exige e nenhum documento trouxe (data de admissão, CNPJ da fonte pagadora): a equipe informa aqui e, com a ficha completa, o cadastro
+ *  vai pra fila sozinho (Fabio 11/11: "rodar o cadastro sozinho sempre que tiver todos os documentos ou todas as informações"). */
+function InformarRenda({ leadId, ordem, falta, onSaved }: { leadId: string; ordem: number; falta: string[]; onSaved: () => void }) {
+  const pedeAdm = falta.some((f) => /admiss/i.test(f));
+  const pedeCnpj = falta.some((f) => /cnpj/i.test(f));
+  const [adm, setAdm] = useState('');
+  const [cnpj, setCnpj] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [erro, setErro] = useState<string | null>(null);
+  if (!pedeAdm && !pedeCnpj) return null;
+  const data = (v: string) => { const d = v.replace(/\D/g, '').slice(0, 8); return [d.slice(0, 2), d.slice(2, 4), d.slice(4)].filter(Boolean).join('/'); };
+  const pronto = (pedeAdm && adm.length === 10) || (pedeCnpj && cnpj.replace(/\D/g, '').length === 14);
+  async function gravar() {
+    setBusy(true); setErro(null);
+    try {
+      await api.post(`/api/caixa-cadastro/${leadId}/dados-renda`, { ordem, ...(adm.length === 10 ? { admissao: adm } : {}), ...(cnpj.replace(/\D/g, '').length === 14 ? { cnpj } : {}) });
+      setAdm(''); setCnpj('');
+      toast('Gravado. Com a ficha completa, o cadastro vai pra fila da CAIXA sozinho.', 'success');
+      onSaved();
+    } catch (e: any) { setErro(e?.response?.data?.error || 'Não consegui gravar'); } finally { setBusy(false); }
+  }
+  return (
+    <span className="mt-1 flex flex-wrap items-center gap-1.5">
+      {pedeAdm && <input value={adm} onChange={(e) => setAdm(data(e.target.value))} inputMode="numeric" placeholder="Admissão dd/mm/aaaa" aria-label="Data de admissão" className="w-36 rounded-md border border-af-border px-2 py-1 text-xs text-slate-700 focus:outline-none focus:border-[#2261a8]" />}
+      {pedeCnpj && <input value={cnpj} onChange={(e) => setCnpj(e.target.value.replace(/[^\d./-]/g, '').slice(0, 18))} inputMode="numeric" placeholder="CNPJ da fonte pagadora" aria-label="CNPJ da fonte pagadora" className="w-44 rounded-md border border-af-border px-2 py-1 text-xs text-slate-700 focus:outline-none focus:border-[#2261a8]" />}
+      <button type="button" onClick={gravar} disabled={busy || !pronto} className="rounded-md border border-af-accent px-2 py-1 text-xs text-af-accent hover:bg-af-accent/10 disabled:opacity-50">{busy ? 'Gravando…' : 'Gravar'}</button>
+      {erro && <span className="basis-full text-red-600">{erro}</span>}
+    </span>
+  );
+}
+
 export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recarrega o card (anotação nova). */ onDone?: () => void }) {
   const queryClient = useQueryClient();
   const [modal, setModal] = useState<'cadastro' | 'analise' | null>(null);
@@ -199,6 +230,7 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
                       <span className="font-medium text-slate-800">{p.nome || `${p.ordem}º participante`}</span>
                       <span className="text-slate-400"> · {p.cadastro ? curto(p.cadastro).toLowerCase() : p.consultado ? 'consultado, sem cadastro' : 'sem consulta'}</span>
                       {p.falta.length > 0 && <span className="block text-amber-700">falta na ficha: {p.falta.join(', ')}</span>}
+                      <InformarRenda leadId={leadId} ordem={p.ordem} falta={p.falta} onSaved={() => { refetch(); onDone?.(); }} />
                     </li>
                   ))}
                 </ul>

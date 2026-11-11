@@ -62,6 +62,8 @@ export interface BoardLead {
   card: { name1: string; name2: string; cpf1?: string; cpf2?: string; income1: string; income2: string; propertyValue: string; creditValue: string; term: string };
   overrides: Partial<Record<Bank, OverrideData>>;
   inPre: boolean; autoPaused?: boolean;
+  /** Card na etapa "Análise CAIXA" (aba própria na Análise de Crédito) e uma linha com o andamento da CAIXA: consulta, cadastro, análise. */
+  inCaixa?: boolean; caixaEtapa?: string | null;
   /** Reprovado em todos os bancos com a IA do card desligada: a negativa não sai sozinha — mostra o botão "Avisar negativa". */
   rejectionPending?: boolean;
   /** Creditas pediu a Autorização SCR Bacen assinada: PENDING/ASKED/SENDING = consulta do Creditas TRAVADA; SENT = enviada à Creditas; NOTED = só registrado. */

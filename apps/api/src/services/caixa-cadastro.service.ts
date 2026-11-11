@@ -319,13 +319,15 @@ export async function prontosParaCadastro(accountId: string): Promise<any[]> {
  *  HE e FH). Saíram as entradas antigas: todo FH com ficha (31/10), toda ficha do HE (31/10), "quer CAIXA/BRB também?" do FH, CAIXA combinada antes da proposta,
  *  reprovado que volta e o "optou pela CAIXA" sem as regras. Roda no poller. Depois da consulta, o cadastro sai sozinho (cadastroAutomatico). */
 export async function processFilaCaixa(accountId: string): Promise<void> {
-  const ids = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT l.id FROM "Lead" l
+  // Card na etapa "Análise CAIXA" vale como rota da CAIXA (Fabio 11/11: "rodar o cadastro sozinho sempre que tiver todos os documentos ou todas as informações" —
+  // card que a equipe põe na etapa não tem `_caixaRota` e ficava esperando o clique no "Cadastro CAIXA"). A análise de crédito continua só com o clique.
+  const ids = await prisma.$queryRaw<{ id: string; rota: boolean }[]>`
+    SELECT l.id, (l."customFields"->'_caixaRota' IS NOT NULL) AS rota FROM "Lead" l LEFT JOIN "Stage" s ON s.id = l."stageId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
       AND l."customFields"->'_fichaCadastral' IS NOT NULL AND l."customFields"->'_caixaCadastro' IS NULL
-      AND l."customFields"->'_caixaRota' IS NOT NULL
+      AND (l."customFields"->'_caixaRota' IS NOT NULL OR s.name ILIKE 'An_lise CAIXA%')
     LIMIT 5`;
-  for (const { id } of ids) await pedirCadastroCaixa(accountId, id, 'automático (cliente vai pela CAIXA)').catch((e) => console.error('[CAIXA] fila:', e?.message));
+  for (const { id, rota } of ids) await pedirCadastroCaixa(accountId, id, rota ? 'automático (cliente vai pela CAIXA)' : 'automático (card na etapa Análise CAIXA)').catch((e) => console.error('[CAIXA] fila:', e?.message));
   // Ficha completa depois (documento novo, CNPJ respondido) → cadastro de quem ainda não foi.
   const cands = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
@@ -821,6 +823,45 @@ export function resumoConsulta(texto: unknown): { consulta: string | null; alert
   const consulta = /pesquisa cadastral:\s*nada consta/i.test(t) ? 'Nada consta' : /pesquisa cadastral:\s*constam? ocorr/i.test(t) ? 'Constam ocorrências' : null;
   const alerta = consultaSegura([t]) || (receita && !/\bregular\b/i.test(receita) ? `CPF na Receita: ${receita.slice(0, 60)}` : null);
   return { consulta, alerta };
+}
+
+/** Uma linha com o andamento da CAIXA no card — aba "Análise CAIXA" da Análise de Crédito (Fabio 11/11: "os clientes que estão lá também precisam aparecer na análise
+ *  de crédito"): ficha, consulta do nome, cadastro de cada participante (ou o que falta pra ele sair) e a análise. `resultado` = o que a CAIXA respondeu, quando há.
+ *  Sem CPF nem texto de tela. Pura. */
+export function andamentoCaixa(cf: Cf, resultado?: string | null): string {
+  const c = (cf._caixaCadastro || {}) as Cf;
+  const ps = participantesDa(cf);
+  const partes: string[] = [];
+  const primeiro = (p: any) => String(p?.nome || `${p?.ordem}º participante`).trim().split(/\s+/)[0];
+  const rot = (p: any, txt: string) => (ps.length > 1 ? `${primeiro(p)}: ${txt}` : txt);
+  if (!temFicha(cf)) partes.push('sem a ficha de cadastro (esperando os documentos)');
+  // Consulta do nome (Oportunidades de Negócios)
+  if (c.status === 'CONSULTA_PARADA') partes.push('consulta do nome não saiu');
+  else if (c.status === 'FILA') partes.push('consulta do nome na fila');
+  else if (ps.length && ps.every((p) => c.consultas?.[p.ordem])) {
+    const alertas = ps.map((p) => resumoConsulta(c.consultas[p.ordem]?.texto)).filter((r) => r.alerta || r.consulta === 'Constam ocorrências');
+    partes.push(alertas.length ? `consulta do nome: ${alertas[0].alerta || 'constam ocorrências'}` : 'nome consultado');
+  } else if (temFicha(cf) && !cf._caixaCadastro) partes.push('ficha pronta, entra na fila da consulta');
+  // Cadastro de cada participante
+  if (temFicha(cf) && cf._caixaCadastro) {
+    for (const p of ps) {
+      const st = String(c.cadastros?.[p.ordem]?.status || '');
+      const falta = faltaParaCadastro(p);
+      if (/^GRAVADO/i.test(st)) partes.push(rot(p, 'cadastro gravado'));
+      else if (st === 'FILA' || st === 'RODANDO') partes.push(rot(p, st === 'FILA' ? 'cadastro na fila' : 'cadastrando agora'));
+      else if (st) partes.push(rot(p, `cadastro não gravou (${st.replace(/\s+/g, ' ').slice(0, 70)})`));
+      else if (falta.length) partes.push(rot(p, `cadastro esperando ${falta.join(', ').slice(0, 90)}`));
+      else if (c.consultas?.[p.ordem]) partes.push(rot(p, 'cadastro entra na fila'));
+    }
+  }
+  // Análise de crédito (Avaliação de Risco) — só com o clique de alguém
+  const av = String(c.avaliacao?.status || '');
+  if (resultado) partes.push(`análise: ${String(resultado).replace(/\s+/g, ' ').slice(0, 80)}`);
+  else if (av === 'FILA') partes.push('análise na fila');
+  else if (av) partes.push(`análise: ${av.replace(/\s+/g, ' ').slice(0, 70)}`);
+  else if (cf._caixaAnalisePendente?.por) partes.push('análise autorizada, sai depois do cadastro');
+  else if (ps.length && cf._caixaCadastro && ps.every((p) => gravado(c, p.ordem))) partes.push('análise esperando o clique em "Análise CAIXA"');
+  return partes.join(' · ');
 }
 
 /** Painel CAIXA da Análise de Crédito: cards com cadastro na CAIXA (sem CPF) — rodando, conferir, avaliação — e os que têm ficha e ainda não foram pra CAIXA. */

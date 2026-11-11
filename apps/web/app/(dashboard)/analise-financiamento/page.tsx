@@ -51,6 +51,9 @@ interface FhLead {
   bancos: Record<string, { status: string; texto: string }>;
   card: { name1: string | null; cpf1: string | null; name2: string | null; cpf2: string | null };
   inPre: boolean;
+  /** Card na etapa "Análise CAIXA" (aba própria) e uma linha com o andamento da CAIXA: consulta, cadastro, análise. */
+  inCaixa?: boolean;
+  caixaEtapa?: string | null;
   history: FhHistorico[];
   autoPaused?: boolean;
   /** Última análise de cada fila (CREDIMORAR_FH, INTER_FH, ITAU_FH, CAIXA_FH, BRB_FH) — data e hora na célula do banco. */
@@ -145,7 +148,7 @@ export default function AnaliseFinanciamentoPage() {
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const [view, setView] = useState<'pre' | 'ran'>('pre');
+  const [view, setView] = useState<'pre' | 'caixa' | 'ran'>('pre');
   const [busca, setBusca] = useState(''); // "Buscar": nome (titular ou 2º participante), CPF ou nº da proposta (Fabio 29/10)
   const [pedindo, setPedindo] = useState<string | null>(null); // botão da linha em andamento (leadId + tipo)
   const [pdfBusy, setPdfBusy] = useState<string | null>(null);
@@ -170,7 +173,7 @@ export default function AnaliseFinanciamentoPage() {
     if (!id || !data?.leads) return;
     leadDoLink.current = null;
     const l = data.leads.find((x) => x.id === id);
-    if (!l) { toast('Esse cliente ainda não tem análise de Financiamento nem está na Pré-Análise.', 'error'); return; }
+    if (!l) { toast('Esse cliente ainda não tem análise de Financiamento nem está na Pré-Análise ou na Análise CAIXA.', 'error'); return; }
     setBusca(l.card?.name1 || l.name);
     setOpen(id);
     setTimeout(() => document.getElementById(`lead-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
@@ -178,18 +181,20 @@ export default function AnaliseFinanciamentoPage() {
 
   const allLeads = data?.leads || [];
   const preLeads = useMemo(() => allLeads.filter((l) => l.inPre), [allLeads]);
-  const ranLeads = useMemo(() => allLeads.filter((l) => !l.inPre && l.history.length > 0).sort((a, b) => ultimaRodada(b) - ultimaRodada(a)), [allLeads]);
+  // Aba "Análise CAIXA" (Fabio 11/11): quem está na etapa aparece aqui mesmo sem ter rodado em banco nenhum; sai dos "Já rodados" pra não repetir.
+  const caixaLeads = useMemo(() => allLeads.filter((l) => l.inCaixa), [allLeads]);
+  const ranLeads = useMemo(() => allLeads.filter((l) => !l.inPre && !l.inCaixa && l.history.length > 0).sort((a, b) => ultimaRodada(b) - ultimaRodada(a)), [allLeads]);
   const leads = useMemo(() => {
     const q = semAcento(busca).trim();
-    if (!q) return view === 'pre' ? preLeads : ranLeads;
+    if (!q) return view === 'pre' ? preLeads : view === 'caixa' ? caixaLeads : ranLeads;
     const qDig = q.replace(/\D/g, '');
-    // Buscando: procura nas DUAS abas (Pré-Análise e Já rodados), não só na que está aberta.
-    return [...preLeads, ...ranLeads].filter((l) => {
+    // Buscando: procura em TODAS as abas, não só na que está aberta.
+    return [...preLeads, ...caixaLeads, ...ranLeads].filter((l) => {
       const texto = semAcento([l.name, l.card?.name1, l.card?.name2, l.participante2].filter(Boolean).join(' '));
       const docs = [l.card?.cpf1, l.card?.cpf2, l.simulacao, ...l.history.map((h) => h.proposalNumber), ...Object.values(l.bancos).map((b) => numeroProposta(b.texto))].map((v) => String(v || '').replace(/\D/g, ''));
       return texto.includes(q) || (qDig.length >= 3 && docs.some((d) => d.includes(qDig)));
     });
-  }, [preLeads, ranLeads, view, busca]);
+  }, [preLeads, caixaLeads, ranLeads, view, busca]);
   const allSelected = leads.length > 0 && leads.every((l) => selected.includes(l.id));
 
   const ext = data?.extension;
@@ -324,7 +329,7 @@ export default function AnaliseFinanciamentoPage() {
         {/* Quadro */}
         <div className="tabela-escura rounded-xl overflow-hidden">
           <div className="px-4 pt-3 border-b border-af-border flex items-end gap-1">
-            {([['pre', 'Pré-Análise', preLeads.length], ['ran', 'Já rodados', ranLeads.length]] as const).map(([k, label, n]) => (
+            {([['pre', 'Pré-Análise', preLeads.length], ['caixa', 'Análise CAIXA', caixaLeads.length], ['ran', 'Já rodados', ranLeads.length]] as const).map(([k, label, n]) => (
               <button key={k} onClick={() => setView(k)} className={`px-4 py-2 text-sm -mb-px border-b-2 transition-colors ${view === k ? 'border-af-accent text-slate-800 font-medium' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
                 {label} <span className="text-xs text-slate-400">({n})</span>
               </button>
@@ -338,16 +343,16 @@ export default function AnaliseFinanciamentoPage() {
                 aria-label="Buscar na análise de Financiamento"
               />
               {busca && <button onClick={() => setBusca('')} className="ml-1 text-xs text-slate-400 hover:text-slate-600 px-1" aria-label="Limpar a busca">✕</button>}
-              {busca.trim() && <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap">{leads.length} resultado{leads.length === 1 ? '' : 's'} (nas duas abas)</span>}
+              {busca.trim() && <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap">{leads.length} resultado{leads.length === 1 ? '' : 's'} (em todas as abas)</span>}
             </div>
             <span className="ml-auto pb-2 text-[11px] text-slate-400 hidden md:block">
-              {view === 'pre' ? 'Financiamento · clientes na etapa Pré-Análise' : 'Financiamento · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
+              {view === 'pre' ? 'Financiamento · clientes na etapa Pré-Análise' : view === 'caixa' ? 'Financiamento · clientes na etapa Análise CAIXA — consulta do nome, cadastro e análise na CAIXA' : 'Financiamento · quem já foi analisado nos últimos 90 dias e saiu da Pré-Análise'}{dataUpdatedAt ? ` · atualizado às ${new Date(dataUpdatedAt).toLocaleTimeString('pt-BR')}` : ''}
             </span>
           </div>
           {isLoading ? (
             <div className="p-4"><Skeleton className="h-32" /></div>
           ) : leads.length === 0 ? (
-            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise e Já rodados).` : view === 'pre' ? 'Nenhum cliente de Financiamento na Pré-Análise agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
+            <div className="text-center py-10 text-slate-400 text-sm">{busca.trim() ? `Nenhum cliente encontrado para "${busca.trim()}" (procurei em Pré-Análise, Análise CAIXA e Já rodados).` : view === 'pre' ? 'Nenhum cliente de Financiamento na Pré-Análise agora.' : view === 'caixa' ? 'Nenhum cliente de Financiamento na etapa Análise CAIXA agora.' : 'Nenhum cliente foi rodado ainda.'}</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm min-w-[1000px]">
@@ -373,6 +378,7 @@ export default function AnaliseFinanciamentoPage() {
                               {l.stage}{l.status === 'LOST' ? ' · Perdido' : ''}
                               {l.valores.imovel ? ` · imóvel ${formatCurrency(l.valores.imovel)}` : ''}{l.valores.financia ? ` · pediu financiar ${formatCurrency(l.valores.financia)}` : ''}{l.valores.renda ? ` · renda ${formatCurrency(l.valores.renda)}` : ''}
                             </div>
+                            {l.caixaEtapa && <div className="text-[11px] text-sky-700" title="Andamento na CAIXA: consulta do nome, cadastro e análise de crédito">🏦 CAIXA: {l.caixaEtapa}</div>}
                             {l.simulacao && <div className="text-[11px] text-slate-400">Simulação Credimorar nº {l.simulacao}{l.leituraEm ? ` · lida ${ago(l.leituraEm)}` : ''}</div>}
                             {(l.card?.name2 || l.participante2) && (
                               <div className="text-[11px] text-slate-500 mt-0.5">
