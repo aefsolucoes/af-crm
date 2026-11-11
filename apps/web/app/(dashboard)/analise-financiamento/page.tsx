@@ -55,7 +55,11 @@ interface FhLead {
   autoPaused?: boolean;
   /** Última análise de cada fila (CREDIMORAR_FH, INTER_FH, ITAU_FH, CAIXA_FH, BRB_FH) — data e hora na célula do banco. */
   ultimas?: Record<string, { kind: string; status: string; createdAt: string; updatedAt: string }>;
+  /** Resultado de cada participante por banco (quem foi o titular na rodada) e todas as propostas aprovadas (Fabio 11/11, igual ao HE). */
+  porParticipante?: Record<string, { p1?: FhParte; p2?: FhParte }>;
+  aprovadas?: (FhParte & { banco: string; quem: 'p1' | 'p2' | null })[];
 }
+interface FhParte { status: string; texto: string; titular: string | null; kind: string; createdAt: string; updatedAt: string; proposta: string | null; valor: number | null; prazo: number | null; taxa: string | null; parcela: number | null }
 type FhExt = { lastSeenAt: string | null; online: boolean; extId?: string | null; loginNeeded?: boolean };
 interface FhBoard { leads: FhLead[]; extension: FhExt | null; extensions?: Record<string, FhExt> }
 
@@ -83,7 +87,32 @@ function QuandoFila({ u }: { u?: { kind: string; createdAt: string; updatedAt: s
   return <div className="text-[10px] leading-snug text-slate-400" title={`Pedido: ${dataHora(u.createdAt)} · último retorno: ${dataHora(u.updatedAt)}`}>{u.kind === 'CHECK' ? 'conferido' : 'rodou'} {dataHora(u.createdAt)}{mostraFim ? ` · retorno ${dataHora(u.updatedAt)}` : ''}</div>;
 }
 
+/** Um participante dentro da célula do banco: status, valor aprovado, nº e quando rodou. */
+function ParteCell({ x }: { x?: FhParte }) {
+  if (!x) return <span className="text-xs text-slate-300">—</span>;
+  const ok = aprovado(x.status);
+  const mostraFim = new Date(x.updatedAt).getTime() - new Date(x.createdAt).getTime() > 2 * 60_000;
+  return (
+    <div className="space-y-0.5" title={x.texto}>
+      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${tom(x.status)}`}>{x.status}</span>
+      {ok && x.valor ? <div className="text-[11px] font-medium text-slate-600">{formatCurrency(x.valor)}</div> : null}
+      {x.proposta && <div className="text-[10px] text-slate-400">nº {x.proposta}</div>}
+      <div className="text-[10px] leading-snug text-slate-400">{x.kind === 'CHECK' ? 'conferido' : 'rodou'} {dataHora(x.createdAt)}{mostraFim ? ` · retorno ${dataHora(x.updatedAt)}` : ''}</div>
+    </div>
+  );
+}
+
 function BancoCell({ nome, lead }: { nome: string; lead: FhLead }) {
+  // Com 2º participante e análise no nome de cada um (ou só no do 2º): mostra os dois lado a lado, igual ao Home Equity (Fabio 11/11).
+  const pp = lead.porParticipante?.[nome];
+  if (pp && (lead.card?.name2 || lead.participante2) && (pp.p2 || (pp.p1 && pp.p2))) {
+    return (
+      <div className="space-y-1.5">
+        <div><div className="text-[10px] uppercase tracking-wide text-slate-400">1º participante</div><ParteCell x={pp.p1} /></div>
+        <div><div className="text-[10px] uppercase tracking-wide text-slate-400">2º participante</div><ParteCell x={pp.p2} /></div>
+      </div>
+    );
+  }
   const b = lead.bancos[nome];
   const u = lead.ultimas?.[FILA_DO_BANCO[nome]];
   if (b) {
@@ -91,6 +120,7 @@ function BancoCell({ nome, lead }: { nome: string; lead: FhLead }) {
     return (
       <div className="space-y-0.5" title={b.texto}>
         <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${tom(b.status)}`}>{b.status}</span>
+        {aprovado(b.status) && /R\$ ([\d.]+,\d{2})/.exec(b.texto) ? <div className="text-[11px] font-medium text-slate-600">R$ {/R\$ ([\d.]+,\d{2})/.exec(b.texto)?.[1]}</div> : null}
         {n && <div className="text-[10px] text-slate-400">nº {n}</div>}
         <QuandoFila u={u} />
       </div>
@@ -397,6 +427,16 @@ export default function AnaliseFinanciamentoPage() {
                                             ? <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-blue-50 text-blue-600">{l.last?.status === 'RUNNING' ? 'Rodando' : 'Na fila'}</span>
                                             : <span className="text-xs text-slate-300">—</span>}
                                       </div>
+                                      {(() => { const pp = l.porParticipante?.[b]; return pp?.p2 && (l.card?.name2 || l.participante2) ? (
+                                        <div className="space-y-1 rounded-md bg-slate-50 p-2">
+                                          {(['p1', 'p2'] as const).map((w) => { const y = pp[w]; return (
+                                            <div key={w} className="text-[11px]">
+                                              <span className="font-medium text-slate-600">{w === 'p1' ? '1º' : '2º'} participante{y?.titular ? ` (${y.titular})` : ''}:</span>{' '}
+                                              {y ? <><span className={`px-1.5 py-0.5 rounded-full text-[10px] font-medium ${tom(y.status)}`}>{y.status}</span>{y.valor && aprovado(y.status) ? ` ${formatCurrency(y.valor)}` : ''}{y.proposta ? ` · nº ${y.proposta}` : ''} <span className="text-slate-400">· {dataHora(y.createdAt)}</span></> : <span className="text-slate-400">não rodou</span>}
+                                            </div>
+                                          ); })}
+                                        </div>
+                                      ) : null; })()}
                                       {x ? (
                                         <>
                                           {x.texto && <p className="text-slate-500 whitespace-pre-line">{x.texto}</p>}
@@ -420,6 +460,27 @@ export default function AnaliseFinanciamentoPage() {
                                   );
                                 })}
                               </div>
+                              {!!l.aprovadas?.length && (
+                                <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/50 p-3 text-xs">
+                                  <div className="font-semibold text-emerald-800 mb-1.5">Propostas aprovadas</div>
+                                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2">
+                                    {l.aprovadas.map((a) => (
+                                      <div key={`${a.banco}-${a.proposta || a.createdAt}`} className="rounded-md border border-emerald-100 bg-white p-2">
+                                        <div className="flex items-center justify-between gap-2"><span className="font-semibold text-slate-700">{a.banco}</span><span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${tom(a.status)}`}>{a.status}</span></div>
+                                        {a.titular && <div className="text-[11px] text-slate-500">no nome de {a.titular}{a.quem === 'p2' ? ' (2º participante)' : ''}</div>}
+                                        <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-slate-600">
+                                          {a.valor ? <><dt className="text-slate-400">Valor aprovado</dt><dd>{formatCurrency(a.valor)}</dd></> : null}
+                                          {a.prazo ? <><dt className="text-slate-400">Prazo</dt><dd>{a.prazo} meses</dd></> : null}
+                                          {a.taxa ? <><dt className="text-slate-400">Taxa</dt><dd>{a.taxa}</dd></> : null}
+                                          {a.parcela ? <><dt className="text-slate-400">1ª parcela</dt><dd>{formatCurrency(a.parcela)}</dd></> : null}
+                                          {a.proposta ? <><dt className="text-slate-400">Proposta nº</dt><dd>{a.proposta}</dd></> : null}
+                                          <dt className="text-slate-400">Quando</dt><dd>{dataHora(a.updatedAt)}</dd>
+                                        </dl>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
                               {l.last && !['DONE', 'COMPLETED'].includes(l.last.status) && l.last.detail && (
                                 <p className="mt-3 text-[11px] text-slate-500">Último retorno da extensão ({ago(l.last.updatedAt)}): {l.last.detail}</p>
                               )}
