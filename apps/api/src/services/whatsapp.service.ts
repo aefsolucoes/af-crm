@@ -1129,7 +1129,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       if (await handleCallPermissionReply(msg, accountId, io)) continue;
 
       // Processa texto, clique em botão, OU mídia suportada (imagem/áudio/
-      // vídeo/documento/sticker). Localização e contato compartilhado viram texto (contato: 11/11). — mas
+      // vídeo/documento/sticker). Localização e contato compartilhado (11/11) viram texto — mas
       // loga o que for descartado por tipo desconhecido (não 'text'), pra
       // não repetir o incidente do call_permission_reply que sumia sem
       // nenhum rastro por causa de um match exato que não bateu.
