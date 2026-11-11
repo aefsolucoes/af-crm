@@ -1251,6 +1251,17 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         include: { attachments: true },
       });
 
+      // Corretor/vendedor indicado pelo cliente do Financiamento (Fabio 11/11): o cartão de contato vira pedido da documentação do imóvel e do vendedor
+      // (o CRM chama a pessoa — contato-indicado.service); arquivo que essa pessoa manda na conversa dela vai pro card do cliente.
+      if (contatos.length) {
+        const { registrarContatoIndicado } = require('./contato-indicado.service') as typeof import('./contato-indicado.service');
+        for (const c of contatos) registrarContatoIndicado(accountId, leadId, c, message.id).catch((e: any) => console.error('[Contato indicado]', e?.message));
+      }
+      if (mediaBuffer && mediaInfo && msg.type !== 'audio' && msg.type !== 'sticker') {
+        const { repassarArquivoDoTerceiro } = require('./contato-indicado.service') as typeof import('./contato-indicado.service');
+        repassarArquivoDoTerceiro(accountId, leadId, { fileName: mediaInfo.fileName, mimeType: mediaInfo.mimeType, caption: mediaInfo.caption || null, buffer: mediaBuffer }, io).catch((e: any) => console.error('[Contato indicado] arquivo:', e?.message));
+      }
+
       // Anexo sobe pro Drive na hora e os bytes saem do banco. Sem isso o
       // Postgres enchia (incidentes de 2026-08-05 e 2026-08-26 — disco 100%,
       // CRM fora do ar). Fire-and-forget: falha/Drive desconectado não pode

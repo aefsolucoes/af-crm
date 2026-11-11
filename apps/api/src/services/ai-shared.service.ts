@@ -419,6 +419,7 @@ export async function aiCardState(leadId: string): Promise<string> {
   if (vis?.status) contr.push(`vistoria do imóvel (${vis.banco || 'banco'}): ${String(vis.status).replace(/_/g, ' ').toLowerCase()}`);
   const seg = cf._interSeguir as { status?: string } | undefined;
   if (seg?.status || cf._seguirStatus) contr.push(`"seguir com a proposta" do Inter: ${String(cf._seguirStatus || seg?.status).replace(/_/g, ' ').toLowerCase()}`);
+  { const ind = (require('./contato-indicado.service') as typeof import('./contato-indicado.service')).aiContatosIndicadosTexto(cf); if (ind) contr.push(ind); } // corretor/vendedor indicado (Fabio 11/11)
   if (cf._transferenciaPendente) contr.push('imóvel comprado e ainda NÃO registrado/transferido no nome do cliente (precisa estar registrado antes da liberação do valor)');
   const manuais = Object.keys((cf._manualSteps || {}) as Record<string, unknown>);
   if (manuais.length) contr.push(`passos que a equipe faz à mão (contratação em modo manual): ${manuais.slice(0, 6).join(', ')}`);
