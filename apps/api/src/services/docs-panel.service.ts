@@ -32,7 +32,7 @@ const anexosDoCliente = async (leadId: string) => (await prisma.messageAttachmen
 })).filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a)); // mesmo filtro da conferência
 
 export async function painelDocumentos(accountId: string, leadId: string) {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const atts = await anexosDoCliente(leadId);
@@ -57,7 +57,7 @@ export async function painelDocumentos(accountId: string, leadId: string) {
   const atendidos = (Array.isArray(cf._docsAtendidos) ? cf._docsAtendidos : []) as { doc: string; texto: string; por: string }[];
   for (const a of atendidos) { const p = sit.problemas.find((x) => x.doc === a.doc); if (p) p.texto = p.texto.filter((t) => t !== a.texto); }
   sit.problemas = sit.problemas.filter((p) => p.texto.length);
-  await filtrarRendaDispensada(leadId, soDocsDoComprador(cf, lead.pipeline?.department?.name), sit).catch(() => {});
+  await filtrarRendaDispensada(leadId, soDocsDoComprador(cf, lead.pipeline?.department?.name, lead.stage?.name), sit).catch(() => {});
   const perguntados = new Set<string>(((cf._donoAskedFor as string[]) || []).map((x) => String(x).toUpperCase()));
 
   const conf = cf._docsConferencia as { em: string; listaUsada: string; completo: boolean; faltando: string[]; emitir: string[]; emitirPendente: string[] } | undefined;

@@ -122,8 +122,15 @@ export function etapaConfere(stageName: string, cf: Record<string, any>): boolea
 type Io = Parameters<typeof moveLeadToContracting>[2];
 
 /** Só a documentação do COMPRADOR (lista enxuta da CAIXA): pediu a CAIXA (Fabio 01/11, HE e FH) ou Financiamento Habitacional que optou pela CAIXA/BRB ou ainda sem banco escolhido (Fabio 29/10). */
-export function soDocsDoComprador(cf: Record<string, any>, departmentName: string | null | undefined): boolean {
-  return !!cf?._caixaRota || (/habitacional/i.test(departmentName || '') && (!!cf?._optouCaixa?.banco || !cf?._fhChosen));
+export function soDocsDoComprador(cf: Record<string, any>, departmentName: string | null | undefined, stageName?: string | null): boolean {
+  return naRotaCaixa(cf, stageName) || (/habitacional/i.test(departmentName || '') && (!!cf?._optouCaixa?.banco || !cf?._fhChosen));
+}
+
+/** Rota da CAIXA pra conferência: o cliente pediu a CAIXA (`_caixaRota`) OU o card está na etapa "Análise CAIXA" — a equipe também põe o card lá à mão, sem a marca
+ *  (Fabio 11/11: cadastro sozinho com a documentação completa). Sem isso, o Home Equity colocado na etapa era conferido pela lista comum (matrícula, IPTU…) e, completo,
+ *  ia pra contratação em vez de seguir pro cadastro da CAIXA. */
+export function naRotaCaixa(cf: Record<string, any> | null | undefined, stageName?: string | null): boolean {
+  return !!cf?._caixaRota || /^analise\s+caixa/.test(norm(stageName || ''));
 }
 
 /** Renda dispensada neste card (nenhum banco pediu renda; fora da lista do comprador): problema/dúvida em documento de RENDA não segura o card nem gera cobrança (Fabio 20/10, caso Luiz). Tira da lista. */
@@ -382,8 +389,8 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   // Financiamento Habitacional tem fluxo de documentos PRÓPRIO (Fabio 29/10, Taynara: a conferência cobrou matrícula/ônus e IPTU, que são do Home Equity).
   // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço, último contracheque e certidão de estado civil.
   const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
-  const caixaRota = !!cfAll._caixaRota; // pediu a CAIXA (Fabio 01/11, HE e FH): lista enxuta do comprador, a mesma do FH
-  const fhSoComprador = soDocsDoComprador(cfAll, lead.pipeline.department?.name);
+  const caixaRota = naRotaCaixa(cfAll, lead.stage?.name); // pediu a CAIXA (Fabio 01/11, HE e FH) ou está na etapa Análise CAIXA (11/11): lista enxuta do comprador, a mesma do FH
+  const fhSoComprador = soDocsDoComprador(cfAll, lead.pipeline.department?.name, lead.stage?.name);
   // FH com banco escolhido: os VENDEDORES são os proprietários atuais da certidão de ônus/matrícula (Fabio 11/11: "temos vendedor que deve bater com os mesmos da ônus").
   const vendedoresOnus = ehFh && !fhSoComprador ? vendedoresDoImovel(cfAll) : [];
   const listas = ehFh || caixaRota ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
@@ -525,8 +532,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const cfLead = (lead?.customFields || {}) as Record<string, any>;
   if (!lead || !etapaConfere(lead.stage.name, cfLead)) return false;
   // Pediu a CAIXA (Fabio 01/11, HE e FH): mesma lista enxuta do comprador do FH; completa → ficha e cadastro, o card não vai pra contratação.
-  const caixaRota = !!cfLead._caixaRota;
-  const fhSoComprador = soDocsDoComprador(cfLead, lead.pipeline?.department?.name);
+  const caixaRota = naRotaCaixa(cfLead, lead.stage.name);
+  const fhSoComprador = soDocsDoComprador(cfLead, lead.pipeline?.department?.name, lead.stage.name);
   if ((lead.customFields as any)?._autoPaused) return false; // Stop total do cliente: não confere, não move, não avisa
 
   // Conferência de CONTEÚDO (Fabio 14/10): a IA LÊ cada arquivo e vê se está legível, atualizado e no nome certo (RG/CNH com frente e verso). Documento com
@@ -690,7 +697,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       ? await sendOutboundWhatsApp({ accountId, leadId, content: banco ? `Recebi toda a documentação, obrigada! Já vou dar entrada na análise da ${banco} e te aviso por aqui assim que sair o resultado.` : 'Recebi toda a documentação, obrigada! Já vou dar andamento e te aviso por aqui assim que tiver novidade.', io: io || undefined })
       : { success: false };
     if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'docsCompletos', `avisar que recebeu toda a documentação${banco ? ` e que vai dar entrada na análise da ${banco}` : ''} e que avisa por aqui quando sair o resultado`);
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (${caixaRota ? 'o cliente pediu a CAIXA' : `Financiamento Habitacional${banco ? ` — ${banco}` : ''}`}):\n${verdict.receivedText}\n\n👉 ${caixaRota ? 'O CRM gera a ficha e a extensão faz o cadastro na CAIXA.' : banco ? `Rodar a análise na ${banco} com esses documentos.` : 'Nenhum banco escolhido ainda.'}${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (${caixaRota ? (cfLead._caixaRota ? 'o cliente pediu a CAIXA' : 'card na etapa Análise CAIXA') : `Financiamento Habitacional${banco ? ` — ${banco}` : ''}`}):\n${verdict.receivedText}\n\n👉 ${caixaRota ? 'O CRM gera a ficha e a extensão faz o cadastro na CAIXA.' : banco ? `Rodar a análise na ${banco} com esses documentos.` : 'Nenhum banco escolhido ainda.'}${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
     (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa', leadId }).catch(() => {});
     return true;
   }
