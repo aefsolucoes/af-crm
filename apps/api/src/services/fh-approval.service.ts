@@ -43,7 +43,7 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
 };
 
-interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; condicao?: string; pedido?: string }
+interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; condicao?: string; pedido?: string; nome?: string }
 
 /** Propostas aprovadas e bancos ainda em análise, pela situação gravada (_fhResumo) + condições da rodada ("CONDIÇÕES — Bradesco: financia …; prazo …; taxa efetiva …; CET …"). Pura. */
 export function fhOptions(resumo: Record<string, { status: string; texto: string }>, condicoes: string): { aprovadas: FhOption[]; emAnalise: string[] } {
@@ -81,6 +81,7 @@ export function fhOptionText(o: FhOption): string {
     `${FH_NOTICE_MARK} *${o.banco}*`,
     '📋 Resumo da proposta:',
     `🏦 Instituição: ${o.banco}`,
+    o.nome && `👤 Aprovado no nome de: ${o.nome} (2º participante da proposta)`,
     o.valor && `💰 Valor financiado: ${o.valor}`,
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.prazo && `📅 Prazo: ${o.prazo} meses`,
@@ -99,6 +100,27 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
   const pedido = Number(String(cf.valor_credito || '').replace(/[^\d.]/g, '')) || 0;
   // Inter (nosso portal, INTER_FH) e Itaú (portal Itaú Imóveis, ITAU_FH — 03/11): a linha da análise tem o texto inteiro do portal (o resumo do card corta).
   const portais = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: Object.values(PORTAL_PROPRIO) }, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { createdAt: 'desc' }, select: { bank: true, detail: true } });
+  // Em nome de quem saiu cada aprovação (Fabio 11/11: "não está mostrando que foi aprovado no nome do 2º participante, igual no HE"): a mesma leitura da tela do
+  // Financiamento (fhPorParticipante, pelo titular gravado em cada rodada). Aprovação no nome do 2º → linha "👤 Aprovado no nome de" no aviso, como no Home Equity.
+  let doSegundo: (banco: string, valor: number) => boolean = () => false;
+  const p2 = String(cf.participante_2 || '').trim();
+  if (p2) {
+    try {
+      const { fhPorParticipante } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+      const rows = await prisma.creditAnalysis.findMany({
+        where: { leadId, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, dryRun: false }, orderBy: { createdAt: 'desc' }, take: 80,
+        select: { bank: true, kind: true, status: true, detail: true, holderName: true, proposalNumber: true, approvedValue: true, termMonths: true, rate: true, firstInstallment: true, createdAt: true, updatedAt: true, dryRun: true },
+      });
+      const lead = cf.participante_1 ? null : await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
+      const p1 = cf.participante_1 ? String(cf.participante_1) : String(lead?.name || '').split('/')[0].trim() || null;
+      const { aprovadas } = fhPorParticipante(rows as any, p1, p2);
+      doSegundo = (banco, valor) => {
+        const doBanco = aprovadas.filter((a) => a.banco === banco);
+        const certa = (valor && doBanco.find((a) => a.valor && Math.abs(a.valor - valor) <= 1)) || doBanco[0];
+        return certa?.quem === 'p2';
+      };
+    } catch { /* sem a leitura: o aviso sai sem a linha do nome */ }
+  }
   return ops.map((o) => {
     const x = { ...o };
     const portal = PORTAL_PROPRIO[o.banco] ? portais.find((p) => p.bank === PORTAL_PROPRIO[o.banco]) : null;
@@ -112,6 +134,7 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
       if (x.condicao) x.condicao = condicaoLegivel(d);
     }
     if (pedido && num(x.valor) && num(x.valor) + 1 < pedido) x.pedido = brl(pedido);
+    if (doSegundo(x.banco, num(x.valor))) x.nome = (require('../lib/text') as typeof import('../lib/text')).paraNomeSocial(cf, p2);
     return x;
   });
 }

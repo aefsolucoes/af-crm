@@ -4,6 +4,7 @@ import { Modal } from '@/components/ui/modal';
 import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
+import { maskCentavos } from '@/lib/utils';
 import type { OverrideData } from '@/components/credit/shared';
 
 /* "Ajustar" do Financiamento (Fabio 11/11: "cadê os botões de ajustar, stop e conferir cada banco para FH?" — Jaime: rodar de novo no Inter com valores novos).
@@ -18,6 +19,18 @@ const FILAS_FH = [
 type Quem = 'AUTO' | 'AMBOS_1' | 'AMBOS_2' | 'SO_1' | 'SO_2';
 const inputCls = 'w-full text-sm border border-af-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-af-accent bg-white text-slate-800';
 const brl = (n: number | null | undefined) => (n ? n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '');
+/** Máscara de dinheiro igual à do Ajustar do Home Equity (Fabio 11/11: "coloca a máscara nos números"): 20250000 → 202.500,00, com o cursor antes dos mesmos dígitos. */
+const dinheiro = (setter: (v: string) => void) => (e: React.ChangeEvent<HTMLInputElement>) => {
+  const el = e.target;
+  const v = maskCentavos(el.value);
+  const aDireita = el.value.slice(el.selectionStart ?? el.value.length).replace(/\D/g, '').length;
+  requestAnimationFrame(() => {
+    let i = v.length, n = 0;
+    while (i > 0 && n < aDireita) { i--; if (/\d/.test(v[i])) n++; }
+    try { el.setSelectionRange(i, i); } catch { /* campo já fechado */ }
+  });
+  setter(v);
+};
 const toNum = (v: string) => { const t = v.replace(/[^\d.,]/g, ''); if (!t) return null; const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : Number(t.replace(/\.(?=\d{3}(\D|$))/g, '')); return Number.isFinite(n) && n > 0 ? n : null; };
 
 export type FhAjusteLead = {
@@ -93,14 +106,14 @@ export function FhAdjustModal({ lead, onClose, onSaved }: { lead: FhAjusteLead; 
       <div className="space-y-3 text-sm">
         <p className="text-xs text-slate-500">No Financiamento os valores saem do card: o que você mudar aqui é gravado no card (com nota) e vale na próxima rodada.</p>
         <div className="grid grid-cols-2 gap-3">
-          <label className="block"><span className="text-xs text-slate-500">Valor do imóvel (R$)</span><input className={inputCls} value={imovel} onChange={(e) => setImovel(e.target.value)} placeholder="0,00" /></label>
-          <label className="block"><span className="text-xs text-slate-500">Financiamento (R$)</span><input className={inputCls} value={financia} onChange={(e) => setFinancia(e.target.value)} placeholder="0,00" /></label>
+          <label className="block"><span className="text-xs text-slate-500">Valor do imóvel (R$)</span><input className={inputCls} inputMode="decimal" value={imovel} onChange={dinheiro(setImovel)} placeholder="0,00" /></label>
+          <label className="block"><span className="text-xs text-slate-500">Financiamento (R$)</span><input className={inputCls} inputMode="decimal" value={financia} onChange={dinheiro(setFinancia)} placeholder="0,00" /></label>
         </div>
         <div className="text-xs text-slate-500">Entrada: {entrada ? `R$ ${brl(entrada)}` : '—'}</div>
         <div className="grid grid-cols-3 gap-3">
-          <label className="block"><span className="text-xs text-slate-500">Renda de {n1.split(' ')[0]} (R$)</span><input className={inputCls} value={renda1} onChange={(e) => setRenda1(e.target.value)} placeholder="sem mudança" /></label>
-          {n2 ? <label className="block"><span className="text-xs text-slate-500">Renda de {n2.split(' ')[0]} (R$)</span><input className={inputCls} value={renda2} onChange={(e) => setRenda2(e.target.value)} placeholder="sem mudança" /></label> : <div />}
-          <label className="block"><span className="text-xs text-slate-500">Prazo (meses)</span><input className={inputCls} value={prazo} onChange={(e) => setPrazo(e.target.value)} placeholder="máximo pela idade" /></label>
+          <label className="block"><span className="text-xs text-slate-500">Renda de {n1.split(' ')[0]} (R$)</span><input className={inputCls} inputMode="decimal" value={renda1} onChange={dinheiro(setRenda1)} placeholder="sem mudança" /></label>
+          {n2 ? <label className="block"><span className="text-xs text-slate-500">Renda de {n2.split(' ')[0]} (R$)</span><input className={inputCls} inputMode="decimal" value={renda2} onChange={dinheiro(setRenda2)} placeholder="sem mudança" /></label> : <div />}
+          <label className="block"><span className="text-xs text-slate-500">Prazo (meses)</span><input className={inputCls} inputMode="numeric" value={prazo} onChange={(e) => setPrazo(e.target.value.replace(/\D/g, '').slice(0, 3))} placeholder="máximo pela idade" /></label>
         </div>
         <div>
           <div className="text-xs font-medium text-slate-600 mb-1">Quem entra na análise</div>
