@@ -19,6 +19,8 @@ interface Person { id: string; name: string; value: number }
 interface Row {
   month: string; label: string; entered: number; approved: number; lost: number; rejected: number; lostRejected: number; contracted: number;
   people?: { entered: Person[]; approved: Person[]; lost: Person[]; rejected: Person[]; contracted: Person[] };
+  /** Só o que aconteceu do dia 1 até o dia de hoje (comparação do mês corrente com o anterior "até o mesmo dia"). */
+  ateHoje?: Record<Key, number>;
 }
 type Key = 'entered' | 'approved' | 'contracted' | 'rejected' | 'lost';
 
@@ -38,7 +40,7 @@ export function MonthPanel() {
     queryKey: ['departments'],
     queryFn: async () => (await api.get('/api/departments')).data,
   });
-  const { data, isLoading } = useQuery<{ rows: Row[] }>({
+  const { data, isLoading } = useQuery<{ rows: Row[]; hoje?: number }>({
     queryKey: ['month-panel', departmentId],
     queryFn: async () => (await api.get('/api/reports/monthly', { params: { months: 6, mode: 'event', ...(departmentId ? { departmentId } : {}) } })).data,
   });
@@ -46,6 +48,15 @@ export function MonthPanel() {
   useEffect(() => { if (!month && rows.length) setMonth(rows[0].month); }, [rows, month]);
   const row = rows.find((r) => r.month === month) || rows[0];
   const prev = useMemo(() => { const i = rows.findIndex((r) => r.month === row?.month); return i >= 0 ? rows[i + 1] : undefined; }, [rows, row]);
+  // Mês corrente (Fabio 11/11): compara com o mês anterior só até o mesmo dia — o mês inteiro contra um mês pela metade enganava.
+  // Meses já fechados continuam mês inteiro contra mês inteiro.
+  const ateMesmoDia = !!row && row.month === rows[0]?.month && !!prev?.ateHoje && !!data?.hoje;
+  const ateRotulo = useMemo(() => {
+    if (!ateMesmoDia || !prev || !data?.hoje) return '';
+    const [y, m] = prev.month.split('-').map(Number);
+    const ultimo = new Date(y, m, 0).getDate();
+    return `até ${String(Math.min(data.hoje, ultimo)).padStart(2, '0')}/${String(m).padStart(2, '0')}`;
+  }, [ateMesmoDia, prev, data?.hoje]);
 
   const count = (r: Row | undefined, k: Key) => (r ? r[k] : 0);
   const people = open && row?.people ? row.people[open] : [];
@@ -78,7 +89,8 @@ export function MonthPanel() {
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
           {CARDS.map((c) => {
             const n = count(row, c.key);
-            const before = prev ? count(prev, c.key) : null;
+            const before = prev ? (ateMesmoDia ? prev.ateHoje![c.key] ?? 0 : count(prev, c.key)) : null;
+            const contra = ateMesmoDia ? ateRotulo : 'mês anterior';
             const diff = before !== null ? n - before : null;
             const Icon = c.icon;
             const clickable = n > 0 && !!row?.people;
@@ -104,8 +116,11 @@ export function MonthPanel() {
                 </div>
                 <div className="flex items-center justify-between mt-2 text-[11px]">
                   {diff !== null ? (
-                    <span className={cn('font-medium', diff === 0 ? 'text-slate-400' : (c.key === 'lost' || c.key === 'rejected') ? (diff > 0 ? 'text-red-500' : 'text-emerald-600') : (diff > 0 ? 'text-emerald-600' : 'text-red-500'))}>
-                      {diff === 0 ? 'igual ao mês anterior' : `${diff > 0 ? '+' : ''}${diff} vs. mês anterior`}
+                    <span
+                      title={ateMesmoDia ? `Mês anterior contado só do dia 1 ${ateRotulo}: ${before}` : undefined}
+                      className={cn('font-medium', diff === 0 ? 'text-slate-400' : (c.key === 'lost' || c.key === 'rejected') ? (diff > 0 ? 'text-red-500' : 'text-emerald-600') : (diff > 0 ? 'text-emerald-600' : 'text-red-500'))}
+                    >
+                      {diff === 0 ? (ateMesmoDia ? `igual ao mês anterior ${ateRotulo}` : 'igual ao mês anterior') : `${diff > 0 ? '+' : ''}${diff} vs. ${contra}`}
                     </span>
                   ) : <span />}
                   {clickable && <span className="text-slate-400 flex items-center gap-0.5">ver <ChevronDown size={11} className={cn('transition-transform', open === c.key && 'rotate-180')} /></span>}
@@ -134,7 +149,7 @@ export function MonthPanel() {
       )}
 
       <p className="text-[11px] text-slate-400 mt-3">
-        Cada número no mês em que aconteceu. Entraram = card criado no mês. Aprovados = chegaram em &quot;Aguardando Documentação&quot;.
+        Cada número no mês em que aconteceu. No mês atual, a comparação é com o mês anterior até o mesmo dia. Entraram = card criado no mês. Aprovados = chegaram em &quot;Aguardando Documentação&quot;.
         Contratação = estão ou já passaram pela etapa &quot;Vistoria do Imóvel&quot; (inclui as etapas depois dela e os concluídos).
         Reprovados = marcados com o botão &quot;Reprovado&quot; (os dos meses anteriores a 13/10 são uma <strong>estimativa</strong> feita pelo motivo da perda) — eles também contam em Perdidos.
         Valores: valor do crédito do card (sem ele, valor da venda). A Caixa de Entrada (corretores etc.) não entra. Histórico de aprovados e perdidos só existe a partir de 31/08/2026.

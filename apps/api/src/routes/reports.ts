@@ -252,6 +252,25 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
         if (l.status === 'LOST') push(cLost, k, l.id);
       }
     }
+    // "Até o mesmo dia" (Fabio 11/11): o mês corrente se compara com o mês anterior só até o dia de hoje — o mês inteiro contra um mês pela metade
+    // dava sempre "-402 vs. mês anterior". Conta, em cada mês, só o que aconteceu do dia 1 até o dia de hoje (horário de Brasília).
+    const dayOf = (d: Date) => Number(new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', day: '2-digit' }).format(d));
+    const hoje = dayOf(new Date());
+    const ateHoje = new Map<string, Record<string, number>>();
+    const conta = (campo: string, d: Date, vale = true) => {
+      if (!vale || dayOf(d) > hoje) return;
+      const k = monthKey(d);
+      const o = ateHoje.get(k) || {};
+      o[campo] = (o[campo] || 0) + 1;
+      ateHoje.set(k, o);
+    };
+    if (mode === 'event') {
+      for (const l of created) conta('entered', l.createdAt);
+      for (const [, d] of approvedAt) conta('approved', d);
+      for (const [id, d] of lostAt) { conta('lost', d); conta('lostRejected', d, rejectedIds.has(id)); }
+      for (const l of rejectedLeads) conta('rejected', l.rejectedAt!);
+      for (const [, d] of inspectionAt) conta('contracted', d);
+    }
     const monthKeys = new Set(starts.map(monthKey));
     const ids = new Set<string>();
     for (const m of [cEntered, cApproved, cDocs, cLost, cRejected, cContracted]) for (const [k, list] of m) if (monthKeys.has(k)) list.forEach((id) => ids.add(id));
@@ -281,9 +300,10 @@ router.get('/monthly', async (req: AuthRequest, res: Response) => {
         contracted: cContracted.get(k)?.length || 0,
         lostRejected: (cLost.get(k) || []).filter((id) => rejectedIds.has(id)).length, // perdidos que são reprovados
         people: { entered: people(cEntered.get(k)), approved: people(cApproved.get(k)), docsSent: people(cDocs.get(k)), lost: people(cLost.get(k)), rejected: people(cRejected.get(k)), contracted: people(cContracted.get(k)) },
+        ...(mode === 'event' ? { ateHoje: { entered: 0, approved: 0, lost: 0, rejected: 0, contracted: 0, lostRejected: 0, ...(ateHoje.get(k) || {}) } } : {}),
       };
     }).reverse();
-    res.json({ rows, mode, historySince: '2026-08-31' });
+    res.json({ rows, mode, hoje, historySince: '2026-08-31' });
   } catch (err: any) {
     console.error('[Relatório mensal]', err?.message);
     res.status(500).json({ error: 'Erro ao gerar o relatório mensal' });
