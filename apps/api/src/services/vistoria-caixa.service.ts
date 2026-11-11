@@ -598,6 +598,33 @@ export async function boletoAberto(accountId: string, titulo: string, leadId?: s
 
 const TEXTO_BOLETO = (valor?: string) => `Segue o boleto da taxa de avaliação do imóvel (vistoria)${valor ? `, no valor de ${valor}` : ''}. Assim que for pago, a vistoria é agendada com o contato que você nos passou. Qualquer dúvida, estou à disposição.`;
 
+/** Fabio 11/11: junto do boleto, o endereço, a matrícula e o cartório do imóvel — "para que o cliente tenha ciência de qual imóvel ele está pagando a vistoria"
+ *  (a Fernanda trocou de imóvel no meio). Vem da ficha lida da certidão (`_vistoriaCaixa.ficha`). Pura (testável). */
+export function imovelDoBoleto(vc: Record<string, any>): string {
+  const f = vc?.ficha || {};
+  const e = f.endereco || {};
+  const im = vc?.dados?.imovel || {};
+  const TIPO: Record<string, string> = { APARTAMENTO: 'Apartamento', CASA: 'Casa', SALA: 'Sala', LOJA: 'Loja', TERRENO: 'Lote', GALPAO: 'Galpão' };
+  const unidade = String(e.unidade || '').trim();
+  const partes = [
+    unidade ? (/[a-z]{2,}/i.test(unidade) ? unidade : `${TIPO[String(f.tipo || '').toUpperCase()] || 'Unidade'} ${unidade}`) : '',
+    e.bloco ? `Bloco ${String(e.bloco).trim()}` : '',
+    [String(e.logradouro || im.logradouro || '').trim(), e.numero ? `nº ${String(e.numero).trim()}` : ''].filter(Boolean).join(', '),
+    String(e.bairro || im.bairro || '').trim(),
+  ].filter(Boolean);
+  const cidade = [String(e.cidade || im.municipio || '').trim(), String(e.uf || im.uf || '').trim()].filter(Boolean).join('/');
+  const cep = String(im.cep || e.cep || '').replace(/\D/g, '');
+  const endereco = `${partes.join(', ')}${cidade ? ` — ${cidade}` : ''}${cep.length === 8 ? `, CEP ${cep.slice(0, 5)}-${cep.slice(5)}` : ''}`;
+  const matricula = String(f.matricula || im.matricula || '').replace(/\D/g, '');
+  const cartorio = String(f.cartorio?.nome || im.cartorio?.nome || '').trim();
+  const linhas = [
+    partes.length ? `Endereço: ${endereco}` : '',
+    matricula ? `Matrícula: ${fmtMatricula(matricula)}${f.livro ? ` (Livro ${f.livro})` : ''}` : '',
+    cartorio ? `Cartório: ${cartorio}` : '',
+  ].filter(Boolean);
+  return linhas.length ? `Imóvel desta vistoria:\n${linhas.join('\n')}` : '';
+}
+
 /** PDF do boleto (baixado pela extensão no SIOPI) → pasta IMOVEL do Drive + WhatsApp do cliente (Fabio 06/11: "emitir e encaminhar à cliente"). */
 export async function gravarBoletoVistoria(accountId: string, leadId: string, body: { nome?: string; base64?: string; valor?: string; titulo?: string }, io?: Io): Promise<{ erro: string } | { ok: true; enviado: boolean }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
@@ -622,7 +649,8 @@ export async function gravarBoletoVistoria(accountId: string, leadId: string, bo
   let erroEnvio = '';
   if (await whatsappWindowOpen(leadId)) {
     const valor = body.valor || (String((cf._vistoriaCaixa || {}).taxa?.texto || '').match(/Valor da Taxa:\s*(R\$\s*[\d.,]+)/) || [])[1] || '';
-    const r = await sendOutboundMedia({ accountId, leadId, buffer: data, fileName: 'Boleto taxa vistoria.pdf', mimeType: 'application/pdf', caption: TEXTO_BOLETO(valor), io: io as any });
+    const imovel = imovelDoBoleto(cf._vistoriaCaixa || {});
+    const r = await sendOutboundMedia({ accountId, leadId, buffer: data, fileName: 'Boleto taxa vistoria.pdf', mimeType: 'application/pdf', caption: `${TEXTO_BOLETO(valor)}${imovel ? `\n\n${imovel}` : ''}`, io: io as any });
     enviado = r.success;
     if (!r.success) erroEnvio = (r as any).error || 'falhou';
   } else erroEnvio = 'a conversa está fechada (janela de 24 h)';

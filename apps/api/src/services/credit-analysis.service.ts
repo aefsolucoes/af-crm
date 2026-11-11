@@ -1153,6 +1153,22 @@ export function parseBancosFinanciamento(resumo?: string | null): Record<string,
   return out;
 }
 
+/** Resultado da CAIXA (Avaliação de Risco no SIOPI, `_caixaResultado`) no formato da lista de bancos do Financiamento ("Status, detalhe"). */
+function caixaNoFinanciamento(res: any): { status: string; texto: string; em: string | null } | null {
+  const bruto = String(res?.status || '').replace(/^RESULTADO:\s*/i, '').trim();
+  if (!bruto || /AGUARDANDO_NOVA_AVALIACAO/i.test(bruto)) return null;
+  const { resultadoNoCard } = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
+  const status = /n[aã]o aprovad|reprovad|recusad|negad/i.test(bruto) ? 'Reprovado'
+    : /condicionad/i.test(bruto) || res?.condicionada ? 'Aprovado condicional'
+      : /aprovad/i.test(bruto) ? 'Aprovado' : /an[aá]lise|aguard|pendente/i.test(bruto) ? 'Em análise' : bruto.split(/[.:—]/)[0].slice(0, 40);
+  const tela = String(res?.ultimaTela || '');
+  const proposta = (tela.match(/Proposta\s+(\d{6,})/) || [])[1] || '';
+  const validade = (tela.match(/Validade:\s*(\d{2}\/\d{2}\/\d{4})/) || [])[1] || '';
+  const detalhe = String(resultadoNoCard(res) || bruto).replace(/^RESULTADO:\s*/i, '');
+  const texto = [status, [proposta ? `proposta ${proposta}` : '', `${detalhe}${validade ? ` · validade ${validade}` : ''}`].filter(Boolean).join(' — ')].join(', ');
+  return { status, texto: texto.slice(0, 240), em: res?.fim || res?.pedidoEm || null };
+}
+
 export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds: string[]; leadId?: string }) {
   await expireStuck(db, { accountId: p.accountId });
   const fhKeys = [...FH_RUN_BANKS, ...Object.keys(FH_DOC_BANKS)];
@@ -1189,6 +1205,11 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       const ROT: Record<string, string> = { APPROVED: 'Aprovado', CONDITIONAL: 'Aprovado condicional', REJECTED: 'Reprovado', REQUESTED: 'Na fila', RUNNING: 'Rodando', SENT: 'Em análise', FAILED: 'Falhou' };
       if (r) bancos[nome] = { status: ROT[r.status] || r.status, texto: String(r.detail || '').slice(0, 240) };
     }
+    // CAIXA pelo SIOPI (Fabio 11/11, Tarcisio: "deveria aparecer CAIXA aprovado também"): o resultado da Avaliação de Risco fica em _caixaResultado, não em
+    // creditAnalysis — entra na lista; o lançado à mão (CAIXA_FH) só vale se for mais novo.
+    const caixa = caixaNoFinanciamento(cf._caixaResultado);
+    const manualCaixa = l.creditAnalyses.find((x) => x.bank === 'CAIXA_FH');
+    if (caixa && (!manualCaixa || !caixa.em || new Date(manualCaixa.updatedAt).getTime() < new Date(caixa.em).getTime())) bancos.CAIXA = { status: caixa.status, texto: caixa.texto };
     return {
       id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
       // Tela do Financiamento igual à do Home Equity (Fabio 29/10): CPF/nomes do card, se está na Pré-Análise e o número de cada proposta.
