@@ -724,8 +724,11 @@ ${conversasPorTelefone}` : ''}`;
     // que vinham depois são jogados fora na sugestão e custavam segundos a mais; com o pedido e o prompt iguais, o texto é o mesmo. parseReply lê o "reply" do JSON cortado.
     // Corte que não trouxe o texto (ou erro da API) → a 2ª tentativa vai sem corte, como antes. O que vai direto ao cliente nunca é cortado (precisa de askTeam/handoff etc.).
     let semCorte = !opts.botaoSugerir;
+    // O raciocínio gastou o max_tokens inteiro (Fabio 11/11: Marcelina e Ivânia ficaram sem resposta — saída 4096, texto VAZIO, descartado em silêncio; 3 de 10 respostas no log).
+    // A 2ª tentativa vai com pouco raciocínio (effort low) e, se falhar de novo, a equipe é avisada (nota + push) em vez de o cliente ficar no vácuo.
+    let estourou = false;
     for (let tentativa = 0; tentativa < 2; tentativa++) {
-      const lembrete = tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
+      const lembrete = tentativa && estourou ? '\n\n[ATENÇÃO: a tentativa anterior gastou todo o limite raciocinando e não chegou a escrever a resposta. Pense pouco e responda direto, SOMENTE com o objeto JSON pedido.]' : tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
       const tChamada = Date.now();
       const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -735,9 +738,10 @@ ${conversasPorTelefone}` : ''}`;
           // O modelo pensa antes de responder e o raciocínio conta nesse
           // limite: com 1024 às vezes acabava tudo no raciocínio e a resposta
           // vinha VAZIA (cliente ficava sem resposta, achado 2026-09-25).
-          max_tokens: 4096,
+          // 4096 ainda não bastava (11/11): o raciocínio sozinho chegava a 4096 e a resposta vinha vazia.
+          max_tokens: 8192,
           ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
-          ...(opts.esforco ? { output_config: { effort: opts.esforco } } : {}),
+          ...(opts.esforco ? { output_config: { effort: opts.esforco } } : estourou ? { output_config: { effort: 'low' } } : {}),
           system: cachedSystem(systemFixed, systemDynamic),
           messages: [{
             role: 'user',
@@ -761,7 +765,12 @@ ${conversasPorTelefone}` : ''}`;
       // TODOS os blocos de texto (antes só o 1º: se o modelo escrevia um texto antes do JSON, o 1º bloco era esse texto).
       const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n').trim();
       const cortado = !semCorte && data.stop_reason === 'stop_sequence';
-      if (!raw) { if (cortado) { semCorte = true; continue; } return null; }
+      if (!raw) {
+        if (cortado) { semCorte = true; continue; }
+        if (data.stop_reason === 'max_tokens') { estourou = true; console.warn('[AI Auto-reply] o raciocínio gastou o limite e a resposta veio vazia — tentativa', tentativa + 1); continue; }
+        return null;
+      }
+      if (data.stop_reason === 'max_tokens') estourou = true; // JSON cortado no meio: a 2ª tentativa também vai com pouco raciocínio
       // Cortado com o texto VAZIO = a IA ia ficar quieta (noReply): mesmo resultado de antes, sem gerar o resto (quem chama usa a sugestão de reserva).
       if (cortado && /^\{\s*"reply"\s*:\s*""\s*,?\s*$/.test(raw)) { result = { reply: '', noReply: true, handoff: false }; break; }
       const r = parseReply(cortado ? `${raw.replace(/,\s*$/, '')}}` : raw); // cortado termina em `{"reply": "…",` — fecha o JSON
@@ -776,10 +785,13 @@ ${conversasPorTelefone}` : ''}`;
     if (!result) {
       if (opts.sugestao) return null;
       // As 2 tentativas falharam: o cliente não recebe nada; a equipe é avisada pra responder à mão.
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A IA respondeu fora do formato 2 vezes (texto que não podia ir ao cliente) — não mandei nada. Responda o cliente à mão.\nO que veio: "${rawFalho.replace(/\s+/g, ' ').slice(0, 400)}"` } }).catch(() => {});
+      const semTexto = estourou && !rawFalho; // as 2 tentativas gastaram o limite raciocinando, sem escrever nada
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: semTexto
+        ? '⚠️ A IA não conseguiu escrever a resposta (o raciocínio dela gastou o limite de tamanho nas 2 tentativas) — não mandei nada. Responda o cliente à mão.'
+        : `⚠️ A IA respondeu fora do formato 2 vezes (texto que não podia ir ao cliente) — não mandei nada. Responda o cliente à mão.\nO que veio: "${rawFalho.replace(/\s+/g, ' ').slice(0, 400)}"` } }).catch(() => {});
       try {
         const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, accountId: true } });
-        if (lead) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: 'IA não respondeu o cliente', body: `${lead.name}: a resposta da IA saiu fora do formato e não foi enviada. Responda à mão.`, leadId }).catch(() => {});
+        if (lead) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: 'IA não respondeu o cliente', body: `${lead.name}: ${semTexto ? 'a IA não conseguiu escrever a resposta' : 'a resposta da IA saiu fora do formato'} e não foi enviada. Responda à mão.`, leadId }).catch(() => {});
       } catch { /* aviso */ }
       return null;
     }

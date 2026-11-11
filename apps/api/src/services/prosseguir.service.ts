@@ -74,7 +74,8 @@ export async function handleProsseguirYes(accountId: string, leadId: string, tex
   await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true, customFields: cf as any } });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cliente respondeu "Sim, tenho interesse" ao "${PROSSEGUIR_TEXT}". IA do card ligada; conferindo a documentação pra dizer o que falta.` } }).catch(() => {});
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: 'cliente quer prosseguir: IA ligada e documentação conferida' });
-  const arquivos = await prisma.messageAttachment.count({ where: { leadId, message: { direction: 'INBOUND' } } });
+  // Áudio não é documento (Fabio 11/11, Ivânia: o único arquivo era um áudio e o cliente ouviu "vou conferir os documentos que você já mandou" sem ter mandado nenhum).
+  const arquivos = await prisma.messageAttachment.count({ where: { leadId, message: { direction: 'INBOUND' }, NOT: { mimeType: { startsWith: 'audio/' } } } });
   (async () => {
     let falou = false;
     if (arquivos) {
