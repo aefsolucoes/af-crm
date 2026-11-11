@@ -30,7 +30,7 @@ type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; v
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
 type St = { status?: string; autAskedAt?: string; saudeSentAt?: string;
   autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string;
-  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[] };
+  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[]; semLocalNoteAt?: string };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -276,7 +276,6 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   const primeiroNome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const endImovel = await enderecoDoImovel(leadId, cf).catch(() => null);
-  const cidade = endImovel?.cidade || String(c1.endereco?.cidade || '');
 
   // 0) dados que só o cliente sabe (contato da vistoria, vendedor, conta) — em paralelo com as assinaturas
   await pedirDadosVistoriaFh(accountId, leadId, 'Santander', io, { manual: opts.manual }).catch((e: any) => console.warn('[Vistoria FH] pedir dados:', e?.message));
@@ -291,6 +290,13 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     if (!inNoticeWindow() && !opts.manual) return false;
     if (!(await whatsappWindowOpen(leadId))) {
       if (opts.manual || !st.teamAskNoteAt) { await salvaSt(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander (Financiamento): a janela de 24 h do WhatsApp está fechada. Os formulários saem assim que o cliente responder qualquer mensagem.'); }
+      return false;
+    }
+    // "Local e Data" sempre com a cidade (Fabio 11/11): imóvel → residência dos documentos → campos do card → CEP. Sem cidade em lugar nenhum, os formulários não saem sem o local.
+    const { cidadeDaAssinatura } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+    const cidade = await cidadeDaAssinatura(leadId, cf, [endImovel?.cidade, c1.endereco?.cidade]);
+    if (!cidade) {
+      if (opts.manual || !st.semLocalNoteAt) { await salvaSt(leadId, { semLocalNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander (Financiamento): não achei a cidade pro campo "Local e data" da autorização e da declaração de saúde, e sem o local os formulários não saem. Preencha "Cidade do imóvel" (ou o CEP do imóvel) no card — o CRM manda em seguida.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: falta a cidade pro "Local e data" dos formulários`, leadId); }
       return false;
     }
     const pdf = await preencherAutorizacaoFh({ c1: comp(c1), c2: c2 ? comp(c2) : null, cidade, leadId });

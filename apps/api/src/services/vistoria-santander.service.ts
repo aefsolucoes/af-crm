@@ -18,7 +18,7 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 export const VISTORIA_SANTANDER_TO = process.env.VISTORIA_SANTANDER_TO || 'leticia.gomes@credimorar.com.vc';
 const AVISO_REPETIR_MS = 12 * 3600_000;
 
-type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[] };
+type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -142,7 +142,13 @@ export async function processVistoriaSantander(accountId: string, leadId: string
       if (opts.manual || !st.teamAskNoteAt) { await salva(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: documentação completa, mas a janela de 24 h do WhatsApp está fechada. A autorização USECASA sai assim que o cliente responder qualquer mensagem.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: janela fechada, aguardando o cliente falar`, leadId); }
       return false;
     }
-    const cidade = (campos['Cidade/UF residência'] || campos['Imóvel em garantia'] || '').replace(/\s*\/\s*[A-Za-z]{2}\s*$/, '').trim();
+    // "Local e Data" sempre com a cidade (Fabio 11/11): proposta do site → residência dos documentos → cidade/endereço do imóvel no card → CEP. Sem cidade em lugar nenhum, o formulário não sai sem o local.
+    const { cidadeDaAssinatura } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+    const cidade = await cidadeDaAssinatura(leadId, cf, [campos['Cidade/UF residência'], campos['Imóvel em garantia']]);
+    if (!cidade) {
+      if (opts.manual || !st.semLocalNoteAt) { await salva(leadId, { semLocalNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander: não achei a cidade pro campo "Local e data" da autorização USECASA, e sem o local o formulário não sai. Preencha "Cidade do imóvel" (ou o CEP do imóvel) no card — o CRM manda a autorização em seguida.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: falta a cidade pro "Local e data" da autorização`, leadId); }
+      return false;
+    }
     const pdf = await preencherAutorizacaoUsecasa({ p1, p2, cidade, leadId });
     const sent = await sendOutboundMedia({ accountId, leadId, buffer: pdf, fileName: 'Autorizacao USECASA - assinar pelo gov.br.pdf', mimeType: 'application/pdf', caption: textoPedidoAssinatura(primeiroNome, !!p2), io });
     if (!sent.success) return false;

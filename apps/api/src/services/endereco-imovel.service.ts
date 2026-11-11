@@ -49,6 +49,68 @@ export function enderecoDosDocs(cf: Cf): Info | null {
   return { texto, ...(cep ? { cep: `${cep[1]}-${cep[2]}` } : {}), fonte: String(r.tipo || 'documento do imóvel').toLowerCase() };
 }
 
+// ─── Cidade pro campo "Local e Data" dos formulários que o cliente assina ───
+const tituloCidade = (s: string) => s.toLowerCase().replace(/(^|[\s-])(\S)/g, (_m, a, b) => a + b.toUpperCase()).replace(/(^|\s)(Da|De|Do|Das|Dos|E)(?=\s)/g, (m, a, b) => (a ? a + b.toLowerCase() : m));
+/** "BRASILIA/DF", "Belém - PA", "mogi das cruzes" → "Brasilia", "Belém", "Mogi das Cruzes". Vazio, com número ou comprido demais = '' (não é cidade). Pura. */
+export function limpaCidade(v: unknown): string {
+  const s = String(v ?? '').replace(/\s+/g, ' ').replace(/(?:\s*\/\s*[A-Za-z]{2}|\s+[–-]\s*[A-Z]{2})\s*$/, '').replace(/^[\s,;.-]+|[\s,;.-]+$/g, '');
+  if (vazio(s) || s.length < 2 || s.length > 40 || /\d/.test(s)) return '';
+  return s === s.toUpperCase() || s === s.toLowerCase() ? tituloCidade(s) : s;
+}
+
+const UFS = new Set('AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(' '));
+/** Cidade escrita num endereço ("…, MEIA PRAIA, ITAPEMA/SC, CEP 88220000", "…, SOBRADINHO, BRASILIA - DF"): só vale com uma UF de verdade ao lado ("…, SN, …" não é UF). Pura. */
+export function cidadeDeEndereco(txt: unknown): string {
+  const t = String(txt ?? '').replace(/\s+/g, ' ').replace(/,?\s*CEP[:\s]*[\d.\-]{8,10}/i, '').replace(/\b\d{2}\.?\d{3}-?\d{3}\b/, '').replace(/\s+[—–]\s+/g, ', ').trim();
+  if (vazio(t)) return '';
+  const barra = /\/\s*([A-Za-z]{2})\b/.exec(t);
+  if (barra && UFS.has(barra[1].toUpperCase())) {
+    const c = limpaCidade(t.slice(0, barra.index).split(/\s*[,;]\s*|\s+[–-]\s+/).pop());
+    if (c) return c;
+  }
+  const soltas = [...t.matchAll(/([A-Za-zÀ-ú' ]{2,40}?)\s*[,–-]\s*([A-Z]{2})\s*(?=,|$)/g)].filter((m) => UFS.has(m[2]));
+  return soltas.length ? limpaCidade(soltas[soltas.length - 1][1]) : '';
+}
+
+/** Cidade que já está escrita no card, sem buscar nada fora — nessa ordem: as que quem chama já tem (proposta do site), a residência lida nos documentos (ficha cadastral),
+ *  os campos de cidade do card e o endereço do imóvel (campo do card ou o que está escrito na matrícula/ônus, IPTU ou escritura). '' = não achou. Pura (testável). */
+export function cidadeNoCard(cf: Cf, preferidas: unknown[] = []): string {
+  for (const p of preferidas) { const c = limpaCidade(p); if (c) return c; }
+  const ficha = ((cf._fichaCadastral?.participantes || []) as any[]).filter(Boolean).slice().sort((a, b) => (Number(a.ordem) || 9) - (Number(b.ordem) || 9));
+  for (const p of ficha) { const c = limpaCidade(p.endereco?.cidade); if (c) return c; }
+  for (const k of ['cidade_1', 'cidade', 'cidade_imovel']) { const c = limpaCidade(cf[k]); if (c) return c; }
+  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) { const c = cidadeDeEndereco(txt); if (c) return c; }
+  return '';
+}
+
+/** CEPs que o card conhece (imóvel primeiro, depois a residência dos participantes e o que estiver escrito no endereço do imóvel). Pura. */
+function cepsDoCard(cf: Cf): string[] {
+  const out: string[] = [];
+  const poe = (v: unknown) => { const d = String(v ?? '').replace(/\D/g, ''); if (d.length === 8 && !out.includes(d)) out.push(d); };
+  poe(cf.imovel_cep); poe(cf.cep_imovel);
+  for (const p of ((cf._fichaCadastral?.participantes || []) as any[])) poe(p?.endereco?.cep);
+  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) { const m = /\b(\d{2}\.?\d{3}-?\d{3})\b/.exec(String(txt || '')); if (m) poe(m[1]); }
+  return out;
+}
+
+/** Cidade pro "Local e Data" (Fabio 11/11: "quando o CRM for preencher o USECASA pra solicitar a vistoria do Santander, precisa colocar o local também" — a autorização do
+ *  Home Equity só olhava a proposta do site; cliente que veio pelo WhatsApp recebia o formulário só com a data). Card primeiro (cidadeNoCard); sem nada escrito, o endereço
+ *  do imóvel montado pela proposta/documentos e, por último, o CEP (ViaCEP). '' = não achou em lugar nenhum (quem chama segura o formulário e avisa a equipe). */
+export async function cidadeDaAssinatura(leadId: string, cf: Cf, preferidas: unknown[] = []): Promise<string> {
+  const escrita = cidadeNoCard(cf, preferidas);
+  if (escrita) return escrita;
+  const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+  const e = await enderecoDoImovel(leadId, cf).catch(() => null);
+  const doImovel = limpaCidade(e?.cidade);
+  if (doImovel) return doImovel;
+  for (const cep of cepsDoCard(cf)) {
+    const v = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null) as Record<string, any> | null;
+    const c = v && !v.erro ? limpaCidade(v.localidade) : '';
+    if (c) return c;
+  }
+  return '';
+}
+
 export async function enderecoDoImovelInfo(leadId: string, cf: Cf): Promise<Info | null> {
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const e = await enderecoDoImovel(leadId, cf).catch(() => null);
