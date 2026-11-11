@@ -3,7 +3,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { nomeSocialNota } from '../lib/text';
 import { fixedRule } from './fixed-rules.service';
-import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isDescritivoParcela } from './received-docs.service';
+import { getDocInfo, isStickerAttachment, isScreenshotAttachment, isDescritivoParcela, vendedoresDoImovel, mesmaPessoa } from './received-docs.service';
 import { moveLeadToContracting } from './contracting.service';
 import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
@@ -384,6 +384,8 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
   const caixaRota = !!cfAll._caixaRota; // pediu a CAIXA (Fabio 01/11, HE e FH): lista enxuta do comprador, a mesma do FH
   const fhSoComprador = soDocsDoComprador(cfAll, lead.pipeline.department?.name);
+  // FH com banco escolhido: os VENDEDORES são os proprietários atuais da certidão de ônus/matrícula (Fabio 11/11: "temos vendedor que deve bater com os mesmos da ônus").
+  const vendedoresOnus = ehFh && !fhSoComprador ? vendedoresDoImovel(cfAll) : [];
   const listas = ehFh || caixaRota ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
   if (!listas.length && !fhSoComprador) return null;
   // CAIXA (ou ainda sem banco): lista ENXUTA pra rodar na CAIXA. BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
@@ -421,7 +423,7 @@ Participantes:
 ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
-Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
+${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor.\n` : ''}Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 ${precisaDescritivo ? `Imóvel com FINANCIAMENTO ATIVO: o banco pede o DESCRITIVO DA PARCELA (PDF do app do banco do financiamento, com as últimas prestações) — ${temDescritivo ? 'JÁ RECEBIDO: não cobre.' : `NÃO recebido: ponha em "faltando" o item "${ITEM_DESCRITIVO}".`}
 ` : ''}
@@ -458,6 +460,23 @@ ${history}`;
   if (precisaDescritivo) {
     verdict.faltando = (verdict.faltando || []).filter((f) => !/descritivo|prestac/i.test(String(f)));
     if (!temDescritivo) { verdict.faltando.push(ITEM_DESCRITIVO); verdict.complete = false; }
+  }
+  // Vendedor da ônus sem documento de identificação recebido: decide o CRM, não o modelo (Pedro 10/11: "completo" sem nenhum documento dos vendedores).
+  if (vendedoresOnus.length) {
+    const semAc = (x: unknown) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase();
+    const ID_RX = /^(RG|CNH|CIN|CPF|IDENTIDADE|CARTEIRA DE IDENTIDADE|DOCUMENTO DE IDENTIFICACAO|RNE|CRNM)\b/;
+    const temId = (v: string) => atts.some((a) => {
+      const d = info[a.id], r = revAll[a.id];
+      const quem = [...(d && ID_RX.test(semAc(d.type)) ? String(d.holder || '').split(/\s*;\s*/) : []), ...(r && r.resultado !== 'NAO_DOCUMENTO' && ID_RX.test(semAc(r.tipo)) ? String(r.titular || '').split(/\s*;\s*/) : [])];
+      return quem.some((h) => mesmaPessoa(h, v));
+    });
+    const semDoc = vendedoresOnus.filter((v) => !temId(v));
+    const nomeBonito = (v: string) => v.toLowerCase().replace(/(^|\s)(\p{L})/gu, (_m, e, l) => e + l.toUpperCase()).replace(/\s(Da|De|Do|Das|Dos|E)(?=\s)/g, (m) => m.toLowerCase());
+    for (const v of semDoc) {
+      if ((verdict.faltando || []).some((f) => /VENDEDOR/.test(semAc(f)) && semAc(f).includes(semAc(v).split(' ')[0]))) continue; // o modelo já cobrou essa pessoa
+      verdict.faltando = [...(verdict.faltando || []), `Documentos do vendedor ${nomeBonito(v)} (está na certidão de ônus): documento de identificação (RG ou CNH), comprovante de residência e certidão de estado civil`];
+    }
+    if (semDoc.length) verdict.complete = false;
   }
   const emitirBruto = fhSoComprador ? [] : Array.isArray(verdict.emitir) ? verdict.emitir.map((x) => String(x).slice(0, 120)) : [];
   if (fhSoComprador) verdict.faltando = (verdict.faltando || []).filter((f) => !/[ôo]nus|matr[ií]cula|escritura|iptu|inscri[cç][aã]o imobili|vendedor/i.test(String(f)));

@@ -179,7 +179,11 @@ export async function montarDadosItau(accountId: string, leadId: string): Promis
     const conta = dv.conta?.conta ? { banco: dig(dv.conta.banco).padStart(3, '0'), agencia: dig(dv.conta.agencia), conta: `${dig(dv.conta.conta)}${dig(dv.conta.digito)}` } : null;
     vendedores.push({ ...base, conjuge, conta });
   }
-  if (!vendedores.length) faltando.push('documentos do vendedor (RG/CNH, certidão de estado civil e comprovante de residência na pasta VENDEDOR)');
+  // Vendedor = quem está na certidão de ônus como proprietário (Fabio 11/11): diz o nome de quem falta.
+  const daOnus = (require('./received-docs.service') as typeof import('./received-docs.service')).vendedoresDoImovel(cf);
+  const { mesmaPessoa } = require('./received-docs.service') as typeof import('./received-docs.service');
+  const semDocOnus = daOnus.filter((n) => !pessoasV.some((p) => mesmaPessoa(p.nome, n)));
+  if (!vendedores.length || semDocOnus.length) faltando.push(`documentos do vendedor${semDocOnus.length ? ` ${semDocOnus.join(' e ')} (está na certidão de ônus)` : ''} (RG/CNH, certidão de estado civil e comprovante de residência na pasta VENDEDOR)`);
   vendedores.forEach((v, i) => {
     faltando.push(...faltasPessoa(v, vendedores.length > 1 ? `do ${i + 1}º vendedor` : 'do vendedor'));
     if (v.conjuge) faltando.push(...faltasPessoa(v.conjuge, 'do cônjuge do vendedor', false));

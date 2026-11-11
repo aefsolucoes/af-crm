@@ -216,6 +216,40 @@ function isBuyerHolder(holder: string | undefined, buyers: string[]): boolean {
   });
 }
 
+/** Mesma pessoa pelo nome: mesmo primeiro nome e um sobrenome em comum (cobre nome de solteira/casada no RG). Pura. */
+export function mesmaPessoa(a: string | undefined, b: string | undefined): boolean {
+  const partes = (s: string | undefined) => clean(String(s || ''), 100).split(' ').filter((w) => w && !/^(DA|DE|DO|DAS|DOS|E)$/.test(w));
+  const x = partes(a), y = partes(b);
+  if (x.length < 2 || y.length < 2 || x[0] !== y[0]) return false;
+  return x.slice(1).some((w) => w.length > 2 && y.slice(1).includes(w));
+}
+
+/** VENDEDORES do imóvel no Financiamento Habitacional (Fabio 11/11: "temos vendedor que deve bater com os mesmos da ônus"): os proprietários ATUAIS que a leitura da
+ *  certidão de ônus/matrícula/escritura achou (`_docReview[].dono`, vários separados por ";"). Documento do imóvel ANTIGO (`_docsImovelAntigo`) não conta. Leitura antiga
+ *  sem `dono`: cai no titular da classificação ("MATRICULA DO IMOVEL|FULANO"). Pura (testável). */
+export function vendedoresDoImovel(cf: Record<string, any> | null | undefined): string[] {
+  const antigos = (cf?._docsImovelAntigo || {}) as Record<string, unknown>;
+  const DOC = /^(MATRICULA|CERTIDAO DE ONUS|ESCRITURA)/;
+  const nomes: string[] = [];
+  const add = (txt: unknown) => {
+    for (const n0 of String(txt || '').split(/\s*;\s*/)) {
+      const n = n0.replace(/\s+/g, ' ').trim(), c = clean(n, 100);
+      if (c.split(' ').length >= 2 && !COMPANY_RE.test(c) && !nomes.some((x) => mesmaPessoa(x, n))) nomes.push(n);
+    }
+  };
+  for (const [id, r] of Object.entries((cf?._docReview || {}) as Record<string, any>)) {
+    if (r && typeof r === 'object' && !antigos[id] && r.dono && r.resultado !== 'NAO_DOCUMENTO' && DOC.test(clean(String(r.tipo || ''), 60))) add(r.dono);
+  }
+  if (!nomes.length) {
+    for (const [id, v] of Object.entries((cf?._docInfo || {}) as Record<string, unknown>)) {
+      if (antigos[id] || typeof v !== 'string') continue;
+      const [t, h] = v.split('|');
+      if (DOC.test(clean(t || '', 60))) add(h);
+    }
+  }
+  return nomes;
+}
+
 export function docLabel(info: DocInfo): string {
   if (isPropertyDocType(info.type)) return info.type;
   return info.holder ? `${info.type} ${info.holder.split(' ').slice(0, 2).join(' ')}` : info.type;
@@ -327,6 +361,7 @@ async function organizeLead(lead: {
 
   const freshLead = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const cf = { ...((freshLead?.customFields as Record<string, unknown>) || {}) };
+  const vendedores = isHab ? vendedoresDoImovel(cf) : [];
   if (!files.length) {
     await gravarChaves(lead.id, { _driveOrganizedAt: new Date().toISOString() });
     await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📁 Card em Documentação Recebida, mas nenhum documento do cliente foi encontrado no Drive (anexos do WhatsApp). A pasta não foi organizada automaticamente.' } });
@@ -382,6 +417,9 @@ async function organizeLead(lead: {
       if (antigos[attId0]) return 'DESNECESSARIO';
       if (paginas.get(attId0)?.desnecessario) return 'DESNECESSARIO';
       const info = docInfo[attId0];
+      // FH: documento pessoal de quem está na certidão de ônus como proprietário = VENDEDOR (Fabio 11/11), mesmo com sobrenome igual ao de um comprador.
+      if (info && vendedores.length && !isPropertyDocType(info.type) && !/SIMULACAO|^SALDO DEVEDOR/.test(info.type)
+        && String(info.holder || '').split(/\s*;\s*/).some((h) => vendedores.some((v) => mesmaPessoa(h, v)) && !buyers.some((b) => mesmaPessoa(h, b)))) return 'VENDEDOR';
       if (info && SEM_USO.test(info.type)) return 'DESNECESSARIO';
       if (info && /^AUTORIZACAO USECASA/.test(info.type)) return 'FORMULARIOS'; // autorização USECASA assinada (Santander) — Fabio 05/11
       if (!info) return 'COMPRADOR';
