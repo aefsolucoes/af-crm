@@ -130,7 +130,7 @@ export async function enviarAvisoLimpo(accountId: string, leadId: string, io?: I
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const pedido = cf._caixaPedido as Pedido | undefined;
   const lp = pedido?.limpo;
-  if (!lead || !pedido || !lp || lp.status !== 'PENDING' || cf._autoPaused) return;
+  if (!lead || !pedido || !lp || lp.status !== 'PENDING' || cf._autoPaused || cf._caixaTeste) return; // _caixaTeste: modo teste (Fabio 11/11)
   const marca = (patch: Partial<Limpo>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_caixaPedido,limpo}', ${JSON.stringify({ ...lp, ...patch })}::jsonb, true) WHERE id = ${leadId}`;
   const rota = async () => { if (lp.rota) await entrarRotaCaixa(accountId, leadId, 'Consulta da CAIXA sem restrição + imóvel com Habite-se', io, { concorrente: !!pedido.concorrente, liberado: true }).catch((e) => console.error('[CAIXA] rota:', e?.message)); };
   const praEquipe = async (porque: string) => {

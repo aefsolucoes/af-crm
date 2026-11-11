@@ -650,7 +650,44 @@ export async function gravarCadastro(accountId: string, leadId: string, ordem: n
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Cadastro na CAIXA — ${ordem}º participante (${p?.nome || '—'}): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro CAIXA (${p?.nome || `${ordem}º`})`, body: r.status, leadId }).catch(() => {});
-  if (/^GRAVADO/i.test(r.status)) await pedirConferencia(accountId, leadId).catch((e) => console.error('[CAIXA] conferência:', e?.message));
+  if (/^GRAVADO/i.test(r.status)) {
+    const seguiu = await seguirAnalisePendente(accountId, leadId).catch((e) => { console.error('[CAIXA] análise depois do cadastro:', e?.message); return false; });
+    if (!seguiu) await pedirConferencia(accountId, leadId).catch((e) => console.error('[CAIXA] conferência:', e?.message));
+  }
+}
+
+/* ── Análise logo depois do cadastro (Fabio 11/11, Tarcisio: "isso daqui tem que ser automático" + "na verdade quando for cadastrar o cliente ele faz essa
+ * consulta"). O clique da equipe é o OK daquele cliente (regra de 31/10: a Avaliação de Risco só roda com o OK de alguém): "Cadastro CAIXA" com "rodar a análise em
+ * seguida" marcado, ou "Análise CAIXA" com o cadastro ainda não gravado. Fica em _caixaAnalisePendente (fora de _caixaCadastro — a fila regrava aquela chave) e,
+ * quando o cadastro de quem entra na avaliação grava, a análise vai pra fila sozinha. A conferência manual do cadastro fica dispensada nessa sequência. */
+type AnalisePendente = { por: string; userId: string | null; em: string; enviar: boolean; via: string };
+async function gravarAnalisePendente(leadId: string, p: AnalisePendente | null): Promise<void> {
+  if (p) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAnalisePendente}', ${JSON.stringify(p)}::jsonb, true) WHERE id = ${leadId}`;
+  else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_caixaAnalisePendente' WHERE id = ${leadId}`;
+}
+/** true = havia análise pendente (seguiu ou ainda espera alguém gravar) — a conferência manual não é pedida. */
+async function seguirAnalisePendente(accountId: string, leadId: string): Promise<boolean> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, userId: true, customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  const pend = cf._caixaAnalisePendente as AnalisePendente | undefined;
+  if (!l || !pend?.por) return false;
+  const c = (cf._caixaCadastro || {}) as Cf;
+  if (c.avaliacao?.status) { await gravarAnalisePendente(leadId, null); return false; } // a análise já foi pedida por outro caminho
+  const q = participantesDaAvaliacao(participantesDa(cf));
+  const entram = [q.tomador, ...q.incluir].filter(Boolean) as any[];
+  if (!entram.length || !entram.every((p) => gravado(c, p.ordem))) return true; // ainda falta gravar alguém: espera
+  await gravarAnalisePendente(leadId, null);
+  const agora = new Date().toISOString();
+  await salvar(leadId, (x) => { x.conferencia = { status: 'CONFERIDO', por: `automático (análise autorizada por ${pend.por})`, em: agora }; });
+  const erro = await pedirAvaliacao(accountId, leadId, `${pend.por} (depois do cadastro)`, { enviar: pend.enviar, autorizacao: { por: pend.por, userId: pend.userId, em: pend.em, enviar: pend.enviar, denovo: false, via: pend.via } });
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  if (erro) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Cadastro na CAIXA gravado, mas a análise de crédito autorizada por ${pend.por} NÃO foi pra fila: ${erro}. Rode pelo botão "Análise CAIXA" depois de acertar.` } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `⚠️ ${l.name}: análise CAIXA não saiu`, body: erro.slice(0, 120), leadId }, l.userId ? [l.userId] : undefined).catch(() => {});
+  } else {
+    sendPushToAccount(accountId, { title: `🏦 ${l.name}: cadastro gravado, análise CAIXA na fila`, body: `Autorizada por ${pend.por}${pend.enviar ? '; a extensão envia à CAIXA' : '; para antes de enviar'}`, leadId }).catch(() => {});
+  }
+  return true;
 }
 
 const gravado = (c: Cf, ordem: number) => /^GRAVADO/i.test(String(c.cadastros?.[ordem]?.status || ''));
@@ -822,7 +859,8 @@ export async function semCadastroCaixa(accountId: string): Promise<any[]> {
  * CRÉDITO NA CAIXA"). Mesma fila da extensão "Cadastro CAIXA" (fazerCadastroManual / pedirAvaliacao) — nada paralelo. O clique no "Análise CAIXA" É o OK do Fabio pra
  * AQUELE cliente (31/10: a Avaliação de Risco só roda com o pedido explícito): quem/quando ficam em _caixaCadastro.avaliacao.autorizacao + anotação. ── */
 
-type Trava = { tipo: 'andamento' | 'feito' | 'falta'; msg: string } | null;
+/** 'cadastro' (Fabio 11/11): falta só o cadastro gravado — não trava; a análise sai sozinha depois dele (_caixaAnalisePendente). */
+type Trava = { tipo: 'andamento' | 'feito' | 'falta' | 'cadastro'; msg: string } | null;
 type Quem = { id: string; nome: string };
 type IoLike = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 const quando = (iso?: string | null): string => (iso ? new Date(iso).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
@@ -863,13 +901,20 @@ export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
   // Consulta do resultado em andamento: a extensão gravaria o resultado antigo por cima do "aguardando a nova" — espera ela terminar.
   const res = cf._caixaResultado as Cf | undefined;
   if (res?.status === 'RODANDO' && res.inicio && Date.now() - Date.parse(res.inicio) < LEASE_MS) return { tipo: 'andamento', msg: `A extensão está consultando o resultado da avaliação em Formulários Enviados (desde ${quando(res.inicio)}) — espere terminar` };
+  const pend = cf._caixaAnalisePendente as Cf | undefined;
+  if (pend?.por && !av?.status) return { tipo: 'andamento', msg: `Análise autorizada por ${pend.por} (${quando(pend.em)}): vai pra fila sozinha assim que o cadastro na CAIXA gravar` };
   if (!temFicha(cf)) return { tipo: 'falta', msg: 'O card ainda não tem a ficha de cadastro (dados lidos dos documentos) — rode o "Cadastro CAIXA" primeiro' };
   const q = participantesDaAvaliacao(participantesDa(cf));
   if (q.segurar) return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${q.segurar}` };
-  const semCadastro = [q.tomador, ...q.incluir].filter((p) => !gravado(c, p.ordem));
-  if (semCadastro.length) return { tipo: 'falta', msg: `Falta o cadastro GRAVADO na CAIXA de ${semCadastro.map(nomeP).join(', ')} — rode o "Cadastro CAIXA" primeiro` };
   const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null } : null, fh ? null : { pediuSac: false });
   if (typeof op === 'string') return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${op}` };
+  const semCadastro = [q.tomador, ...q.incluir].filter((p) => !gravado(c, p.ordem));
+  if (semCadastro.length) {
+    // Cadastro faltando não trava mais (Fabio 11/11): o CRM faz o cadastro e a análise sai sozinha quando ele gravar. Dado faltando na ficha trava (o cadastro pararia).
+    const faltas = semCadastro.filter((p) => faltaParaCadastro(p).length).map((p) => `${nomeP(p)}: ${faltaParaCadastro(p).join(', ')}`);
+    if (faltas.length) return { tipo: 'falta', msg: `Falta na ficha pro cadastro na CAIXA — ${faltas.join('; ')}` };
+    return { tipo: 'cadastro', msg: `O cadastro de ${semCadastro.map(nomeP).join(', ')} na CAIXA ainda não foi gravado: ao autorizar, o CRM faz o cadastro e a análise vai pra fila sozinha assim que ele gravar (sem a conferência manual).` };
+  }
   return null;
 }
 
@@ -915,6 +960,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
     cadastro: { trava: travaCadastroCaixa(cf) },
     analise: {
       trava: travaAnaliseCaixa(cf, !he),
+      // Janela do "Cadastro CAIXA" mostra "rodar a análise em seguida" (Fabio 11/11).
+      podeEmSeguida: !c.avaliacao?.status && !cf._caixaAnalisePendente && ((t) => !t || t.tipo === 'cadastro' || (t.tipo === 'falta' && !ficha))(travaAnaliseCaixa(cf, !he)),
       // Rodada anterior chegou à CAIXA → o cadastro já foi usado lá; a conferência só é pedida antes da 1ª avaliação.
       precisaConferir: c.conferencia?.status === 'PENDENTE' && !(terminada && avaliacaoFeita(cf)),
       produto: he ? '11 - Empréstimo com Garantia de Imóvel (EGI)' : '1 - Crédito Imobiliário',
@@ -931,8 +978,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
 
 /** Botão "Cadastro CAIXA": reaproveita o "Fazer cadastro" do painel CAIXA (consulta do nome se ainda não consultou; senão o cadastro de quem não está GRAVADO). Sem a
  *  ficha de cadastro, manda ler os documentos (pasta do Drive ou conversa — gerarFichaCadastral, 1–3 min) e, com ela pronta, a consulta/o cadastro vão pra fila sozinhos. */
-export async function cadastroCaixaPeloCard(accountId: string, leadId: string, quem: Quem, io?: IoLike): Promise<{ erro: string } | { mensagem: string }> {
-  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, archived: true, customFields: true } });
+export async function cadastroCaixaPeloCard(accountId: string, leadId: string, quem: Quem, io?: IoLike, opts: { analise?: boolean; enviar?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return { erro: 'Lead não encontrado' };
   const fechado = cardFechado(l);
   if (fechado) return { erro: fechado };
@@ -972,6 +1019,18 @@ export async function cadastroCaixaPeloCard(accountId: string, leadId: string, q
       ? 'Consulta do nome na fila da CAIXA. Lendo os documentos pra montar a ficha de cadastro (1–3 min) — com ela pronta, o cadastro vai pra fila sozinho.'
       : 'Lendo os documentos do cliente pra montar a ficha de cadastro (1–3 min) — com ela pronta, a consulta e o cadastro na CAIXA vão pra fila sozinhos. Se faltar documento, aparece nas anotações.';
   }
+  // "Rodar a análise em seguida" (Fabio 11/11: "quando for cadastrar o cliente ele faz essa consulta"): o clique é o OK da análise pra este cliente.
+  if (opts.analise) {
+    const fresco = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+    const ta = travaAnaliseCaixa(fresco, !ehHe(l.pipeline?.department?.name));
+    const vaiEnviar = opts.enviar !== false;
+    if (fresco._caixaCadastro?.avaliacao?.status) mensagem += ' A análise de crédito não vai em seguida: ela já rodou neste card (use "Rodar análise CAIXA de novo").';
+    else if (ta?.tipo === 'falta' && temFicha(fresco)) mensagem += ` A análise de crédito NÃO vai em seguida: ${ta.msg}.`;
+    else {
+      await gravarAnalisePendente(leadId, { por: quem.nome, userId: quem.id, em: new Date().toISOString(), enviar: vaiEnviar, via: 'botão Cadastro CAIXA do card (análise em seguida)' });
+      mensagem += ` Quando o cadastro gravar, a análise de crédito ${vaiEnviar ? 'vai pra fila e é enviada à CAIXA' : 'vai pra fila (para antes de enviar)'} sozinha — o clique é a autorização de ${quem.nome} pra este cliente; a conferência manual fica dispensada.`;
+    }
+  }
   await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `🏦 ${quem.nome} pediu o cadastro na CAIXA (botão "Cadastro CAIXA" do card). ${mensagem}` } }).catch(() => {});
   // Consulta: pedirCadastroCaixa já registrou a atividade (com quem clicou).
   if (!consulta) logActivity({ accountId, userId: quem.id, userName: quem.nome, action: 'lead_edited', leadId, leadName: l.name, summary: 'pediu o cadastro na CAIXA' });
@@ -988,7 +1047,19 @@ export async function analiseCaixaPeloCard(accountId: string, leadId: string, qu
   if (fechado) return { erro: fechado };
   const cf = (l.customFields || {}) as Cf;
   const trava = travaAnaliseCaixa(cf, !ehHe(l.pipeline?.department?.name));
-  if (trava) return { erro: trava.msg };
+  if (trava && trava.tipo !== 'cadastro') return { erro: trava.msg };
+  // Cadastro ainda não gravado (Fabio 11/11: "isso daqui tem que ser automático"): o clique pede o cadastro e a análise sai sozinha quando ele gravar.
+  if (trava?.tipo === 'cadastro') {
+    const tc = travaCadastroCaixa(cf);
+    if (tc?.tipo !== 'andamento') { const erroCad = await fazerCadastroManual(accountId, leadId, quem.nome, quem.id); if (erroCad) return { erro: erroCad }; }
+    const quandoFoi = new Date().toISOString();
+    const vaiEnviar = opts.enviar === true;
+    await gravarAnalisePendente(leadId, { por: quem.nome, userId: quem.id, em: quandoFoi, enviar: vaiEnviar, via: 'botão Análise CAIXA do card (cadastro antes)' });
+    const mensagem = `Cadastro na CAIXA ${tc?.tipo === 'andamento' ? 'já estava na fila' : 'na fila da extensão'}; quando gravar, a análise de crédito ${vaiEnviar ? 'vai pra fila e é enviada à CAIXA' : 'vai pra fila (para antes de enviar)'} sozinha.`;
+    await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `🏦 ${quem.nome} autorizou a análise de crédito na CAIXA (Avaliação de Risco) em ${quando(quandoFoi)}, com o cadastro ainda não gravado. ${mensagem} A conferência manual do cadastro fica dispensada nessa sequência (Fabio 11/11).` } }).catch(() => {});
+    logActivity({ accountId, userId: quem.id, userName: quem.nome, action: 'lead_edited', leadId, leadName: l.name, summary: 'autorizou o cadastro + a análise de crédito na CAIXA' });
+    return { mensagem };
+  }
   const anterior = avaliacaoTerminada(cf);
   if (anterior && !opts.denovo) return { erro: `A Avaliação de Risco deste card já rodou (${String(anterior.status || '').slice(0, 120)}, ${quando(anterior.fim || anterior.pedidoEm)}). Pra rodar de novo, use "Rodar análise CAIXA de novo".` };
   const agora = new Date().toISOString();

@@ -61,7 +61,7 @@ router.get('/:leadId/card', async (req: AuthRequest, res: Response) => {
 });
 router.post('/:leadId/card/cadastro', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   try {
-    const r = await cadastroCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, req.app.get('io'));
+    const r = await cadastroCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, req.app.get('io'), { analise: req.body?.analise === true, enviar: req.body?.enviar !== false });
     if ('erro' in r) return res.status(400).json({ error: r.erro });
     res.json({ ok: true, mensagem: r.mensagem });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir o cadastro na CAIXA' }); }

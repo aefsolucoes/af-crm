@@ -86,7 +86,7 @@ export async function enviarOrientacao(accountId: string, leadId: string, io?: a
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
   const oc = cf._ocorrencias as Oc | undefined;
-  if (!lead || !oc || (oc.status !== 'PENDING' && oc.status !== 'TEMPLATE') || cf._autoPaused) return;
+  if (!lead || !oc || (oc.status !== 'PENDING' && oc.status !== 'TEMPLATE') || cf._autoPaused || cf._caixaTeste) return; // _caixaTeste: modo teste (Fabio 11/11)
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoOrientacao(saudacao, { nomes: oc.nomes || [], titular: !!oc.titular }, !String(cf.falando_com || '').trim());

@@ -13,7 +13,8 @@ import { VistoriaCaixaButton } from './vistoria-caixa-button';
  * de Crédito. Estado: GET /api/caixa-cadastro/:id/card (`mostrar` false = o card não tem nada da CAIXA → o bloco some); ações: POST /:id/card/cadastro e
  * /:id/card/analise. O clique na análise é a autorização da Avaliação de Risco pra este cliente — fica na anotação com o nome. Avaliação que já rodou → "Rodar análise
  * CAIXA de novo" (Jézer/Fernanda depois da autorização do PV): a extensão reabre a avaliação que deu erro e clica em Avançar lá, sem preencher outra. */
-type Trava = { tipo: 'andamento' | 'feito' | 'falta'; msg: string } | null;
+/** 'cadastro' (Fabio 11/11): só falta o cadastro gravado — não trava; o CRM faz o cadastro e a análise sai sozinha depois. */
+type Trava = { tipo: 'andamento' | 'feito' | 'falta' | 'cadastro'; msg: string } | null;
 interface Part { ordem: number; nome: string; semRenda: boolean; consultado: boolean; cadastro: string | null; falta: string[] }
 interface Refazer { proposta: string | null; data: string | null; produto: string | null; resultado: string | null }
 interface Estado {
@@ -30,6 +31,8 @@ interface Estado {
   cadastro: { trava: Trava };
   analise: {
     trava: Trava; precisaConferir: boolean; produto: string;
+    /** Janela do "Cadastro CAIXA" mostra "rodar a análise em seguida" (Fabio 11/11). */
+    podeEmSeguida?: boolean;
     tomador: string | null; incluir: string[]; fora: string[];
     valorImovel: unknown; valorCredito: unknown;
     avaliacao: { status: string; pedidoEm: string | null; inicio: string | null; fim: string | null; por: string | null; enviar: boolean; denovo: boolean; autorizacao: { por?: string; em?: string } | null; vezes: number } | null;
@@ -48,6 +51,8 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
   const [modal, setModal] = useState<'cadastro' | 'analise' | null>(null);
   const [enviar, setEnviar] = useState(true);
   const [conferido, setConferido] = useState(false);
+  // Cadastro → análise logo depois (Fabio 11/11: "quando for cadastrar o cliente ele faz essa consulta").
+  const [analiseDepois, setAnaliseDepois] = useState(true);
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const { data: estado, refetch } = useQuery<Estado>({
@@ -95,14 +100,14 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
   const refazer = denovo?.refazer || null;
 
   function abrir(qual: 'cadastro' | 'analise') {
-    setEnviar(true); setConferido(false); setErro(null); setModal(qual);
+    setEnviar(true); setConferido(false); setAnaliseDepois(true); setErro(null); setModal(qual);
   }
 
   async function rodar() {
     if (!modal) return;
     setBusy(true); setErro(null);
     try {
-      const corpo = modal === 'analise' ? { enviar, conferido, ...(denovo ? { denovo: true } : {}) } : {};
+      const corpo = modal === 'analise' ? { enviar, conferido, ...(denovo ? { denovo: true } : {}) } : { analise: !!a.podeEmSeguida && analiseDepois, enviar: true };
       const { data } = await api.post(`/api/caixa-cadastro/${leadId}/card/${modal}`, corpo);
       toast(data?.mensagem || 'Pedido na fila da CAIXA');
       setModal(null);
@@ -198,6 +203,15 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
                   ))}
                 </ul>
               )}
+              {a.podeEmSeguida && (
+                <label className="flex items-start gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" checked={analiseDepois} onChange={(e) => setAnaliseDepois(e.target.checked)} className="mt-0.5" />
+                  <span>
+                    <strong>Rodar a análise de crédito em seguida</strong> — assim que o cadastro gravar, a extensão roda a Avaliação de Risco ({a.produto}) e envia à CAIXA, sem a
+                    conferência manual. Marcado, o clique é a sua autorização pra este cliente.
+                  </span>
+                </label>
+              )}
               {estado.avaliacaoFeita && (
                 <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1.5">
                   ⚠️ O crédito já rodou na CAIXA: alterar o cadastro agora pede a 2ª autorização do PV.
@@ -252,6 +266,9 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
             </>
           )}
 
+          {modal === 'analise' && travaModal?.tipo === 'cadastro' && !erro && (
+            <p className="text-xs rounded-lg bg-blue-50 border border-blue-200 text-[#005CA9] px-2.5 py-1.5">{travaModal.msg}</p>
+          )}
           {(faltaPre || erro) && (
             <p className="text-xs rounded-lg bg-red-50 border border-red-200 text-red-700 px-2.5 py-1.5">{erro || faltaPre}</p>
           )}

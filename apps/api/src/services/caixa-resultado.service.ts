@@ -259,6 +259,8 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
     sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: avisar o cliente (${rotulo})`, body: 'Texto pronto na anotação.', leadId }).catch(() => {});
   };
   if (cf._autoPaused) return falhou('o card está em STOP TOTAL, então o CRM não mandou sozinho');
+  // Modo teste da CAIXA no card (Fabio 11/11, gravação do vídeo: "não precisa mandar nenhuma msg para ele ainda, como é um teste"): nada vai ao cliente.
+  if (cf._caixaTeste) { await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'TESTE' }; }); await nota(`🧪 ${rotulo}: card em MODO TESTE da CAIXA — o aviso NÃO foi ao cliente. Texto que iria:\n“${texto}”`); return; }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   const msg = require('./message.service') as typeof import('./message.service');
@@ -335,7 +337,7 @@ export async function avisarPvCliente(accountId: string, leadId: string, io?: an
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
   const pv = cf._caixaResultado?.pvAviso as { status?: string; templateAt?: string } | undefined;
-  if (!lead || !pv || (pv.status !== 'PENDING' && pv.status !== 'TEMPLATE') || cf._autoPaused) return;
+  if (!lead || !pv || (pv.status !== 'PENDING' && pv.status !== 'TEMPLATE') || cf._autoPaused || cf._caixaTeste) return; // _caixaTeste: modo teste (Fabio 11/11)
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoPv(saudacao);
