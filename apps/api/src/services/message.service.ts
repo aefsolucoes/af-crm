@@ -189,11 +189,14 @@ export async function findOrCreateLeadByPhone(
     return { leadId: existing.id, created: false };
   }
 
-  // Destino do card: o funil/estágio pedido (target) ou o 1º estágio do 1º funil.
+  // Destino do card: o funil/estágio pedido (target) ou a CAIXA DE ENTRADA (regra de 10/09: todo número novo cai nela). Antes era "o 1º funil da conta" — que
+  // é o Vendas do Financiamento —, e o card do corretor do Jaime nasceu no fluxo de financiamento (Fabio 11/11: "esse card não deve ir para o fluxo de financiamento").
   let pipelineId = target?.pipelineId;
   let stageId = target?.stageId;
   if (!pipelineId || !stageId) {
-    const pipeline = await prisma.pipeline.findFirst({
+    const { getOrCreateInboxPipeline } = require('./department.service') as typeof import('./department.service');
+    const inbox = await getOrCreateInboxPipeline(accountId).catch(() => null);
+    const pipeline = inbox?.stages?.length ? inbox : await prisma.pipeline.findFirst({
       where: { accountId },
       include: { stages: { orderBy: { order: 'asc' }, take: 1 } },
     });
