@@ -191,8 +191,11 @@ export async function montarDadosItau(accountId: string, leadId: string): Promis
   const iptu = dig(cf.inscricao_imovel || revs.map((r) => r?.inscricao).find(Boolean));
   const endTxt = s(cf.endereco_imovel);
   const complemento = s(cf.complemento_imovel) || s(/^[^,—]*?((?:\b(?:LT|LOTE|QD|QUADRA|TO|TORRE|BL|BLOCO|AP|APTO|APARTAMENTO|CASA|SALA)\b[^,—]*)+)/i.exec(endTxt)?.[1]).replace(/\s+/g, ' ');
+  const numeroImovel = s(cf.imovel_numero || cf._endImovelN);
+  // "…LT 4 TO II AP, 1408": o número do apartamento vem depois da vírgula — junta no complemento ("LT 4 TO II AP 1408").
+  const complementoCompleto = /\b(AP|APTO|APARTAMENTO|SALA|CASA|UNIDADE)\s*$/i.test(complemento) && numeroImovel && !complemento.includes(numeroImovel) ? `${complemento} ${numeroImovel}` : complemento;
   const imovel = {
-    cep: dig(cf.imovel_cep || cf.cep_imovel), numero: s(cf.imovel_numero || cf._endImovelN), complemento,
+    cep: dig(cf.imovel_cep || cf.cep_imovel), numero: numeroImovel, complemento: complementoCompleto,
     matricula: dig(cf.numero_matricula || cf.matricula_imovel), iptu, cartorio: s(cf.cartorio_registro), cidade: s(cf.cidade_imovel), uf: s(cf.uf_imovel || (/\/([A-Z]{2})\b/.exec(endTxt)?.[1] || '')).toUpperCase(),
   };
   if (!imovel.cep) faltando.push('CEP do imóvel');
