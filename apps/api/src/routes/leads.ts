@@ -604,6 +604,11 @@ router.patch('/:id/stage', validate(stageSchema), async (req: AuthRequest, res: 
     });
 
     const lead = await updateLeadStage(req.params.id, req.user!.accountId, req.body.stageId);
+    // Entrou em Venda Futura à mão (Fabio 12/11): guarda de que etapa saiu — quem veio de Aguardando Documentação volta pra lá ao retomar, não pra Prospecção. Só a chave (jsonb_set).
+    if (before?.stage?.name && !/venda futura/i.test(before.stage.name)) {
+      const destino = await prisma.stage.findUnique({ where: { id: req.body.stageId }, select: { name: true } }).catch(() => null);
+      if (/venda futura/i.test(destino?.name || '')) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_vendaFuturaDe}', ${JSON.stringify(before.stage.name)}::jsonb, true) WHERE id = ${req.params.id}`.catch(() => 0);
+    }
     res.json(lead);
 
     // ── Auditoria de mudança de estágio ──────────────────────────────────────
