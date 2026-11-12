@@ -92,6 +92,12 @@ interface ChatWindowProps {
 
 type AIMode = 'ajuste' | 'grammar';
 
+// Um botão só na barra ("Ajustar com IA") abre estas opções em cima do campo (Fabio 12/11: dois botões na barra espremiam o campo de digitar).
+const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
+  { mode: 'ajuste',  label: 'Ajustar frase',      emoji: '✨' },
+  { mode: 'grammar', label: 'Corrigir gramática', emoji: '✏️' },
+];
+
 
 // ── Templates aprovados pela Meta (janela de 24h) ────────────────────────────
 interface MetaTemplate {
@@ -1486,6 +1492,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       const { data } = await api.post('/api/ai/rewrite', { text, mode });
       setAiAntes(content);
       setContent(data.result);
+      setShowAI(false); // escolheu: as opções fecham e o campo volta a ter o espaço todo
       inputRef.current?.focus();
     } catch (err: any) {
       const msg = err?.response?.data?.error || err?.message || 'Erro desconhecido';
@@ -2507,6 +2514,33 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         </div>
       )}
 
+      {showAI && (
+        <div className="relative z-10 flex items-center gap-2 px-3 py-2 bg-[#202c33] border-t border-[#222e35] flex-wrap">
+          <Sparkles size={13} className="text-[#00a884] flex-shrink-0" />
+          <span className="text-xs text-[#8696a0] font-medium mr-1">IA:</span>
+          {AI_BUTTONS.map(({ mode, label, emoji }) => (
+            <button
+              key={mode}
+              type="button"
+              onClick={() => handleAI(mode)}
+              disabled={!!aiLoading}
+              className={cn(
+                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium transition-all border',
+                aiLoading === mode
+                  ? 'bg-[#00a884] text-[#111b21] border-[#00a884]'
+                  : 'bg-[#2a3942] text-[#8696a0] border-[#33434c] hover:bg-[#33434c] hover:text-[#e9edef]',
+                !!aiLoading && aiLoading !== mode && 'opacity-50 cursor-not-allowed'
+              )}
+            >
+              {aiLoading === mode
+                ? <Loader2 size={10} className="animate-spin" />
+                : <span className="text-sm leading-none">{emoji}</span>}
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Aviso: envio falhou por falta de telefone real (contato só tem @lid) —
           cadastra na hora e reenvia sozinho, sem mandar caçar o campo certo. */}
       {resumo && !resumo.loading && (
@@ -2654,27 +2688,14 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           </button>
           <button
             type="button"
-            onClick={() => handleAI('ajuste')}
-            disabled={!!aiLoading}
-            title="Ajustar a frase que você digitou"
+            onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
+            title="Ajustar o texto com IA"
             className={cn(
               'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
-              aiLoading === 'ajuste' ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+              showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
             )}
           >
-            {aiLoading === 'ajuste' ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />} Ajustar frase
-          </button>
-          <button
-            type="button"
-            onClick={() => handleAI('grammar')}
-            disabled={!!aiLoading}
-            title="Corrigir só a gramática e a ortografia, sem mudar as palavras"
-            className={cn(
-              'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all',
-              aiLoading === 'grammar' ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
-            )}
-          >
-            {aiLoading === 'grammar' ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />} Gramática
+            <Sparkles size={14} /> IA
           </button>
         </div>
       )}
@@ -2774,31 +2795,17 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
             >
               <FileText size={16} /> Templates
             </button>
-            {/* Ajustar frase (Fabio 12/11): um clique reescreve o que está digitado num tom claro e profissional, sem mudar a informação. */}
+            {/* Um botão só: abre em cima do campo as opções "Ajustar frase" e "Corrigir gramática" (Fabio 12/11). */}
             <button
               type="button"
-              onClick={() => handleAI('ajuste')}
-              disabled={!!aiLoading}
-              title="Ajustar frase: a IA reescreve o que você digitou num tom claro e profissional, sem mudar a informação"
+              onClick={() => { setShowAI(v => !v); setShowTemplates(false); }}
+              title="Ajustar o texto com IA: ajustar a frase num tom claro e profissional, ou só corrigir a gramática"
               className={cn(
                 'hidden md:flex flex-shrink-0 h-10 px-3 gap-1.5 rounded-full items-center justify-center text-xs font-medium transition-all',
-                aiLoading === 'ajuste' ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+                showAI ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
               )}
             >
-              {aiLoading === 'ajuste' ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />} Ajustar frase
-            </button>
-            {/* Corrigir gramática: só ortografia e concordância, sem mudar as palavras. Os tons "Profissional", "Amigável" e "Divertido" saíram (Fabio 12/11). */}
-            <button
-              type="button"
-              onClick={() => handleAI('grammar')}
-              disabled={!!aiLoading}
-              title="Corrigir só a gramática e a ortografia, sem mudar as palavras"
-              className={cn(
-                'hidden md:flex flex-shrink-0 h-10 px-3 gap-1.5 rounded-full items-center justify-center text-xs font-medium transition-all',
-                aiLoading === 'grammar' ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
-              )}
-            >
-              {aiLoading === 'grammar' ? <Loader2 size={16} className="animate-spin" /> : <Check size={16} />} Gramática
+              <Sparkles size={16} /> Ajustar com IA
             </button>
           </>
         )}
