@@ -33,6 +33,6 @@ const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigi
 /** Anotação/aviso pra equipe quando a proposta é de construção. */
 export function textoConstrucao(financiado: number): string {
   return financiado > CONSTRUCAO_MIN_FINANCIADO
-    ? `🏗️ Proposta de CONSTRUÇÃO (terreno/lote + obra): no Financiamento, construção é só pela CAIXA (regra da A&F). Não rodei Credimorar (Bradesco/Santander), Inter nem Itaú. Financiado: ${brl(financiado)} — para seguir, use "Análise CAIXA" no card.`
+    ? `🏗️ Proposta de CONSTRUÇÃO (terreno/lote + obra): no Financiamento, construção é só pela CAIXA (regra da A&F). Não rodei Credimorar (Bradesco/Santander), Inter nem Itaú. Financiado: ${brl(financiado)} — a avaliação de construção na CAIXA é feita pela equipe no portal (a automática do card só roda imóvel usado e fica segurada).`
     : `🏗️ Proposta de CONSTRUÇÃO (terreno/lote + obra) com financiado de ${financiado > 0 ? brl(financiado) : 'valor não informado'}: construção só pela CAIXA e com financiado acima de ${brl(CONSTRUCAO_MIN_FINANCIADO)} — abaixo disso a A&F não faz em nenhum banco. Não rodei nenhum banco.`;
 }

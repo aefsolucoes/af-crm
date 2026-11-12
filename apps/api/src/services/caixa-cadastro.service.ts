@@ -184,7 +184,12 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         // Compra e venda da proposta que o cliente mandou (a mais recente com essa linha).
         const prop = ehFh ? await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', deleted: false, content: { contains: 'compra e venda', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, select: { content: true } }) : null;
         const compraVenda = valorDe(String(prop?.content || '').match(/valor de compra e venda:\s*([^\n]+)/i)?.[1]);
-        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo), ehFh ? { pediuPrice, compraVenda } : null, ehFh ? null : { pediuSac });
+        // Construção (Fabio 12/11): a avaliação automática só sabe rodar aquisição de imóvel USADO — card de construção fica segurado, não roda como usado.
+        const propFh = ehFh ? await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', deleted: false, content: { contains: 'Financiamento Habitacional' } }, orderBy: { createdAt: 'desc' }, select: { content: true } }) : null;
+        // O card manda (a equipe corrige o campo se o cliente mudou de ideia); o texto da proposta só vale quando o card não diz o tipo/finalidade — igual ao que o botão confere no clique.
+        const cardDiz = [cf.finalidade, cf.imovel_tipo, cf.tipo_imovel, cf.modalidade].some((v) => String(v ?? '').trim());
+        const construcao = ehFh && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh(cardDiz ? '' : propFh?.content || '', cf);
+        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo), ehFh ? { pediuPrice, compraVenda, construcao } : null, ehFh ? null : { pediuSac });
         if (typeof operacao === 'string') {
           await salvar(id, (x) => { x.avaliacao = { ...x.avaliacao, status: `SEGURADO: ${operacao}`, fim: new Date().toISOString() }; });
           await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏸️ Avaliação de Risco CAIXA não rodou: ${operacao}. Corrija e peça de novo (painel CAIXA da Análise de Crédito).` } }).catch(() => {});
@@ -737,7 +742,10 @@ const valorDe = (v: any): number | null => {
 
 /** Tela "Informações da Operação" da Avaliação de Risco (Fabio 31/10): PRICE, TR, garantia = alienação fiduciária, prazo máximo (240; outro só quando o
  *  cliente pede — ajuste "prazo" da CAIXA), imóvel e crédito da proposta do card, prestação necessária = 30% da renda BRUTA de quem entra na avaliação. Pura. */
-export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null, fh?: { pediuPrice?: boolean; compraVenda?: number | null } | null, he?: { pediuSac?: boolean } | null): Record<string, any> | string {
+export const SEGURA_CONSTRUCAO = 'card de CONSTRUÇÃO (terreno/obra) — a Avaliação de Risco automática só roda como aquisição de imóvel USADO; a de construção é feita pela equipe no portal da CAIXA (Fabio 12/11)';
+export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null, fh?: { pediuPrice?: boolean; compraVenda?: number | null; construcao?: boolean } | null, he?: { pediuSac?: boolean } | null): Record<string, any> | string {
+  // Construção NUNCA roda como imóvel usado (Fabio 12/11: "se eu solicitar a avaliação do crédito, ele vai rodar como construção?" — não: hoje só existe a modalidade de imóvel usado).
+  if (fh?.construcao) return SEGURA_CONSTRUCAO;
   const imovel = valorDe(cf.valor_imovel), credito = valorDe(cf.valor_credito);
   const renda = pessoas.reduce((t, p) => t + (valorDe(p?.rendaBrutaMensal) || valorDe(p?.contracheques?.[0]?.bruto) || 0), 0);
   if (!imovel || !credito) return 'valor do imóvel ou do crédito vazio no card';
@@ -982,7 +990,7 @@ export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
   if (!temFicha(cf)) return { tipo: 'falta', msg: 'O card ainda não tem a ficha de cadastro (dados lidos dos documentos) — rode o "Cadastro CAIXA" primeiro' };
   const q = participantesDaAvaliacao(participantesDa(cf));
   if (q.segurar) return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${q.segurar}` };
-  const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null } : null, fh ? null : { pediuSac: false });
+  const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null, construcao: (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf) } : null, fh ? null : { pediuSac: false });
   if (typeof op === 'string') return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${op}` };
   const semCadastro = [q.tomador, ...q.incluir].filter((p) => !gravado(c, p.ordem));
   if (semCadastro.length) {
