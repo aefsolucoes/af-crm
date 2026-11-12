@@ -74,7 +74,7 @@ function imovelDoCard(cf: Record<string, any>, he: boolean) {
   const [uf, cidade0] = ufImovel && cidadeImovel ? [ufImovel, cidadeImovel] : end.uf && end.cidade ? [String(end.uf).toUpperCase(), String(end.cidade)] : ['DF', 'BRASILIA'];
   // DF: Taguatinga, Ceilândia etc. são regiões administrativas — o município é Brasília (Windson: imóvel na CSG 3, Taguatinga).
   const cidade = uf === 'DF' ? 'BRASILIA' : cidade0;
-  const tipo = `${cf.imovel_tipo || ''} ${cf.tipo_imovel || ''} ${cf.condicao_imovel || ''}`;
+  const tipo = `${cf.imovel_tipo || ''} ${cf.tipo_imovel || ''} ${cf.condicao_imovel || ''} ${cf.finalidade || ''}`; // finalidade "Construção" (Isidro, 12/11)
   const deseja = he ? 'emprestimo' : /terreno|lote/i.test(tipo) ? 'terreno' : /constru/i.test(tipo) ? 'construir' : /novo|planta|lan[çc]amento/i.test(tipo) ? 'novo' : 'usado';
   const sim = (v: unknown) => /^(s|sim|true|1)/i.test(String(v ?? '').trim());
   return {
