@@ -163,7 +163,15 @@ router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   // `denovo` + `amortizacao` (SAC|PRICE): reabre a avaliação que deu erro e troca só a amortização (Fabio 12/11, Isidro: PRICE recusada no prazo → "pode aprovar na SAC").
   const amort = /^(SAC|PRICE)$/i.test(String(req.body?.amortizacao || '')) ? String(req.body.amortizacao).toUpperCase() : null;
-  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true, denovo: req.body?.denovo === true, ...(amort ? { ajuste: { amortizacao: amort } } : {}) }).catch((e) => e?.message || 'erro');
+  // `ajusteAnterior`: reenvia com o MESMO ajuste da avaliação refeita que parou pra conferência (condicionada de construção — Fabio 12/11, Isidro: "pode enviar").
+  let ajuste: Record<string, unknown> | undefined = amort ? { amortizacao: amort } : undefined;
+  if (req.body?.ajusteAnterior === true) {
+    const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+    const aj = ((l?.customFields || {}) as any)._caixaCadastro?.avaliacao?.ajuste;
+    if (!aj) return res.status(400).json({ error: 'a avaliação deste card não tem ajuste pra reenviar' });
+    ajuste = aj;
+  }
+  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true, denovo: req.body?.denovo === true, ...(ajuste ? { ajuste } : {}) }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
