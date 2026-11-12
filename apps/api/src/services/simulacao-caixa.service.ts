@@ -39,6 +39,8 @@ export async function pedirSimulacaoCaixa(accountId: string, leadId: string, por
   if (!lead) return { erro: 'Card não encontrado' };
   const st = ((lead.customFields || {}) as any)._caixaSimulacao?.status;
   if (['FILA', 'RODANDO'].includes(st)) return { erro: 'A simulação da CAIXA deste cliente já está em andamento.' };
+  // Sem o WhatsApp do código conectado (QR), o código da CAIXA se perde — não roda (Fabio 12/11).
+  if (!(require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId)) return { erro: 'O WhatsApp do código da CAIXA (QR) está desconectado — escaneie em /caixa-codigo e peça de novo.' };
   const d = dadosDoCard((lead.customFields || {}) as Record<string, any>);
   if (d.cpf.length !== 11) return { erro: 'Sem o CPF do tomador (ficha de cadastro ou card).' };
   if (!d.nascimento) return { erro: 'Sem a data de nascimento do tomador.' };
@@ -71,6 +73,7 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
     const cf = (lead?.customFields || {}) as Record<string, any>;
     const s = cf._caixaSimulacao || {};
     if (s.status === 'RODANDO' && !(s.leaseAt && Date.now() - Date.parse(s.leaseAt) > LEASE_MS)) continue;
+    if (!(require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId)) return null; // espera o QR voltar
     const he = /home|garantia/i.test(lead?.pipeline?.department?.name || '');
     const d = dadosDoCard(cf);
     await gravar(id, { status: 'RODANDO', leaseAt: new Date().toISOString(), inicio: new Date().toISOString() });
@@ -79,7 +82,7 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
       leadName: lead?.name || '',
       produto: he ? 'HE' : 'FH',
       // Número conectado por QR (recebe o código — a API Oficial não lê a mensagem da CAIXA, erro 131051); sem QR, o da API (o código se perde).
-      celular: (require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId) || NUMERO_API_SIMULADOR,
+      celular: (require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId)!,
       dados: {
         cpf: d.cpf, nascimento: d.nascimento, renda: brl(d.renda), maisDeUm: d.maisDeUm, fgts3anos: d.fgts,
         valorImovel: brl(num(cf.valor_imovel)), valorFinanciamento: brl(num(cf.valor_credito)),

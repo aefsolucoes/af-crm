@@ -70,7 +70,19 @@ export function codigoDoTexto(t: string): string | null {
   return (t.match(/\b(\d{6})\b/) || t.match(/\b(\d{4,8})\b/) || [])[1] || null;
 }
 
-async function iniciar(accountId: string): Promise<void> {
+/** Avisa os administradores (push) — sessão caiu de vez e precisa de QR novo (Fabio 12/11: "e em caso de desconectar sozinho?"). Uma vez a cada 6 h. */
+let avisadoEm = 0;
+async function avisarDesconectado(accountId: string, motivo: string): Promise<void> {
+  if (Date.now() - avisadoEm < 6 * 3600_000) return;
+  avisadoEm = Date.now();
+  try {
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    const admins = await prisma.user.findMany({ where: { accountId, role: 'ADMIN' }, select: { id: true } });
+    await sendPushToAccount(accountId, { title: '📵 WhatsApp do código da CAIXA desconectou', body: `${motivo} — abra o CRM em /caixa-codigo e escaneie o QR de novo.`, url: '/caixa-codigo' }, admins.map((a) => a.id));
+  } catch (e: any) { console.error('[QR código CAIXA] push:', e?.message); }
+}
+
+async function iniciar(accountId: string, opts: { doBanco?: boolean } = {}): Promise<void> {
   const atual = conexoes.get(accountId);
   if (atual && (atual.status === 'conectado' || atual.status === 'conectando' || atual.status === 'qr')) return;
   const c: Conexao = { sock: null, qr: null, status: 'conectando', numero: null, tentativas: (atual?.tentativas || 0) };
@@ -79,7 +91,8 @@ async function iniciar(accountId: string): Promise<void> {
     const b = await dynamicImport('@whiskeysockets/baileys');
     const makeWASocket = b.default?.default || b.default || b.makeWASocket;
     const { useMultiFileAuthState, fetchLatestBaileysVersion, Browsers, DisconnectReason } = b;
-    const dir = await restaurar(accountId);
+    // Reconexão no mesmo processo (ex.: 515 logo depois de escanear) usa a pasta como está — restaurar do banco aqui apagava as credenciais novas (12/11).
+    const dir = opts.doBanco !== false || !fs.existsSync(pasta(accountId)) ? await restaurar(accountId) : pasta(accountId);
     const { state, saveCreds } = await useMultiFileAuthState(dir);
     let version: number[] | undefined;
     try { version = (await fetchLatestBaileysVersion()).version; } catch { /* usa a padrão da lib */ }
@@ -92,6 +105,7 @@ async function iniciar(accountId: string): Promise<void> {
     c.sock = sock;
     sock.ev.on('creds.update', async () => { await saveCreds(); await salvar(accountId, dir); });
     sock.ev.on('connection.update', async (u: any) => {
+      if (u.connection) console.log(`[QR código CAIXA] conexão: ${u.connection}`);
       if (u.qr) {
         try { const QRCode = await import('qrcode'); c.qr = await QRCode.toDataURL(u.qr); c.status = 'qr'; } catch (e: any) { console.error('[QR código CAIXA] QR:', e?.message); }
       }
@@ -106,13 +120,20 @@ async function iniciar(accountId: string): Promise<void> {
         const saiu = code === DisconnectReason?.loggedOut || code === 401 || code === 403;
         c.status = 'desconectado'; c.qr = null; c.sock = null;
         console.log(`[QR código CAIXA] fechou (status ${code})${saiu ? ' — sessão encerrada no celular' : ''}`);
-        if (saiu) { await apagarSessao(accountId); return; }
-        if (c.tentativas++ < 5) setTimeout(() => iniciar(accountId).catch(() => {}), 5000);
+        if (saiu) { await apagarSessao(accountId); await avisarDesconectado(accountId, 'A sessão foi encerrada no celular'); return; }
+        await salvar(accountId, dir);
+        // Reconecta sempre: 5 s nas primeiras vezes, depois 1 min, depois 5 min (nunca desiste — o código da CAIXA depende disso).
+        const espera = c.tentativas < 5 ? 5000 : c.tentativas < 20 ? 60_000 : 300_000;
+        c.tentativas++;
+        if (c.tentativas === 20) await avisarDesconectado(accountId, 'Não consigo reconectar há um tempo');
+        setTimeout(() => iniciar(accountId, { doBanco: false }).catch(() => {}), espera);
       }
     });
     // Só LÊ: guarda o código e mais nada (sem card, sem IA, sem Inbox, sem resposta).
-    sock.ev.on('messages.upsert', ({ messages }: any) => {
+    sock.ev.on('messages.upsert', ({ messages, type }: any) => {
       for (const m of messages || []) {
+        // Diagnóstico mínimo (sem conteúdo, sem número): ver se a mensagem da CAIXA chega e se dá pra ler.
+        console.log(`[QR código CAIXA] mensagem (${type}) fromMe=${!!m?.key?.fromMe} stub=${m?.messageStubType ?? '-'} tipos=${Object.keys(m?.message || {}).join(',') || 'nenhum'}`);
         if (m?.key?.fromMe || !m?.message) continue;
         const codigo = codigoDoTexto(textos(m.message).join(' \n '));
         if (!codigo) continue;
@@ -127,7 +148,7 @@ async function iniciar(accountId: string): Promise<void> {
   }
 }
 
-export async function conectarQr(accountId: string) { await iniciar(accountId); return statusQr(accountId); }
+export async function conectarQr(accountId: string) { await iniciar(accountId, { doBanco: true }); return statusQr(accountId); }
 export function statusQr(accountId: string): { status: Status; qr: string | null; numero: string | null } {
   const c = conexoes.get(accountId);
   return { status: c?.status || 'desconectado', qr: c?.qr || null, numero: c?.numero || null };
@@ -151,5 +172,5 @@ export function numeroQr(accountId: string): string | null {
 /** No boot: reconecta quem já tinha escaneado o QR. */
 export async function retomarQrNoBoot(): Promise<void> {
   const rows = await prisma.baileysSession.findMany({ select: { accountId: true, data: true } });
-  for (const r of rows) if ((r.data as any)?.caixaCodigo) await iniciar(r.accountId).catch(() => {});
+  for (const r of rows) if ((r.data as any)?.caixaCodigo) await iniciar(r.accountId, { doBanco: true }).catch(() => {});
 }
