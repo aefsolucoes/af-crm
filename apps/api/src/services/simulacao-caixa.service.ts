@@ -86,6 +86,16 @@ function imovelDoCard(cf: Record<string, any>, he: boolean) {
   };
 }
 
+/** Como a CAIXA aprovou (detalhe da avaliação em `_caixaResultado.ultimaTela`, quando a extensão leu): modalidade (SBPE/MCMV), SAC/PRICE e prazo; e a entrada que
+ *  dá o financiamento do card (imóvel − crédito). Sem o detalhe: PRICE no prazo máximo (Fabio: sempre o prazo máximo; a CAIXA refaz na PRICE quando condiciona). */
+function condicoesDaAprovacao(cf: Record<string, any>) {
+  const tela = String(cf._caixaResultado?.ultimaTela || '');
+  const sistema = /\bSAC\b/i.test(tela) && !/\bPRICE\b/i.test(tela) ? 'SAC' : 'PRICE';
+  const modalidade = /SBPE/i.test(tela) ? 'sbpe' : /MCMV|minha casa/i.test(tela) ? 'mcmv' : '';
+  const imovel = num(cf.valor_imovel), credito = num(cf.valor_credito);
+  return { sistema, modalidade, entradaDesejada: imovel && credito && imovel > credito ? brl(imovel - credito) : '' };
+}
+
 /** Fila da extensão. */
 export async function proximaSimulacaoCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
@@ -109,6 +119,7 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
       dados: {
         cpf: d.cpf, nascimento: d.nascimento, renda: brl(d.renda), maisDeUm: d.maisDeUm, fgts3anos: d.fgts,
         valorFinanciamento: brl(num(cf.valor_credito)),
+        ...condicoesDaAprovacao(cf),
         prazoMeses: num(cf._fhPrazo || cf.prazo_meses || cf.prazo) || null,
         ...imovelDoCard(cf, he),
       },
@@ -135,7 +146,7 @@ export async function codigoSimulacao(accountId: string, desde: Date): Promise<{
 }
 
 /** Resultado/andamento da extensão → card. MAPEAR = tela que a extensão ainda não sabe preencher (vai o retrato dela pra eu mapear). */
-export async function gravarSimulacaoCaixa(accountId: string, leadId: string, body: { etapa: string; texto?: string; campos?: any[]; erro?: string; tela?: string }, _io?: Io): Promise<void> {
+export async function gravarSimulacaoCaixa(accountId: string, leadId: string, body: { etapa: string; texto?: string; campos?: any[]; erro?: string; tela?: string; resultado?: ResultadoCaixa }, _io?: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!lead) throw new Error('Card não encontrado');
   const etapa = String(body.etapa || '').toUpperCase();
@@ -153,8 +164,68 @@ export async function gravarSimulacaoCaixa(accountId: string, leadId: string, bo
     await nota(leadId, `🧮 Simulação CAIXA parou numa tela que a extensão ainda não conhece (${body.tela || '—'}):\n${(body.texto || '').slice(0, 1500)}${campos ? `\n\nCampos:\n${campos}` : ''}`);
     return;
   }
+  if (etapa === 'PRONTA' && body.resultado) { await prontaComPdf(accountId, leadId, lead.name, body.resultado); return; }
   const status = etapa === 'PRONTA' ? 'PRONTA' : 'ERRO';
   await gravar(leadId, { status, leaseAt: null, erro: body.erro || null, resultado: etapa === 'PRONTA' ? { texto: (body.texto || '').slice(0, 4000), campos: body.campos || [] } : undefined });
   await nota(leadId, etapa === 'PRONTA' ? `🧮 Simulação da CAIXA pronta:\n${(body.texto || '').slice(0, 2000)}` : `⚠️ Simulação da CAIXA parou: ${String(body.erro || etapa).slice(0, 400)}${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}`);
   if (etapa !== 'PRONTA') await sendPushToAccount(accountId, { title: `🧮 ${lead.name}: simulação CAIXA parou`, body: String(body.erro || etapa).slice(0, 120), leadId }).catch(() => {});
+}
+
+/** Resultado do simulador da CAIXA (etapa 4 + "Ver parcelas"): linhas = [nº, vencimento, prestação, MIP, DFI/DFC, seguros, taxa adm., encargo, saldo devedor]. */
+export interface ResultadoCaixa {
+  modalidade?: string; valorImovel?: string; entrada?: string; financiamento?: string; prazo?: string; sistema?: string;
+  jurosEfetivos?: string; jurosNominais?: string; seguradora?: string; bonificada?: boolean; primeira?: string; ultima?: string;
+  linhas?: string[][];
+}
+
+/** Monta o NOSSO PDF ("Evolução das parcelas", padrão das outras simulações, banco CAIXA) com os números do simulador e salva na pasta do cliente (raiz).
+ *  Fabio 12/11: "coleta os dados da CAIXA e joga na nossa simulação" + "coloca a simulação na pasta do cliente". Nada vai ao cliente aqui. */
+async function prontaComPdf(accountId: string, leadId: string, nome: string, r: ResultadoCaixa): Promise<void> {
+  const pct = (v?: string) => Number(String(v || '').replace(/[^\d.,]/g, '').replace(',', '.')) || null;
+  const linhas = (r.linhas || []).filter((l) => Array.isArray(l) && l.length >= 9);
+  const fin = num(r.financiamento);
+  const rows = linhas.map((l, i) => {
+    const saldo = num(l[8]);
+    const anterior = i === 0 ? fin : num(linhas[i - 1][8]);
+    const prest = num(l[2]);
+    const amort = Math.max(0, Math.round((anterior - saldo) * 100) / 100);
+    return { n: Number(l[0]) || i + 1, amort, juros: Math.max(0, Math.round((prest - amort) * 100) / 100), mip: num(l[3]), dfi: num(l[4]), tsa: num(l[6]), parcela: num(l[7]), saldo };
+  });
+  const sistema = /price/i.test(r.sistema || '') ? 'PRICE' : 'SAC';
+  const indexador = (/\/\s*([A-Z]{2,5})\b/.exec(r.sistema || '') || [])[1] || 'TR';
+  const { renderSimulationSheet, taxasDe } = await import('./simulation-sheet.service');
+  const taxas = taxasDe({ nominalAA: pct(r.jurosNominais), efetivaAA: pct(r.jurosEfetivos), indexador });
+  const bonif = r.bonificada ? ' (bonificada)' : '';
+  let link: string | null = null, driveId: string | null = null, erroPdf = '';
+  try {
+    if (!rows.length) throw new Error('a tabela de parcelas veio vazia');
+    const pdf = await renderSimulationSheet({
+      clientName: nome, bank: 'CAIXA', titulo: 'Financiamento Imobiliário | Evolução das parcelas',
+      summary: {
+        tipoImovel: 'Residencial', prazoMeses: rows.length, sistema, valorImovel: num(r.valorImovel), valorEmprestimo: fin, indexador, valorEntrada: num(r.entrada),
+        taxaMensal: taxas.taxaMensal, taxaNominal: `${taxas.taxaNominal}${bonif}`, taxaEfetiva: `${taxas.taxaEfetiva}${bonif}`,
+      },
+      rows,
+    });
+    const cf = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const pasta = String(cf.link_pasta_drive || '').trim();
+    if (!pasta) throw new Error('o card não tem "Pasta no Drive"');
+    const google = await import('./google.service');
+    const arquivo = `SIMULACAO CAIXA ${String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
+    const velho = (cf._caixaSimulacao || {}).pdf?.driveId;
+    if (velho) await google.trashDriveItem(accountId, velho).catch(() => {});
+    const up = await google.uploadFile(accountId, { name: arquivo, mimeType: 'application/pdf', parentId: google.extractFolderId(pasta), data: pdf });
+    link = up.webViewLink; driveId = up.id;
+  } catch (e: any) { erroPdf = e?.message || String(e); }
+  const { linhas: _l, ...resumo } = r;
+  await gravar(leadId, { status: erroPdf ? 'ERRO' : 'PRONTA', leaseAt: null, erro: erroPdf || null, resultado: { ...resumo, parcelas: rows.length }, pdf: driveId ? { driveId, link, em: new Date().toISOString() } : undefined });
+  const linhasNota = [
+    `🧮 Simulação da CAIXA${erroPdf ? ' feita, mas o PDF NÃO saiu' : ' pronta'} — ${r.modalidade || '—'}${bonif}`,
+    `Imóvel ${r.valorImovel || '—'} • entrada ${r.entrada || '—'} • financiamento ${r.financiamento || '—'}`,
+    `${rows.length || r.prazo || '—'} meses • ${r.sistema || sistema} • juros ${r.jurosNominais || '—'} nominais / ${r.jurosEfetivos || '—'} efetivos`,
+    `Seguradora ${r.seguradora || '—'}: 1ª parcela ${r.primeira || (rows[0] ? `R$ ${brl(rows[0].parcela)}` : '—')} • última ${r.ultima || (rows.length ? `R$ ${brl(rows[rows.length - 1].parcela)}` : '—')}`,
+    erroPdf ? `⚠️ PDF: ${erroPdf}` : `📄 PDF na pasta do cliente: ${link || '—'}`,
+  ];
+  await nota(leadId, linhasNota.join('\n'));
+  if (erroPdf) await sendPushToAccount(accountId, { title: `🧮 ${nome}: simulação CAIXA sem PDF`, body: erroPdf.slice(0, 120), leadId }).catch(() => {});
 }
