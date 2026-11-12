@@ -27,10 +27,11 @@ interface KanbanCardProps {
 }
 
 /** Selo do banco (Fabio 28/10: "o símbolo do banco no card que está fazendo naquele banco, algo redondo e pequeno no canto superior direito"). */
-// Os MESMOS logos do site da A&F (assets/images/bancos e parceiro-creditas.svg) — Fabio 28/10: "as logos têm que ser as mesmas do site".
+// Os MESMOS logos do site da A&F (assets/images/bancos e creditas-logo-oficial.svg) — Fabio 28/10: "as logos têm que ser as mesmas do site".
+// Creditas: só o SÍMBOLO (quadradinho verde do creditas-logo-oficial.svg do site) — a palavra "creditas" inteira ficava ilegível num selo deste tamanho (Fabio 12/11: "colocar o símbolo da Creditas no card, igual está no Santander").
 const BANK_BADGE: Record<string, { label: string; img?: string; text: string; bg: string; fit?: 'cover' | 'contain' }> = {
   INTER: { label: 'Inter', img: '/banks/inter.png', text: 'I', bg: '#FF7A00', fit: 'cover' },
-  CREDITAS: { label: 'Creditas', img: '/banks/creditas.svg', text: 'C', bg: '#FFFFFF', fit: 'contain' },
+  CREDITAS: { label: 'Creditas', img: '/banks/creditas-simbolo.svg', text: 'C', bg: '#8EDB00', fit: 'cover' },
   SANTANDER: { label: 'Santander', img: '/banks/santander.png', text: 'S', bg: '#FFFFFF', fit: 'contain' },
   BRADESCO: { label: 'Bradesco', img: '/banks/bradesco.png', text: 'B', bg: '#CC092F', fit: 'cover' },
   ITAU: { label: 'Itaú', img: '/banks/itau.png', text: 'it', bg: '#EC7000', fit: 'cover' },
