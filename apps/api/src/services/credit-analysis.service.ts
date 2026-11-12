@@ -309,6 +309,18 @@ export function santanderMaxTermMonths(birth: unknown, now = new Date()): number
 const PRAZO_MINIMO_HOME_EQUITY = 60;
 type AgePerson = { name: string; age: number | null; max: number | null };
 
+/** Fabio 12/11: "não fazemos crédito com garantia para menores de 18 anos". Vale pros três bancos do Home Equity (o Inter já tinha a faixa 18–69; Santander e
+ *  Creditas só olhavam o teto): com TODOS os participantes menores, nenhum banco roda ("NÃO RODEI"); menor que entra só compondo renda sai da análise
+ *  (alignHolderByAge) e roda o outro sozinho. Sem nascimento = não sabe, roda. */
+export const IDADE_MINIMA = 18;
+/** Idade abaixo de 10 anos é nascimento digitado errado (a data de hoje no campo, ano trocado) — conta como "não sei", nunca como menor. */
+export const IDADE_PLAUSIVEL = 10;
+const maiorDeIdade = (x: { age: number | null }) => x.age === null || x.age < IDADE_PLAUSIVEL || x.age >= IDADE_MINIMA;
+export function minorBlockText(people: AgePerson[]): string | null {
+  if (!people.length || people.some(maiorDeIdade)) return null;
+  return `menor de ${IDADE_MINIMA} anos — não fazemos crédito com garantia para menores: ${people.map((x) => `${x.name} (${x.age} anos)`).join(', ')}.`;
+}
+
 /** Santander e Creditas: idade + prazo ≤ 80 anos (Fabio 19/10: "a Creditas é a mesma regra do Santander").
  *  NÃO barra quem só tem prazo menor — a extensão roda com o MAIOR prazo que a idade permite ("sempre ajustar pra tentar aprovar"; Santander: prazo 172 pra quem tem 65 anos).
  *  Só barra (sem abrir o portal) quando NENHUM participante alcança nem o prazo mínimo do Home Equity (60 meses). Sem nascimento = não sabe, roda. */
@@ -353,7 +365,7 @@ async function alignHolderByAge(db: Db, accountId: string, leadId: string, bank:
   const ov = await db.creditOverride.findFirst({ where: { leadId, bank }, select: { data: true } });
   if ((ov?.data as any)?.escolhaManual === true) return; // a equipe escolheu quem entra (Fabio 05/11): vale a escolha
   const inverted = (ov?.data as any)?.inverter === true;
-  const ok = (x: AgePerson) => bank === 'INTER' ? (x.age === null || (x.age >= 18 && x.age <= 69)) : (x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY);
+  const ok = (x: AgePerson) => maiorDeIdade(x) && (bank === 'INTER' ? (x.age === null || x.age <= 69) : (x.max === null || x.max >= PRAZO_MINIMO_HOME_EQUITY));
   const [first, second] = inverted ? [people[1], people[0]] : [people[0], people[1]];
   // Fabio 02/11: quem não alcança o mínimo do banco pela idade SAI da análise (não fica nem como 2º participante — o portal confere a idade de cada um e recusa ou corta o prazo)
   // e roda só no nome do outro. Os dois dentro (ou os dois fora, que o bloqueio por idade já barra) = os dois na análise.
@@ -458,6 +470,15 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       // Idade fora da faixa do Inter (18 a 69 anos — o portal recusa com "Parâmetro inválido", Admir 15/10): se NENHUM participante do card está na faixa, nem abre fila: NÃO RODEI direto.
       // (Com 1 participante na faixa a extensão decide quem é o titular — não barra aqui.)
       if ((bank === 'INTER' || bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun) await alignHolderByAge(db, p.accountId, l.id, bank).catch(() => {});
+      // Menor de 18 anos (Fabio 12/11): nenhum banco do Home Equity roda quando todos os participantes são menores.
+      if ((bank === 'INTER' || bank === 'CREDIMORAR' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun) {
+        const menor = minorBlockText(await agePeople(db, l.id));
+        if (menor) {
+          await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail: `NÃO RODEI: ${menor}`, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
+          created++;
+          continue;
+        }
+      }
       if (bank === 'INTER' && kind === 'RUN' && !p.dryRun) {
         const idade = await interAgeBlock(db, l.id);
         if (idade) {

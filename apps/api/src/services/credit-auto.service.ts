@@ -104,6 +104,11 @@ async function aiReadiness(leadId: string): Promise<{ ready: boolean; reason: st
  *  Regras que o CRM conhece: Inter aceita de 18 a 69 anos (o portal recusa fora disso); Santander/Credimorar exige idade + prazo ≤ 80 anos (aos 75 anos e meio o prazo máximo caiu pra 23 meses —
  *  abaixo do mínimo); Creditas: limite NÃO confirmado (por isso 75, a idade em que Inter e Santander já barram de fato). Ajustar aqui se o Fabio confirmar outro limite. */
 export const IDADE_LIMITE_ENTRADA = 75;
+/** Fabio 12/11: "não fazemos crédito com garantia para menores de 18 anos" — proposta só com menor(es) também é descartada na entrada. */
+export const IDADE_MINIMA_ENTRADA = 18;
+/** Idade com que a pessoa não consegue o crédito em banco nenhum: menor de 18 ou com 75 anos ou mais. Abaixo de 10 anos é nascimento digitado errado (a data de
+ *  hoje no campo, ano trocado): não descarta ninguém por isso. Pura. */
+export const idadeForaDaEntrada = (idade: number): boolean => (idade >= 10 && idade < IDADE_MINIMA_ENTRADA) || idade >= IDADE_LIMITE_ENTRADA;
 
 async function descartarPorIdade(accountId: string, l: { id: string; name: string }, cf: Cf, io: any): Promise<boolean> {
   if (cf._ageBlockAt) return true;
@@ -112,14 +117,17 @@ async function descartarPorIdade(accountId: string, l: { id: string; name: strin
     { nome: String(cf.participante_1 || l.name), idade: ageOf(cf.nascimento_1) },
     ...(cf.cpf_2 || cf.participante_2 ? [{ nome: String(cf.participante_2 || '2º participante'), idade: ageOf(cf.nascimento_2) }] : []),
   ];
-  if (pessoas.some((x) => x.idade === null || x.idade < IDADE_LIMITE_ENTRADA)) return false; // sem nascimento = não sabe; alguém mais novo = os bancos ainda podem aceitar
+  // Sem nascimento = não sabe; alguém entre 18 e 74 anos = os bancos ainda podem aceitar (o menor ou o idoso que só compõe renda sai da análise depois).
+  if (pessoas.some((x) => x.idade === null || !idadeForaDaEntrada(x.idade))) return false;
   if (!inNoticeWindow()) return false; // avisos ao cliente só das 07h às 21h: tenta de novo no próximo minuto dentro do horário
   const resumo = pessoas.map((x) => `${x.nome} (${x.idade} anos)`).join(', ');
+  const menores = pessoas.every((x) => (x.idade as number) < IDADE_MINIMA_ENTRADA); // Fabio 12/11: "não fazemos crédito com garantia para menores de 18 anos"
   const { sendAgeBlockNotice, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   await saveCf(l.id, { _ageBlockAt: new Date().toISOString() }); // antes de enviar: se algo falhar, não repete em laço
-  const out = await sendAgeBlockNotice({ accountId, leadId: l.id, io });
-  await markRejectedAndMove({ accountId, leadId: l.id, motivo: `idade fora do limite dos bancos (${resumo}; Inter aceita de 18 a 69 anos e o Santander exige idade + prazo até 80 anos)`, disqualify: true, io });
-  await addNote(l.id, out.ok ? `🚫 Descartado na entrada por IDADE (${resumo}): os bancos não aprovam essa faixa de idade. O cliente foi avisado de forma amigável (${out.via === 'whatsapp' ? 'WhatsApp' : out.via === 'template' ? 'template do WhatsApp' : 'e-mail'}) e nenhuma análise foi rodada.` : `🚫 Descartado na entrada por IDADE (${resumo}), mas o aviso ao cliente NÃO saiu (${out.error}). Avise à mão.`);
+  const out = await sendAgeBlockNotice({ accountId, leadId: l.id, io, menor: menores });
+  await markRejectedAndMove({ accountId, leadId: l.id, motivo: menores ? `menor de ${IDADE_MINIMA_ENTRADA} anos (${resumo}): não fazemos crédito com garantia para menores` : `idade fora do limite dos bancos (${resumo}; Inter aceita de 18 a 69 anos e o Santander exige idade + prazo até 80 anos)`, disqualify: true, io });
+  const porque = menores ? `não fazemos crédito com garantia para menor de ${IDADE_MINIMA_ENTRADA} anos` : 'os bancos não aprovam essa faixa de idade';
+  await addNote(l.id, out.ok ? `🚫 Descartado na entrada por IDADE (${resumo}): ${porque}. O cliente foi avisado de forma amigável (${out.via === 'whatsapp' ? 'WhatsApp' : out.via === 'template' ? 'template do WhatsApp' : 'e-mail'}) e nenhuma análise foi rodada.` : `🚫 Descartado na entrada por IDADE (${resumo}: ${porque}), mas o aviso ao cliente NÃO saiu (${out.error}). Avise à mão.`);
   console.log(`[Triagem de idade] ${l.name}: descartado (${resumo}); aviso ${out.ok ? out.via : 'FALHOU'}`);
   return true;
 }

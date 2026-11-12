@@ -1349,12 +1349,17 @@ export async function sendRejectionNoticeNow(p: { accountId: string; leadId: str
 
 /** Aviso AMIGÁVEL de idade (Fabio 17/10, Admir de 75 anos): os bancos têm limite de idade, então o cliente é avisado na entrada, sem rodar nada e sem prometer alternativa.
  *  WhatsApp dentro da janela de 24 h; fora dela, vai o template aprovado "reprovacao" (texto geral) — e, se falhar, e-mail; sem nada disso, nota pra equipe. */
-export async function sendAgeBlockNotice(p: { accountId: string; leadId: string; io?: any }): Promise<{ ok: boolean; via?: 'whatsapp' | 'template' | 'email'; error?: string }> {
+export const textoAvisoIdade = (nome: string | null | undefined, menor: boolean): string => menor
+  // Fabio 12/11: "não fazemos crédito com garantia para menores de 18 anos".
+  ? `Oi${nome ? `, ${nome}` : ''}! Tudo bem? 😊 Analisei o seu pedido com carinho e, infelizmente, não vamos conseguir seguir: o crédito com garantia de imóvel é só para quem já tem 18 anos. Agradeço muito o seu contato e o seu interesse!`
+  : `Oi${nome ? `, ${nome}` : ''}! Tudo bem? 😊 Analisei o seu pedido com carinho e, infelizmente, não vamos conseguir crédito para a sua faixa de idade: os bancos parceiros têm um limite de idade para a contratação (a idade somada ao prazo do financiamento não pode passar do permitido). Agradeço muito o seu contato e o seu interesse!`;
+
+export async function sendAgeBlockNotice(p: { accountId: string; leadId: string; io?: any; menor?: boolean }): Promise<{ ok: boolean; via?: 'whatsapp' | 'template' | 'email'; error?: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true, contact: { select: { name: true, email: true } } } });
   if (!lead) return { ok: false, error: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name, lead.contact?.name);
-  const texto = `Oi${nome ? `, ${nome}` : ''}! Tudo bem? 😊 Analisei o seu pedido com carinho e, infelizmente, não vamos conseguir crédito para a sua faixa de idade: os bancos parceiros têm um limite de idade para a contratação (a idade somada ao prazo do financiamento não pode passar do permitido). Agradeço muito o seu contato e o seu interesse!`;
+  const texto = textoAvisoIdade(nome, p.menor === true);
   if (await whatsappWindowOpen(p.leadId)) {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: texto, io: p.io });
