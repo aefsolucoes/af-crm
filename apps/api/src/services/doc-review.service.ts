@@ -15,7 +15,9 @@ const DOC_DO_VENDEDOR = /^(MATRICULA|CERTIDAO DE ONUS|ESCRITURA)/;
  * A conferência de "chegou tudo?" (docs-checker) só olhava tipo e titular; aqui é a qualidade. Cada arquivo é lido uma vez e fica guardado no card
  * (customFields._docReview, por id do anexo). */
 
-const MAX_REVIEW_BYTES = 10_000_000;
+/** PDF até 20 MB (Fabio 12/11: contracheques escaneados de 12,8 MB ficavam sem leitura; em base64 dá ~27 MB, abaixo dos 32 MB por pedido da API).
+ *  Foto continua em 10 MB: a API não aceita imagem acima de 5 MB, então mandar maior só gasta a chamada. */
+const MAX_REVIEW_BYTES = { pdf: 20_000_000, imagem: 10_000_000 };
 
 export interface DocReview {
   tipo: string;
@@ -159,7 +161,7 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
     else if (att.driveFileId) ({ buffer, mimeType } = await downloadDriveFileForVision(accountId, att.driveFileId, att.mimeType));
     else return undefined;
   } catch { return undefined; }
-  if (buffer.length > MAX_REVIEW_BYTES) return undefined;
+  if (buffer.length > (isPdf ? MAX_REVIEW_BYTES.pdf : MAX_REVIEW_BYTES.imagem)) return undefined;
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
   const source = { type: 'base64', media_type: mediaType, data: buffer.toString('base64') };
