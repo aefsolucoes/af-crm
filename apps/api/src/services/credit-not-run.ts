@@ -50,6 +50,8 @@ export function whyNotRun(i: NotRunInput): string {
     if (!i.settings?.enabled) return 'A análise automática está DESLIGADA — rode à mão (botão "Rodar").';
     if (i.settings.enabledAt && i.stageEnteredAt && i.stageEnteredAt.getTime() < i.settings.enabledAt.getTime()) return 'Entrou na Pré-Análise ANTES de a análise automática ser ligada (cards antigos não entram) — rode à mão.';
     if (cf._autoGiveUp) return `A IA conferiu a proposta ${AI_CHECK_MAX} vezes e achou que precisa de atenção (veja a anotação "Análise automática NÃO iniciada" no card). Acerte e use "Rodar".`;
+    // Nome incompleto na proposta (Fabio 12/11): a análise não começa até o card ter nome e sobrenome completos.
+    if (!cf._autoStartedAt && ['ASKED', 'AVISADO'].includes(String(cf._nomeIncompleto?.status || ''))) return cf._nomeIncompleto.status === 'ASKED' ? 'Nome incompleto na proposta: o CRM pediu o nome completo ao cliente e a análise começa quando ele mandar (ou corrija o nome no card).' : 'Nome incompleto na proposta: a análise não começou. Corrija o nome no card ou peça o nome completo ao cliente.';
     if (!cf._autoStartedAt) {
       if (i.stageEnteredAt && now - i.stageEnteredAt.getTime() < MIN_AFTER_STAGE_MS) return 'Acabou de entrar na Pré-Análise: a IA começa a conferir os dados da proposta em ~3 min.';
       const n = Number(cf._autoChecks || 0);

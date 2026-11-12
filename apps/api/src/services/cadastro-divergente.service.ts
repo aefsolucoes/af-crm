@@ -177,11 +177,14 @@ async function uma(accountId: string, r: { id: string; leadId: string; bank: str
 export async function aiCadDivContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cd = ((l?.customFields || {}) as Record<string, any>)._cadDiv as { status?: string; bank?: string } | undefined;
+  // Nome incompleto na proposta (Fabio 12/11): a análise espera o nome completo — esse bloco vem na frente e dispensa a confirmação do cadastro.
+  const nomeInc = (require('./nome-incompleto.service') as typeof import('./nome-incompleto.service')).aiNomeIncompletoContext((l?.customFields || {}) as Record<string, any>);
+  if (nomeInc && (!cd || cd.status !== 'ASKED')) return nomeInc;
   if (!cd || cd.status !== 'ASKED') return aiCadConfirmContext((l?.customFields || {}) as Record<string, any>);
   const cf = (l?.customFields || {}) as Record<string, any>;
   const banco = BANK_LABEL[cd.bank || ''] || 'o banco';
   const lista = participantesDoCard(cf).map((p, i) => `  ${i + 1}) ${p.nome} — CPF ${p.cpf} — nascimento ${p.nascimento}${p.registro ? ` (NOME SOCIAL; o nome de registro, que foi pro banco, é "${p.registro}" — NÃO é erro, não troque o "participante_${i + 1}" e nunca escreva o nome de registro ao cliente)` : ''}`).join('\n');
-  return `--- CADASTRO DIVERGENTE (pergunta já feita ao cliente) ---
+  return `${nomeInc ? `${nomeInc}\n\n` : ''}--- CADASTRO DIVERGENTE (pergunta já feita ao cliente) ---
 ${banco} acusou "Cadastro Divergente" (o cadastro não bate: nome, CPF ou data de nascimento) e o CRM já perguntou ao cliente se o nome, o CPF e a data de nascimento correspondem à mesma pessoa. Dados do card:
 ${lista}
 Quando o cliente responder:
@@ -195,6 +198,8 @@ const CAMPOS_IDENTIDADE = ['participante_1', 'cpf_1', 'nascimento_1', 'participa
 
 /** A IA gravou campos de identidade enquanto a pergunta estava aberta: o card foi corrigido → refaz a análise em todos os bancos. */
 export async function cadastroCorrigido(accountId: string, leadId: string, camposMudados: string[], io: Io): Promise<boolean> {
+  // Nome incompleto (Fabio 12/11): o cliente mandou o nome completo (ou afirmou que o do documento é aquele) → libera/refaz a análise por lá.
+  if (await (require('./nome-incompleto.service') as typeof import('./nome-incompleto.service')).nomeIncompletoRespondido(accountId, leadId, camposMudados).catch((e: any) => { console.error('[Nome incompleto] resposta:', e?.message || e); return false; })) return true;
   const mudouIdentidade = camposMudados.some((k) => CAMPOS_IDENTIDADE.includes(k));
   if (!mudouIdentidade && !camposMudados.includes('cadastro_confirmado')) return false;
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, name: true } });

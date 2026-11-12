@@ -165,6 +165,8 @@ async function startNewLeads(accountId: string, enabledAt: Date, io?: any) {
     if (await descartarImovelRural(accountId, l, cf, io).catch((e) => { console.error('[Imóvel rural]', e?.message); return false; })) continue;
     // TRIAGEM DE IDADE NA ENTRADA (Fabio 17/10, Admir de 75 anos: o CRM sabia que o Inter e o Santander barravam e deixou o card parado, com e-mails inúteis aos bancos).
     if (await descartarPorIdade(accountId, l, cf, io).catch((e) => { console.error('[Triagem de idade]', e?.message); return false; })) continue;
+    // NOME INCOMPLETO (Fabio 12/11: proposta com "ENEAS NS" rodou assim mesmo): sem nome e sobrenome completos a análise não começa — o CRM pede o nome ao cliente.
+    if (await (require('./nome-incompleto.service') as typeof import('./nome-incompleto.service')).segurarPorNomeIncompleto(accountId, l, cf, io).catch((e: any) => { console.error('[Nome incompleto]', e?.message); return false; })) continue;
     // Cliente reprovado há pouco que voltou (Fabio 19/10): a IA compara a proposta nova com a reprovada ANTES de gastar análise nos bancos.
     const reentrada = await (require('./reentry.service') as typeof import('./reentry.service')).reentryGate(accountId, l.id).catch((e: any) => { console.error('[Reentrada]', e?.message); return { hold: false }; });
     if (reentrada.hold) continue;
@@ -243,6 +245,8 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
     const proposta = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: PROPOSAL_MARKERS.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { id: true, content: true } });
     if (!proposta) continue;
     if (await descartarImovelRural(accountId, l, cf).catch((e) => { console.error('[Imóvel rural]', e?.message); return false; })) continue;
+    // Nome incompleto (Fabio 12/11): não roda; o CRM pede o nome completo ao cliente.
+    if (await (require('./nome-incompleto.service') as typeof import('./nome-incompleto.service')).segurarPorNomeIncompleto(accountId, l, cf).catch((e: any) => { console.error('[Nome incompleto]', e?.message); return false; })) continue;
     // Financiamento exige NOME LIMPO (Fabio 27/10): com restrição no Serasa os bancos não aprovam — não gasta análise; a equipe roda à mão na aba se quiser.
     if (/Restri[cç][aã]o no Serasa:\s*\**\s*Sim/i.test(proposta.content)) {
       await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
