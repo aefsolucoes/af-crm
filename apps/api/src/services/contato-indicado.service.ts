@@ -294,6 +294,11 @@ export async function repassarArquivoDoTerceiro(accountId: string, terceiroLeadI
   if (io) io.to(`lead:${cliente.id}`).emit('new_message', message);
   const { autoUploadAttachmentToDrive } = require('./google.service') as typeof import('./google.service');
   for (const att of message.attachments || []) autoUploadAttachmentToDrive(accountId, cliente.id, att.id).catch((e: any) => console.error('[Drive] arquivo do corretor/vendedor:', e?.message));
+  // Corretor/vendedor mandou a documentação zipada (12/11): abre o .zip na cópia do card do cliente, igual ao zip que o próprio cliente manda.
+  if (message.attachments?.[0]) {
+    const { aoReceberCompactado } = require('./zip-attachment.service') as typeof import('./zip-attachment.service');
+    aoReceberCompactado({ accountId, leadId: cliente.id, messageId: message.id, attachment: message.attachments[0], buffer: arq.buffer, io }).catch((e: any) => console.error('[Zip] arquivo do corretor/vendedor:', e?.message));
+  }
   const { scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
   scheduleDocsCheck(accountId, cliente.id, io as any).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');

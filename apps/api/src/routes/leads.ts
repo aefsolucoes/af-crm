@@ -960,6 +960,20 @@ router.post('/:id/import-share-links', async (req: AuthRequest, res: Response) =
   }
 });
 
+// POST /api/leads/:id/extract-zips — abre os .zip que o cliente já mandou na conversa (WhatsApp e e-mail) e anexa cada PDF/imagem na própria mensagem
+// (Fabio 12/11). Zip novo já é aberto sozinho na chegada; aqui é pra conversa antiga. Pode chamar de novo: não duplica o que já foi anexado.
+router.post('/:id/extract-zips', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    const { extrairZipsDoLead } = require('../services/zip-attachment.service') as typeof import('../services/zip-attachment.service');
+    res.json(await extrairZipsDoLead(req.user!.accountId, lead.id, req.app.get('io')));
+  } catch (err: any) {
+    console.error('[Zip]', err);
+    res.status(500).json({ error: 'Erro ao abrir os arquivos compactados' });
+  }
+});
+
 // PATCH /api/leads/:id/custom-fields
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {

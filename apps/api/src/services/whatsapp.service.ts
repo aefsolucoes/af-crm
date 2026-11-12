@@ -1273,6 +1273,11 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         autoUploadAttachmentToDrive(accountId, leadId, att.id).catch((err: any) =>
           console.error('[Drive] Auto-upload do anexo falhou:', err?.message));
       }
+      // Documentação ZIPADA (Fabio 12/11): o CRM abre o .zip e anexa cada PDF/imagem nesta mensagem, como anexo comum (Drive → conferência). .rar/.7z: só avisa a equipe.
+      if (mediaBuffer && msg.type === 'document' && message.attachments?.[0]) {
+        const { aoReceberCompactado } = require('./zip-attachment.service') as typeof import('./zip-attachment.service');
+        aoReceberCompactado({ accountId, leadId, messageId: message.id, attachment: message.attachments[0], buffer: mediaBuffer, io }).catch((err: any) => console.error('[Zip] falhou:', err?.message));
+      }
       // Arquivo mandado por LINK de compartilhamento (Adobe, Google Drive, Dropbox — Fabio 03/11): o CRM baixa e anexa nesta mensagem, como um anexo comum.
       if (text && /https?:\/\//i.test(text)) {
         const { importShareLinks } = require('./share-link.service') as typeof import('./share-link.service');

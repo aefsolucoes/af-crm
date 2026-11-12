@@ -548,6 +548,11 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       const { importShareLinks, textoDoEmail } = require('./share-link.service') as typeof import('./share-link.service');
       textoDoEmail(messageId, conv.content).then((texto) => importShareLinks({ accountId: acc.accountId, leadId, messageId: conv.id, text: texto, io: opts.io }))
         .catch((err: any) => console.warn('[Link compartilhado e-mail] falhou:', err?.message));
+      // Documentação ZIPADA por e-mail (Fabio 12/11): o CRM baixa o .zip do e-mail, abre e anexa cada PDF/imagem nesta mensagem (vai pra pasta e pra conferência).
+      if (parts.attachments.some((a) => /\.(zip|rar|7z)$/i.test(a.filename) || /zip|rar|7z/i.test(a.contentType))) {
+        const { extrairZipsDoEmail } = require('./zip-attachment.service') as typeof import('./zip-attachment.service');
+        extrairZipsDoEmail({ accountId: acc.accountId, leadId, messageId: conv.id, io: opts.io }).catch((err: any) => console.warn('[Zip e-mail] falhou:', err?.message));
+      }
     }
     // Banco pedindo certidões (Fabio 04/11): só SUGERE o botão "Emitir certidões" (nota + push) — a extensão emite quando a equipe clica.
     if (conv && folder === 'INBOX' && !opts.initial && from && isInstitutionalSender(from.address) && Date.now() - date.getTime() < 48 * 3_600_000) {

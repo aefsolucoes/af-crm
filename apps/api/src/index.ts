@@ -347,6 +347,11 @@ httpServer.listen(PORT, () => {
     (require('./services/whatsapp.service') as typeof import('./services/whatsapp.service')).retomarRespostasInterrompidas(io).catch((err: any) => console.error('[IA] Retomada após reinício:', err?.message));
   }, 90 * 1000);
 
+  // .zip do cliente aberto pela metade quando o servidor reiniciou (Fabio 12/11): 2 min depois de subir, abre de novo — não duplica o que já foi anexado.
+  setTimeout(() => {
+    (require('./services/zip-attachment.service') as typeof import('./services/zip-attachment.service')).retomarZipsInterrompidos(io).catch((err: any) => console.error('[Zip] Retomada após reinício:', err?.message));
+  }, 120 * 1000);
+
   // WhatsApp por QR só pra receber o código do simulador da CAIXA (Fabio 12/11): reconecta quem já escaneou.
   setTimeout(() => {
     (require('./services/caixa-codigo-qr.service') as typeof import('./services/caixa-codigo-qr.service')).retomarQrNoBoot().catch((err: any) => console.error('[QR código CAIXA] boot:', err?.message));
