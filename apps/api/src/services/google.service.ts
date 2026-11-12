@@ -1353,6 +1353,30 @@ export async function findFoldersByNamesInTree(
   return results;
 }
 
+/** Pasta do cliente no Drive onde ficam os anexos dele — a MESMA do auto-upload do WhatsApp (<pasta de anexos>/<telefone, ou o nome de quem não tem>). Cria se
+ *  não existir. O cadastro da CAIXA guarda nela o que a equipe anexa no card e põe o link no card (Fabio 12/11). null = Drive não conectado/lead não achado. */
+export async function leadAttachmentsFolder(accountId: string, leadId: string): Promise<{ id: string; link: string } | null> {
+  const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
+  if (!conn?.refreshToken || !(conn.whatsappAttachmentsFolderId || conn.rootFolderId)) return null;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } } } });
+  if (!lead) return null;
+  const id = await resolveAttachmentParentFolder(accountId, conn, lead);
+  return { id, link: folderLink(id) };
+}
+
+/** Põe um arquivo numa pasta se ele ainda não está nela (e só nela); opcionalmente troca o nome. true = mexeu. */
+export async function putFileInFolder(accountId: string, fileId: string, folderId: string, nome?: string): Promise<boolean> {
+  const drive = await getDrive(accountId);
+  const atual = await drive.files.get({ fileId, fields: 'parents, name', supportsAllDrives: true });
+  const pais = atual.data.parents || [];
+  const jaEsta = pais.length === 1 && pais[0] === folderId;
+  const trocaNome = !!nome && nome !== atual.data.name;
+  if (jaEsta && !trocaNome) return false;
+  const tirar = pais.filter((x) => x !== folderId).join(',');
+  await drive.files.update({ fileId, ...(jaEsta ? {} : { addParents: folderId, ...(tirar ? { removeParents: tirar } : {}) }), ...(trocaNome ? { requestBody: { name: nome } } : {}), fields: 'id', supportsAllDrives: true });
+  return true;
+}
+
 /** Move um arquivo/pasta do Drive para outro pai (outra pasta), por ID. */
 export async function moveDriveItem(accountId: string, itemId: string, newParentId: string): Promise<{ id: string; name: string }> {
   const drive = await getDrive(accountId);

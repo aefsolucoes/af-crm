@@ -225,12 +225,16 @@ export async function anexarDocumentosEquipe(accountId: string, leadId: string, 
   const pai = conn?.whatsappAttachmentsFolderId || conn?.rootFolderId;
   if (!conn?.refreshToken || !pai) return { erro: 'Google Drive não conectado' };
   const google = await import('./google.service');
-  const pasta = await google.createFolder(accountId, 'DOCUMENTOS SEM PASTA', pai);
+  // Pasta do próprio cliente (a dos anexos do WhatsApp dele) — Fabio 12/11: o card ganha o link dela pra conferência da ficha. Antes ia tudo junto na pasta
+  // técnica "DOCUMENTOS SEM PASTA", com o nome do cliente na frente do arquivo.
+  const doCliente = await google.leadAttachmentsFolder(accountId, leadId).catch(() => null);
+  const pasta = doCliente || await google.createFolder(accountId, 'DOCUMENTOS SEM PASTA', pai);
   const novos: { id: string; nome: string; mimeType: string; em: string; link: string | null }[] = [];
   for (const a of validos) {
     const data = Buffer.from(a.base64, 'base64');
     if (data.length < 500) continue;
-    const nome = `${lead.name} - ${String(a.nome || 'documento').replace(/[\\/]/g, '-')}`.slice(0, 180);
+    const limpo = String(a.nome || 'documento').replace(/[\\/]/g, '-');
+    const nome = (doCliente ? limpo : `${lead.name} - ${limpo}`).slice(0, 180);
     const up = await google.uploadFile(accountId, { name: nome, mimeType: a.mimeType, parentId: pasta.id, data });
     novos.push({ id: up.id, nome: String(a.nome || 'documento'), mimeType: a.mimeType, em: new Date().toISOString(), link: up.webViewLink });
   }
@@ -240,7 +244,36 @@ export async function anexarDocumentosEquipe(accountId: string, leadId: string, 
   const antes = Array.isArray(fresh._documentosEquipe) ? fresh._documentosEquipe : [];
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _documentosEquipe: [...antes, ...novos] } as any } });
   await prisma.note.create({ data: { leadId, ...(userId ? { userId } : {}), type: 'COMMENT', content: `📎 Documentos anexados pela equipe (sem pasta nem conversa):\n${novos.map((n) => `• ${n.nome}${n.link ? ` — ${n.link}` : ''}`).join('\n')}` } }).catch(() => {});
+  await linkarPastaDoCadastro(accountId, leadId).catch((e: any) => console.error('[Ficha cadastral] link da pasta:', e?.message));
   return { anexados: novos.map((n) => n.nome), links: novos.map((n) => n.link) };
+}
+
+/** Link "cru": a pasta dos anexos do cliente que o CRM ligou ao card pro cadastro da CAIXA, ainda não organizada (sem COMPRADOR/IMÓVEL). Pura. */
+export function pastaDoCadastroCrua(cf: Record<string, any> | null | undefined): boolean {
+  const link = String(cf?.link_pasta_drive || '').trim();
+  return !!link && cf?._pastaCadastroLink === link && !cf?._driveOrganizedAt;
+}
+
+/** CADASTRO DA CAIXA: o card ganha o link da pasta do cliente no Drive pra equipe conferir a ficha de cadastro (Fabio 12/11: "pode colocar o link da pasta do
+ *  drive, não precisa mover para leads ativos, só coloca o link para a gente fazer a conferência da ficha cadastro"). A pasta é a dos anexos do cliente (a do
+ *  WhatsApp: telefone, ou o nome de quem não tem) e os documentos que a equipe anexou no card vão pra dentro dela, com o nome limpo. Nada é criado nem movido em
+ *  LEADS ATIVOS: isso continua sendo da organização, na contratação (que reconhece esta pasta como a dos anexos e segue igual). Card que já tem link não muda. */
+export async function linkarPastaDoCadastro(accountId: string, leadId: string): Promise<string | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || String(cf.link_pasta_drive || '').trim()) return null;
+  const google = await import('./google.service');
+  const pasta = await google.leadAttachmentsFolder(accountId, leadId);
+  if (!pasta) return null;
+  for (const d of (Array.isArray(cf._documentosEquipe) ? cf._documentosEquipe : [])) {
+    if (!d?.id) continue;
+    await google.putFileInFolder(accountId, String(d.id), pasta.id, String(d.nome || '').trim() || undefined).catch((e: any) => console.error('[Ficha cadastral] documento da equipe fora da pasta do cliente:', e?.message));
+  }
+  const patch = JSON.stringify({ link_pasta_drive: pasta.link, _pastaCadastroLink: pasta.link });
+  const mudou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${patch}::jsonb WHERE id = ${leadId} AND COALESCE("customFields"->>'link_pasta_drive', '') = ''`;
+  if (!mudou) return null;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📁 Pasta do cliente no Drive ligada ao card, pra conferência da ficha de cadastro (ela continua onde está — não foi pra LEADS ATIVOS): ${pasta.link}` } }).catch(() => {});
+  return pasta.link;
 }
 
 /** Lê UM documento pessoal (RG/CNH/comprovante…) que o cliente mandou na conversa, pelo arquivo no Drive — usado pela proposta montada com os documentos (proposta-documento.service). */
@@ -442,7 +475,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
     if (!lead) return 'Lead não encontrado';
     const cf = (lead.customFields || {}) as Record<string, any>;
-    const link = String(cf.link_pasta_drive || '').trim();
+    // Link "cru" (a pasta dos anexos ligada ao card pro cadastro da CAIXA): lê como card sem pasta — conversa + o que a equipe anexou.
+    const link = pastaDoCadastroCrua(cf) ? '' : String(cf.link_pasta_drive || '').trim();
     const google = await import('./google.service');
     // Com a pasta, os anexos da conversa já estão nela (organizados). Sem a pasta (Fabio 31/10: "o CRM deve coletar os dados para o cadastro através da
     // documentação encaminhada na própria conversa"): os anexos que o cliente mandou na conversa, que ficam no Drive pelo driveFileId.
@@ -498,6 +532,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     if (/habitacional|financiamento/i.test(lead.pipeline?.department?.name || '')) await gravarNota(leadId, ['📋 FICHA DE CADASTRO — BRB'], fichaBrb(ficha.participantes, cf, quando), opts.userId);
     opts.io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
     await pedirCnpjAoCliente(accountId, leadId, ficha.participantes, opts.io).catch((e) => console.error('[Ficha cadastral] pedido de CNPJ:', e?.message));
+    // Card sem pasta: liga a pasta dos anexos do cliente, só o link, pra equipe conferir a ficha (Fabio 12/11).
+    await linkarPastaDoCadastro(accountId, leadId).catch((e: any) => console.error('[Ficha cadastral] link da pasta:', e?.message));
     logActivity({ accountId, userId: opts.userId || null, userName: opts.userId ? undefined : 'Assistente IA', action: 'lead_note_added', leadId, leadName: lead.name, summary: 'gravou a ficha de cadastro lida dos documentos do Drive' });
     console.log(`[Ficha cadastral] ${lead.name}: ${ficha.participantes.length} participante(s), ${pessoais.length} arquivo(s)`);
     return null;
@@ -596,6 +632,19 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
     const l = await prisma.lead.findUnique({ where: { id: pend[0].id }, select: { customFields: true } });
     const ps = ((l?.customFields || {}) as Record<string, any>)._fichaCadastral?.participantes;
     if (Array.isArray(ps)) await pedirCnpjAoCliente(accountId, pend[0].id, ps, io).catch((e) => console.error('[Ficha cadastral] pedido pendente:', e?.message));
+  }
+  // Card com ficha de cadastro (ou documento anexado pela equipe) e ainda sem o link da pasta: liga a pasta do cliente, um por rodada (Fabio 12/11). Sem Drive
+  // ou com erro, tenta de novo só depois de 6 h.
+  const semLink = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "isGroup" = false
+      AND COALESCE("customFields"->>'link_pasta_drive', '') = ''
+      AND ("customFields"->'_fichaCadastral' IS NOT NULL OR (jsonb_typeof("customFields"->'_documentosEquipe') = 'array' AND jsonb_array_length("customFields"->'_documentosEquipe') > 0))
+      AND COALESCE("customFields"->>'_pastaCadastroErro', '') < ${new Date(Date.now() - 6 * 3600_000).toISOString()}
+    ORDER BY "updatedAt" DESC LIMIT 1`.catch(() => []);
+  if (semLink[0]) {
+    const feito = await linkarPastaDoCadastro(accountId, semLink[0].id).catch((e: any) => { console.error('[Ficha cadastral] link da pasta:', e?.message); return null; });
+    if (!feito) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify({ _pastaCadastroErro: new Date().toISOString() })}::jsonb WHERE id = ${semLink[0].id}`.catch(() => {});
+    else io?.to(`lead:${semLink[0].id}`).emit('lead_updated', { leadId: semLink[0].id });
   }
   if (!process.env.ANTHROPIC_API_KEY || emAndamento.size >= 2) return;
   const ids = await prisma.$queryRaw<{ id: string }[]>`
