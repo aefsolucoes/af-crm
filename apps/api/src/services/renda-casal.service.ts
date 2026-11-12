@@ -26,7 +26,9 @@ const bonito = (s: string) => { const n = String(s || '').trim().split(/\s+/)[0]
 
 /** Casal (um é o cônjuge do outro na ficha) em que só um tem comprovante de renda. Pura. */
 export function casalComRendaDeUm(cf: Cf): { comRenda: any; semRenda: any } | null {
-  const ps: any[] = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
+  // O cônjuge que entrou na ficha SÓ pro cadastro da CAIXA (`conjugeIncluido`, Fabio 12/11: "sempre cadastrar … mesmo que ele não tenha renda") não é participante
+  // do card: não gera a pergunta ao cliente. No dia em que a regra entrou, a pergunta saiu sozinha (template) pra um cliente cuja esposa só foi incluída pro cadastro.
+  const ps: any[] = (Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : []).filter((p: any) => p && p.conjugeIncluido !== true);
   if (ps.length < 2) return null;
   const comRenda = ps.filter((p) => p && p.semRenda !== true);
   if (comRenda.length !== 1) return null;
@@ -47,10 +49,20 @@ export function textoPergunta(saudacao: string, rc: Rc, quemFalaEOTitular: boole
 
 /** Manda a pergunta (07h–21h). Conversa fechada: template de atualização; quando ele responder, a pergunta sai no próximo minuto. */
 async function perguntar(accountId: string, leadId: string, io?: any): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   const cf = (lead?.customFields || {}) as Cf;
   const rc = cf._rendaCasal as Rc | undefined;
   if (!lead || !rc || (rc.status !== 'PENDING' && rc.status !== 'TEMPLATE') || cf._autoPaused) return;
+  // A ficha mudou (ou a regra) e o casal não é mais "dois participantes com renda de um só": a pergunta que estava pendente é cancelada, sem falar com o cliente.
+  if (!casalComRendaDeUm(cf)) {
+    await salva(leadId, { status: 'NA', fichaAt: String(cf._fichaCadastral?.at || ''), at: new Date().toISOString() });
+    await note(leadId, '👥 Renda do casal: pergunta cancelada — o cônjuge está na ficha só pro cadastro da CAIXA (sem renda), não como participante do card. Nada mais será perguntado ao cliente sobre isso.');
+    return;
+  }
+  // Template de atualização da ÁREA do card (o do Home Equity dizia "crédito com garantia de imóvel" pra cliente do Financiamento).
+  const fh = /habita/i.test(lead.pipeline?.department?.name || '');
+  const tplNome = fh ? 'atualizacao_processo_habitacional' : TEMPLATE;
+  const tplAssunto = fh ? 'financiamento habitacional' : 'crédito com garantia de imóvel';
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoPergunta(saudacao, rc, !String(cf.falando_com || '').trim());
@@ -71,7 +83,7 @@ async function perguntar(accountId: string, leadId: string, io?: any): Promise<v
     return;
   }
   if (rc.status === 'PENDING') {
-    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: tplNome, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de ${tplAssunto}. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
     if (!t.success) {
       await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString() });
       await note(leadId, `👥 Renda do casal: a conversa está fechada e o template de atualização não saiu (${t.error}). Pergunte você. Texto pronto:\n“${texto}”`);
