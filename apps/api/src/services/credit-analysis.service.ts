@@ -447,6 +447,17 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
     for (const bank of banks) {
       // Banco que ficou de fora (o cliente recusou / não foi combinado com ele — Fabio 30/10): nenhuma rodada AUTOMÁTICA nele. Clique de uma pessoa (userId) roda normalmente.
       if (wantedKind === 'RUN' && !p.userId && foraDoCliente.includes(bank)) { skipped++; continue; }
+      // Rodada nova pedida por uma pessoa: encerra TODAS as conferências marcadas desse banco, inclusive as agendadas há mais de 25 min (Fabio 12/11: sobravam duas na
+      // simulação velha do FH, que abria com erro a cada 30 min — e conferência aberta impede que a proposta nova seja conferida depois do envio).
+      if (wantedKind === 'RUN' && p.queueIfBusy && !p.dryRun) {
+        await db.creditAnalysis.updateMany({ where: { leadId: l.id, bank, kind: 'CHECK', status: 'REQUESTED', dryRun: false }, data: { status: 'CHECK', finishedAt: new Date(), detail: 'Conferência encerrada: nova rodada pedida por uma pessoa.' } });
+      }
+      // Conferência já marcada e agendada (updatedAt velho, ex.: esperando as 7h) não ganha uma 2ª — antes a retomada das 7h criava outra a cada dia e as duas
+      // conferiam a mesma proposta. A que já existe só é adiantada pra agora.
+      if (wantedKind === 'CHECK') {
+        const marcada = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, kind: 'CHECK', status: 'REQUESTED', dryRun: false, updatedAt: { lte: new Date(Date.now() - STALE_ACTIVE_MS) } }, orderBy: { createdAt: 'desc' }, select: { id: true } });
+        if (marcada) { await db.creditAnalysis.update({ where: { id: marcada.id }, data: { notBefore: new Date() } }); created++; continue; }
+      }
       const open = await db.creditAnalysis.findFirst({
         where: { leadId: l.id, bank, status: { in: ACTIVE }, updatedAt: { gt: new Date(Date.now() - STALE_ACTIVE_MS) } },
         select: { id: true, kind: true, status: true },
@@ -457,9 +468,7 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
         if (!(wantedKind === 'RUN' && p.queueIfBusy && !p.dryRun)) { skipped++; continue; }
         const jaNaFila = await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, kind: 'RUN', status: 'REQUESTED', dryRun: false }, select: { id: true } });
         if (jaNaFila) { skipped++; continue; }
-        if (open.kind === 'CHECK' && open.status === 'REQUESTED') {
-          await db.creditAnalysis.updateMany({ where: { id: open.id, status: 'REQUESTED' }, data: { status: 'CHECK', finishedAt: new Date(), detail: 'Conferência encerrada: nova rodada pedida por uma pessoa.' } });
-        } else if (open.status === 'RUNNING') queuedBehind++; // a extensão está nesse banco agora: o pedido espera ela terminar
+        if (open.status === 'RUNNING') queuedBehind++; // a extensão está nesse banco agora: o pedido espera ela terminar (conferência marcada já foi encerrada acima)
       }
       // Já foi rodada nesse banco? Então só consulta a proposta (não cria de novo), a menos que seja pra rodar de novo de propósito.
       let kind: 'RUN' | 'CHECK' = wantedKind;
