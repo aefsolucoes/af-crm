@@ -42,6 +42,7 @@ import itbiRoutes from './routes/itbi';
 import caixaCadastroRoutes from './routes/caixa-cadastro';
 import vistoriaCaixaRoutes from './routes/vistoria-caixa';
 import simulacaoCaixaRoutes from './routes/simulacao-caixa';
+import caixaCodigoQrRoutes from './routes/caixa-codigo-qr';
 import vistoriaRoutes from './routes/vistorias';
 import certidoesPessoaisRoutes from './routes/certidoes-pessoais';
 import supervisionRoutes from './routes/supervision';
@@ -125,6 +126,7 @@ app.use('/api/itbi', itbiRoutes);
 app.use('/api/caixa-cadastro', caixaCadastroRoutes);
 app.use('/api/vistoria-caixa', vistoriaCaixaRoutes);
 app.use('/api/simulacao-caixa', simulacaoCaixaRoutes);
+app.use('/api/caixa-codigo-qr', caixaCodigoQrRoutes);
 app.use('/api/vistorias', vistoriaRoutes);
 app.use('/api/certidoes-pessoais', certidoesPessoaisRoutes);
 app.use('/api/supervision', supervisionRoutes);
@@ -344,6 +346,11 @@ httpServer.listen(PORT, () => {
   setTimeout(() => {
     (require('./services/whatsapp.service') as typeof import('./services/whatsapp.service')).retomarRespostasInterrompidas(io).catch((err: any) => console.error('[IA] Retomada após reinício:', err?.message));
   }, 90 * 1000);
+
+  // WhatsApp por QR só pra receber o código do simulador da CAIXA (Fabio 12/11): reconecta quem já escaneou.
+  setTimeout(() => {
+    (require('./services/caixa-codigo-qr.service') as typeof import('./services/caixa-codigo-qr.service')).retomarQrNoBoot().catch((err: any) => console.error('[QR código CAIXA] boot:', err?.message));
+  }, 20 * 1000);
 
   // Vistoria CAIXA pelo SIOPI (Fabio 06/11): contato da vistoria chegou → fila da extensão; extensão que sumiu no meio → volta pra fila.
   setTimeout(() => {

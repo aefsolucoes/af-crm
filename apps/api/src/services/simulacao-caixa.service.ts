@@ -78,7 +78,8 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
       leadId: id,
       leadName: lead?.name || '',
       produto: he ? 'HE' : 'FH',
-      celular: NUMERO_API_SIMULADOR,
+      // Número conectado por QR (recebe o código — a API Oficial não lê a mensagem da CAIXA, erro 131051); sem QR, o da API (o código se perde).
+      celular: (require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId) || NUMERO_API_SIMULADOR,
       dados: {
         cpf: d.cpf, nascimento: d.nascimento, renda: brl(d.renda), maisDeUm: d.maisDeUm, fgts3anos: d.fgts,
         valorImovel: brl(num(cf.valor_imovel)), valorFinanciamento: brl(num(cf.valor_credito)),
@@ -92,6 +93,8 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
 
 /** Código de verificação que a CAIXA mandou pro WhatsApp da API depois de `desde` (a extensão pergunta a cada poucos segundos). */
 export async function codigoSimulacao(accountId: string, desde: Date): Promise<{ codigo: string; em: string } | null> {
+  const doQr = (require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).codigoQr(accountId, desde);
+  if (doQr) return doQr;
   const msgs = await prisma.message.findMany({
     where: { direction: 'INBOUND', createdAt: { gte: new Date(desde.getTime() - 30_000) }, lead: { accountId } },
     orderBy: { createdAt: 'desc' }, take: 30, select: { content: true, createdAt: true },
