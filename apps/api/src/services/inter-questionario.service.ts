@@ -41,8 +41,36 @@ type Q = {
   askedAt?: string; templateAt?: string; cobrouAt?: string; lidoAt?: string;
   vencimento?: number | null; despesas?: 'SIM' | 'NAO' | null; dadosOk?: boolean | null;
   profissao?: string | null; email?: string | null; telefone?: string | null; duvida?: string | null;
-  enviadoAt?: string; enderecoEnviadoAt?: string; erro?: string;
+  /** Itens do questionário NOVO do Inter (Fabio 12/11, Alice): carência de 90 dias, conta Inter (agência/conta; semConta = disse que não tem). */
+  carencia?: 'SIM' | 'NAO' | null; conta?: string | null; semConta?: boolean | null;
+  enviadoAt?: string; enderecoEnviadoAt?: string; erro?: string | null; tentouAt?: string; remetente?: string;
 };
+
+/** O que o e-mail do consultor pergunta além do questionário de sempre (Fabio 12/11: o questionário da Alice trouxe carência de 90 dias, conta Inter,
+ *  imóvel quitado e documento com QR Code / CNH digital — o CRM só perguntava vencimento, despesas e dados). Pura (testável). */
+export type ExtrasQ = { carencia: boolean; conta: boolean; quitado: boolean; cnh: boolean };
+export function extrasDoEmail(text: string | null | undefined): ExtrasQ {
+  const t = String(text || '');
+  return {
+    carencia: /car[eê]ncia/i.test(t),
+    conta: /conta\s+(do\s+|no\s+)?inter\b|correntista/i.test(t),
+    quitado: /quitad[oa]|saldo\s+em\s+aberto/i.test(t),
+    cnh: /QR\s*-?\s*Code|CNH\s+digital/i.test(t),
+  };
+}
+const SEM_EXTRAS: ExtrasQ = { carencia: false, conta: false, quitado: false, cnh: false };
+
+/** Extras do e-mail do questionário deste card (lê a parte nova do e-mail do consultor). */
+async function extrasDoQuestionario(q: Q): Promise<ExtrasQ> {
+  if (!q.emailId) return SEM_EXTRAS;
+  const em = await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { textBody: true, htmlBody: true } }).catch(() => null);
+  if (!em) return SEM_EXTRAS;
+  const { interEmailTexto, freshPart } = require('./inter-email.service') as typeof import('./inter-email.service');
+  return extrasDoEmail(freshPart(interEmailTexto(em.textBody, em.htmlBody)));
+}
+
+/** Erro de login no envio (Titan suspendeu o comercial@ em 09/11: o SMTP responde 535 com a senha certa). */
+const ERRO_LOGIN = /\b535\b|invalid login|authentication failed|EAUTH/i;
 type Dados = { nome: string; profissao: string | null; email: string | null; telefone: string | null };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
@@ -103,7 +131,16 @@ export function nomeDoAnexo(f: DriveF, titular: string, umProponente: boolean): 
 
 const lista = (xs: string[]) => (xs.length <= 1 ? xs.join('') : `${xs.slice(0, -1).join(', ')} e ${xs[xs.length - 1]}`);
 
-export function textoPergunta(nome: string, d: Dados, pedirCivil: boolean): string {
+/** Perguntas dos itens novos (o mesmo texto que o Fabio aprovou pra Marli em 12/11). `cnh` só quando a pasta não tem CNH. */
+function perguntasExtras(ex: Partial<ExtrasQ>): string[] {
+  const l: string[] = [];
+  if (ex.carencia) l.push('Você quer carência de 90 dias pra começar a pagar? Com a carência, a 1ª parcela vem 90 dias depois da liberação; sem ela, vem a partir de 30 dias.');
+  if (ex.conta) l.push('Você tem conta no Inter? Se tiver, me passa a agência e o número da conta. Se não tiver, precisa abrir pelo app do Inter, porque o banco pede essa conta pra seguir com o contrato.');
+  if (ex.cnh) l.push('Você tem CNH digital? Se tiver, me manda o PDF dela (do app Carteira Digital de Trânsito). Se não tiver, é só me avisar.');
+  return l;
+}
+
+export function textoPergunta(nome: string, d: Dados, pedirCivil: boolean, ex: Partial<ExtrasQ> = {}): string {
   const l = [`${nome ? `${nome}, a` : 'A'} vistoria do seu imóvel foi concluída e o seu processo seguiu para a contratação! 🎉`, '', 'Pra eu passar ao banco, preciso que você me confirme:', ''];
   let n = 0;
   l.push(`${++n}. Qual o melhor dia pro vencimento das parcelas: 1, 5, 10, 15 ou 20?`);
@@ -113,34 +150,41 @@ export function textoPergunta(nome: string, d: Dados, pedirCivil: boolean): stri
   if (tem.length) l.push(`${++n}. Seus dados estão certos? ${tem.join(', ').replace(/^./, (c) => c.toUpperCase())}.${pede.length ? ` E qual é ${lista(pede)}?` : ''}`);
   else l.push(`${++n}. Qual é ${lista(pede)}?`);
   if (pedirCivil) l.push(`${++n}. Uma foto da sua certidão de nascimento (se for solteiro) ou de casamento (se for casado, divorciado ou viúvo). Pode ser a que você tiver, mesmo antiga.`);
+  for (const p of perguntasExtras(ex)) l.push(`${++n}. ${p}`);
   l.push('', 'A assinatura do contrato vai ser digital. 🙂');
   return l.join('\n');
 }
 
-export type FaltaQ = 'vencimento' | 'despesas' | 'profissao' | 'contato' | 'confirmar';
-export function faltasDoQuestionario(q: Q, d: Dados): FaltaQ[] {
+export type FaltaQ = 'vencimento' | 'despesas' | 'profissao' | 'contato' | 'confirmar' | 'carencia' | 'conta';
+export function faltasDoQuestionario(q: Q, d: Dados, ex: Partial<ExtrasQ> = {}): FaltaQ[] {
   const f: FaltaQ[] = [];
   if (!q.vencimento || !VENCIMENTOS.includes(Number(q.vencimento))) f.push('vencimento');
   if (q.despesas !== 'SIM' && q.despesas !== 'NAO') f.push('despesas');
+  if (ex.carencia && q.carencia !== 'SIM' && q.carencia !== 'NAO') f.push('carencia');
+  if (ex.conta && vazio(q.conta)) f.push('conta'); // sem conta no Inter: o cliente abre pelo app e manda a agência/conta — o e-mail espera
   if (!d.profissao) f.push('profissao');
   if (!d.email || !d.telefone) f.push('contato');
   else if (q.dadosOk !== true && vazio(q.profissao) && vazio(q.email) && vazio(q.telefone)) f.push('confirmar');
   return f;
 }
 
-export function textoCobranca(nome: string, faltas: FaltaQ[], d: Dados): string {
+export function textoCobranca(nome: string, faltas: FaltaQ[], d: Dados, q: Q = {}): string {
   const t: Record<FaltaQ, string> = {
     vencimento: 'o dia do vencimento das parcelas (1, 5, 10, 15 ou 20)',
     despesas: 'se quer incluir as despesas do registro no empréstimo (funciona como reembolso: você paga o cartório e o banco te devolve junto com o crédito)',
     profissao: 'a sua profissão',
     contato: [!d.email && 'o seu e-mail', !d.telefone && 'o seu telefone'].filter(Boolean).join(' e ') || 'o seu e-mail e telefone',
     confirmar: `se o e-mail ${d.email} e o telefone ${d.telefone} estão certos`,
+    carencia: 'se quer carência de 90 dias pra começar a pagar (com ela, a 1ª parcela vem 90 dias depois da liberação; sem ela, a partir de 30 dias)',
+    conta: q.semConta ? 'a agência e o número da sua conta no Inter, assim que abrir pelo app' : 'a agência e o número da sua conta no Inter (se não tiver, precisa abrir pelo app do Inter)',
   };
   return `${nome ? `${nome}, o` : 'O'}brigado! Pra fechar com o banco, só falta me dizer ${lista(faltas.map((x) => t[x]))}.`;
 }
 
-export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; zeev: { nome: string; cpf: string; email: string } }): string {
+export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; zeev: { nome: string; cpf: string; email: string }; pede?: Partial<ExtrasQ>; quitado?: boolean | null }): string {
   const { q, d } = p;
+  const ex = p.pede || {};
+  const imovel = p.quitado === true ? 'Quitado' : p.quitado === false ? 'Possui saldo em aberto (envio a planilha de evolução do empréstimo em seguida)' : '(confirmo em seguida)';
   return [
     `Olá, ${p.consultor || 'tudo bem'}${p.consultor ? ', tudo bem?' : '?'}`,
     '',
@@ -148,6 +192,9 @@ export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; e
     '',
     'QUESTIONÁRIO:',
     `• Data de vencimento das parcelas: dia ${q.vencimento}`,
+    ...(ex.carencia ? [`• Carência de 90 dias para iniciar o pagamento das parcelas: ${q.carencia === 'SIM' ? 'Sim' : 'Não'}`] : []),
+    ...(ex.conta ? [`• Conta Inter: ${String(q.conta || '').trim()}`] : []),
+    ...(ex.quitado ? [`• Imóvel quitado ou com saldo em aberto: ${imovel}`] : []),
     '• Assinaturas: Digitais',
     '• Possui certificado ICP-Brasil? Não possui',
     '• Registro: Eletrônico',
@@ -225,24 +272,31 @@ export async function perguntarQuestionario(accountId: string, leadId: string, i
   }
   const d = dadosDoTitular(cf, lead.name, q);
   // Documento nunca vai no pedido ao cliente sem o Fabio (31/10) — falta da certidão vira aviso pra equipe.
-  const semCivil = !docsDoTitular(await arquivosDoDrive(accountId, cf)).civil.length;
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPergunta(nome, d, false), io });
+  const docs = docsDoTitular(await arquivosDoDrive(accountId, cf));
+  const semCivil = !docs.civil.length;
+  // Itens que o consultor pediu além do de sempre (Fabio 12/11): carência, conta Inter e, se a pasta não tem CNH, a CNH digital (documento com QR Code).
+  const ex = await extrasDoQuestionario(q);
+  const exPergunta: ExtrasQ = { ...ex, cnh: ex.cnh && !docs.ident.some((f) => /^CNH\b/.test(norm(f.name))) };
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPergunta(nome, d, false, exPergunta), io });
   if (!r.success) return false;
   await salva(leadId, { status: 'PERGUNTADO', askedAt: new Date().toISOString() });
-  await note(leadId, `📝 Questionário do Inter: perguntei ao cliente o dia do vencimento, se financia as despesas de registro e confirmei profissão/e-mail/telefone. Assinatura digital, sem ICP-Brasil e registro eletrônico vão fixos. Com as respostas, o CRM responde o e-mail do Inter sozinho.${semCivil ? '\n⚠️ A certidão de estado civil não está na pasta (a Zeev vai precisar) — o CRM não pediu ao cliente; peça se quiser.' : ''}`);
+  const extrasTxt = [exPergunta.carencia && 'a carência de 90 dias', exPergunta.conta && 'a conta Inter', exPergunta.cnh && 'a CNH digital'].filter(Boolean) as string[];
+  await note(leadId, `📝 Questionário do Inter: perguntei ao cliente o dia do vencimento, se financia as despesas de registro${extrasTxt.length ? `, ${lista(extrasTxt)}` : ''} e confirmei profissão/e-mail/telefone. Assinatura digital, sem ICP-Brasil e registro eletrônico vão fixos. Com as respostas, o CRM responde o e-mail do Inter sozinho.${semCivil ? '\n⚠️ A certidão de estado civil não está na pasta (a Zeev vai precisar) — o CRM não pediu ao cliente; peça se quiser.' : ''}`);
   if (semCivil) { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: '📝 Questionário Inter: falta certidão', body: 'A certidão de estado civil não está na pasta — pedir ao cliente?', leadId }).catch(() => {}); }
   return true;
 }
 
-const SYSTEM_Q = `Você lê mensagens de WhatsApp de um cliente respondendo às perguntas da contratação do empréstimo: (1) dia do vencimento das parcelas — só 1, 5, 10, 15 ou 20; (2) se quer incluir/financiar as despesas do registro no cartório (funciona como reembolso); (3) se os dados dele (e-mail, telefone, profissão) estão certos, ou a correção. Extraia SÓ o que está escrito (nunca invente) e responda SOMENTE com JSON:
-{"vencimento":null,"despesas":null,"dadosOk":null,"profissao":null,"email":null,"telefone":null,"duvida":null}
-Regras: "vencimento" é número (1, 5, 10, 15 ou 20); dia fora da lista → null e diga em "duvida". "despesas": "SIM" se ele quer incluir/financiar ("sim", "quero", "pode incluir"), "NAO" se não quer; sem resposta → null. "dadosOk": true se ele disse que os dados estão certos ("tudo certo", "isso mesmo", "confirmo", "correto"); false se disse que algo está errado. Se ele informou ou corrigiu profissão, e-mail ou telefone, preencha o campo (telefone só dígitos com DDD). "duvida": pergunta ou dúvida que ele fez, em poucas palavras; sem dúvida → null. Respostas numeradas ("1- 10, 2- sim, 3- ok") seguem a ordem das perguntas.`;
+const SYSTEM_Q = `Você lê a conversa de WhatsApp (Atendente = nós; Cliente = o cliente) em que o cliente responde às perguntas da contratação do empréstimo: (1) dia do vencimento das parcelas — só 1, 5, 10, 15 ou 20; (2) se quer incluir/financiar as despesas do registro no cartório (funciona como reembolso); (3) se os dados dele (e-mail, telefone, profissão) estão certos, ou a correção; e, quando o Atendente perguntou, (4) se quer carência de 90 dias pra começar a pagar e (5) a conta dele no Inter (agência e número). Extraia SÓ o que o CLIENTE disse (nunca invente; o que o Atendente escreveu não é resposta) e responda SOMENTE com JSON:
+{"vencimento":null,"despesas":null,"dadosOk":null,"profissao":null,"email":null,"telefone":null,"carencia":null,"conta":null,"semConta":null,"duvida":null}
+Regras: "vencimento" é número (1, 5, 10, 15 ou 20); dia fora da lista → null e diga em "duvida". "despesas": "SIM" se ele quer incluir/financiar ("sim", "quero", "pode incluir"), "NAO" se não quer; sem resposta → null. "dadosOk": true se ele disse que os dados estão certos ("tudo certo", "isso mesmo", "confirmo", "correto"); false se disse que algo está errado. Se ele informou ou corrigiu profissão, e-mail ou telefone, preencha o campo (telefone só dígitos com DDD). "carencia": "SIM" se quer a carência de 90 dias, "NAO" se não quer (ex.: "não precisa", "quero pagar logo"); sem resposta → null. "conta": agência e número da conta no Inter como ele escreveu (ex.: "agência 0001, conta 12345678-9"); só o que ele mandou. "semConta": true se ele disse que NÃO tem conta no Inter (ou que ainda vai abrir); false se disse que tem; sem resposta → null. A CNH digital chega como arquivo: ignore. "duvida": pergunta ou dúvida que ele fez, em poucas palavras; sem dúvida → null. Respostas numeradas ("1- 10, 2- sim, 3- ok") seguem a ordem das perguntas da mensagem do Atendente logo antes delas.`;
 
 async function lerResposta(leadId: string, desde: Date): Promise<Record<string, any> | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
-  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', createdAt: { gt: desde } }, orderBy: { createdAt: 'asc' }, take: 25, select: { content: true } });
-  const texto = msgs.map((m) => m.content).filter((c) => c && c.trim() && !/^📎/.test(c.trim())).join('\n---\n').slice(0, 6000);
+  // Com as perguntas do Atendente no meio (Fabio 12/11: perguntas novas mandadas depois da 1ª lista) — "1. não" só se entende com a pergunta de antes.
+  const msgs = await prisma.message.findMany({ where: { leadId, channel: 'WHATSAPP', createdAt: { gt: desde } }, orderBy: { createdAt: 'asc' }, take: 40, select: { content: true, direction: true } });
+  if (!msgs.some((m) => m.direction === 'INBOUND' && m.content?.trim() && !/^📎/.test(m.content.trim()))) return null;
+  const texto = msgs.filter((m) => m.content && m.content.trim() && !/^📎/.test(m.content.trim())).map((m) => `${m.direction === 'INBOUND' ? 'Cliente' : 'Atendente'}: ${m.content.trim()}`).join('\n---\n').slice(-8000);
   if (!texto.trim()) return null;
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
@@ -274,16 +328,25 @@ async function lerAgora(accountId: string, leadId: string, io?: Io) {
   if (novo.despesas === 'SIM' || novo.despesas === 'NAO') patch.despesas = novo.despesas;
   if (typeof novo.dadosOk === 'boolean') patch.dadosOk = novo.dadosOk;
   for (const k of ['profissao', 'email', 'telefone'] as const) if (!vazio(novo[k])) patch[k] = String(novo[k]).trim();
+  if (novo.carencia === 'SIM' || novo.carencia === 'NAO') patch.carencia = novo.carencia;
+  if (!vazio(novo.conta)) patch.conta = String(novo.conta).trim().slice(0, 120);
+  if (typeof novo.semConta === 'boolean') patch.semConta = novo.semConta;
   if (!vazio(novo.duvida)) patch.duvida = String(novo.duvida).trim().slice(0, 200);
+  // Só grava/avisa o que MUDOU: a leitura relê a conversa toda desde a pergunta e devolve de novo o que já estava gravado.
+  for (const k of Object.keys(patch) as (keyof Q)[]) if (k !== 'lidoAt' && JSON.stringify(patch[k]) === JSON.stringify(q[k])) delete patch[k];
   await salva(leadId, patch);
   const q2: Q = { ...q, ...patch };
   const d = dadosDoTitular(cf, lead.name, q2);
-  const faltas = faltasDoQuestionario(q2, d);
-  const leuAlgo = ['vencimento', 'despesas', 'dadosOk', 'profissao', 'email', 'telefone'].some((k) => k in patch);
+  const ex = await extrasDoQuestionario(q2);
+  const faltas = faltasDoQuestionario(q2, d, ex);
+  const leuAlgo = ['vencimento', 'despesas', 'dadosOk', 'profissao', 'email', 'telefone', 'carencia', 'conta', 'semConta'].some((k) => k in patch);
   if (leuAlgo || patch.duvida) {
     const linhas = [
       patch.vencimento && `Vencimento: dia ${patch.vencimento}`,
       patch.despesas && `Financiar despesas de registro: ${patch.despesas === 'SIM' ? 'Sim' : 'Não'}`,
+      patch.carencia && `Carência de 90 dias: ${patch.carencia === 'SIM' ? 'Sim' : 'Não'}`,
+      patch.conta && `Conta Inter: ${patch.conta}`,
+      patch.semConta === true && !q2.conta && 'Não tem conta no Inter (precisa abrir pelo app)',
       patch.dadosOk === true && 'Dados confirmados',
       patch.profissao && `Profissão: ${patch.profissao}`, patch.email && `E-mail: ${patch.email}`, patch.telefone && `Telefone: ${fmtTelefone(patch.telefone)}`,
       patch.duvida && `❓ Dúvida do cliente: ${patch.duvida}`,
@@ -297,7 +360,7 @@ async function lerAgora(accountId: string, leadId: string, io?: Io) {
   const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoCobranca(callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '', faltas, d), io });
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoCobranca(callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '', faltas, d, q2), io });
   if (r.success) await salva(leadId, { cobrouAt: new Date().toISOString() });
 }
 
@@ -309,7 +372,8 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
   const q = (cf._interQuest || {}) as Q;
   if (q.status === 'ENVIADO' && !opts.forcar) return { ok: true };
   const d = dadosDoTitular(cf, lead.name, q);
-  const duras = faltasDoQuestionario(q, d).filter((f) => f !== 'confirmar');
+  const pede = await extrasDoQuestionario(q);
+  const duras = faltasDoQuestionario(q, d, pede).filter((f) => f !== 'confirmar');
   if (duras.length) return { ok: false, erro: `Falta: ${duras.join(', ')}` };
   const row = q.emailId ? await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, toList: true, ccList: true } }) : null;
   const acc = row ? await prisma.emailAccount.findUnique({ where: { id: row.emailAccountId } }) : null;
@@ -338,18 +402,52 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
     .map((a: any) => String(a?.address || '').toLowerCase())
     .filter((a) => a && a !== proprio && a !== row.fromAddress!.toLowerCase() && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/.test(a)))];
   const sub = String(row.subject || 'Home Equity').trim();
-  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco, zeev });
-  try {
-    const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    await sendEmailFrom({ acc, userId: dono?.id || null, to: [row.fromAddress], cc, subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: corpo, replyToId: row.id, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any });
-  } catch (e: any) {
-    await salva(leadId, { erro: String(e?.message || e).slice(0, 200) });
-    await note(leadId, `⚠️ Questionário do Inter: o e-mail de resposta não saiu (${e?.message}). Responda à mão.`);
-    push(accountId, '⚠️ Questionário do Inter não saiu', lead.name, leadId);
-    return { ok: false, erro: e?.message };
+  const quitado = pede.quitado ? (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado ?? null : null;
+  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco, zeev, pede, quitado });
+  // Um envio por vez (a leitura das respostas e a nova tentativa do poller podem chegar juntas).
+  if (!opts.forcar) {
+    const pego = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_interQuest,enviandoAt}', to_jsonb(${new Date().toISOString()}::text), true)
+      WHERE id = ${leadId} AND COALESCE("customFields"->'_interQuest'->>'status', '') <> 'ENVIADO'
+        AND COALESCE(("customFields"->'_interQuest'->>'enviandoAt')::timestamptz, 'epoch'::timestamptz) < now() - interval '3 minutes'`;
+    if (!pego) return { ok: false, erro: 'Envio em andamento' };
   }
-  await salva(leadId, { status: 'ENVIADO', enviadoAt: new Date().toISOString() });
-  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}, endereço ${endereco}. Os documentos sobem pelo portal Zeev.`);
+  const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+  const enviar = (conta: typeof acc, comCopia: string[]) => sendEmailFrom({
+    acc: conta, userId: dono?.id || null, to: [row.fromAddress!], cc: [...new Set([...cc, ...comCopia])].filter((a) => a !== conta.address.toLowerCase()),
+    subject: /^re:/i.test(sub) ? sub : `Re: ${sub}`, body: corpo, replyToId: row.id, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any,
+  });
+  const falhou = async (msg: string) => {
+    if (q.erro !== msg.slice(0, 200)) { // a nova tentativa do poller não repete nota/push do mesmo erro
+      await note(leadId, `⚠️ Questionário do Inter: o e-mail de resposta não saiu (${msg}). Responda à mão.`);
+      push(accountId, '⚠️ Questionário do Inter não saiu', lead.name, leadId);
+    }
+    await salva(leadId, { erro: msg.slice(0, 200), tentouAt: new Date().toISOString(), enviandoAt: null } as any);
+    return { ok: false, erro: msg };
+  };
+  let via = acc.address;
+  let copias: string[] = [];
+  try {
+    await enviar(acc, []);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    // CAIXA RESERVA (Fabio 12/11: "do Fabio, cópias para Andreia e Vania — isso é temporário enquanto o e-mail comercial não volta"): o comercial@ está suspenso no Titan
+    // (535 com a senha certa) → a mesma resposta sai pela caixa pessoal do 1º admin, no mesmo fio, com cópia pros nossos endereços que estavam no e-mail do banco (Andreia)
+    // e pro responsável da Zeev. Volta sozinho pro comercial@ quando ele voltar a enviar (a reserva só entra no erro de login).
+    const reserva = ERRO_LOGIN.test(msg) && dono ? await prisma.emailAccount.findFirst({ where: { accountId, userId: dono.id, NOT: { id: acc.id } }, orderBy: { createdAt: 'asc' } }) : null;
+    if (!reserva) return falhou(msg);
+    const dominio = proprio.split('@')[1] || '';
+    copias = [...new Set([...(Array.isArray(row.toList) ? row.toList : []), ...(Array.isArray(row.ccList) ? row.ccList : [])].map((a: any) => String(a?.address || '').toLowerCase())
+      .filter((a) => a && a !== proprio && dominio && a.endsWith(`@${dominio}`)).concat(zeev.email ? [zeev.email.toLowerCase()] : []))];
+    try { await enviar(reserva, copias); via = reserva.address; } catch (e2: any) { return falhou(`${msg} — e pela caixa reserva ${reserva.address}: ${e2?.message || e2}`); }
+  }
+  await salva(leadId, { status: 'ENVIADO', enviadoAt: new Date().toISOString(), erro: null, remetente: via } as any);
+  const extrasTxt = [
+    pede.carencia && `carência de 90 dias: ${q.carencia === 'SIM' ? 'sim' : 'não'}`,
+    pede.conta && `conta Inter ${q.conta}`,
+    pede.quitado && `imóvel ${quitado === true ? 'quitado' : quitado === false ? 'com saldo em aberto (falta mandar a planilha de evolução do empréstimo)' : 'sem informação (confirmar com o banco)'}`,
+  ].filter(Boolean).join(', ');
+  const reservaTxt = via !== acc.address ? `\n📤 Saiu pelo ${via} (o ${acc.address} está com erro de login no envio), com cópia pra ${[...cc, ...copias].filter((a) => a !== via).join(', ') || 'ninguém'}.` : '';
+  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}${extrasTxt ? `, ${extrasTxt}` : ''}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}, endereço ${endereco}. Os documentos sobem pelo portal Zeev.${reservaTxt}`);
   push(accountId, '📨 Questionário do Inter respondido', `${lead.name}: vencimento dia ${q.vencimento}`, leadId);
   return { ok: true };
 }
@@ -429,8 +527,10 @@ export async function processQuestionariosInter(accountId: string, io?: Io): Pro
         if (!lead) continue;
         if (q.erro?.startsWith('ZEEV')) { if (zeevResponsavel().cpf) await enviarEmailQuestionario(accountId, id, io); continue; } // respostas prontas esperando o responsável da Zeev
         if (q.erro?.startsWith('ENDERECO')) { if (faz(q.lidoAt) > 10 * 60_000) { await salva(id, { lidoAt: new Date().toISOString() }); await enviarEmailQuestionario(accountId, id, io); } continue; } // tenta de novo a cada 10 min (equipe preenche CEP/nº no card)
+        // Envio que falhou por erro de login (comercial@ suspenso, 12/11): tenta de novo a cada 10 min — sai pela caixa reserva assim que as respostas estiverem completas.
+        if (q.erro && ERRO_LOGIN.test(q.erro)) { if (faz(q.tentouAt || q.lidoAt) > 10 * 60_000) { await salva(id, { tentouAt: new Date().toISOString() }); await enviarEmailQuestionario(accountId, id, io); } continue; }
         if (!q.cobrouAt || faz(q.cobrouAt) < CONFIRMA_ESPERA_MS) continue;
-        const f = faltasDoQuestionario(q, dadosDoTitular((lead.customFields || {}) as Cf, lead.name, q));
+        const f = faltasDoQuestionario(q, dadosDoTitular((lead.customFields || {}) as Cf, lead.name, q), await extrasDoQuestionario(q));
         if (f.length === 1 && f[0] === 'confirmar') await enviarEmailQuestionario(accountId, id, io); // só não confirmou os dados do card: seguem os do card
       }
     } catch (e: any) { console.warn('[Questionário Inter]', e?.message); }
@@ -453,7 +553,8 @@ export async function questionarioPreview(accountId: string, leadId: string) {
   const q = (cf._interQuest || {}) as Q;
   const d = dadosDoTitular(cf, lead.name, q);
   const docs = docsDoTitular(await arquivosDoDrive(accountId, cf));
-  return { estado: q, dados: d, faltas: faltasDoQuestionario(q, d), documentosNaPasta: [...docs.ident, ...docs.civil].map((f) => nomeDoAnexo(f, d.nome, vazio(cf.participante_2))), endereco: await enderecoTexto(leadId, cf) };
+  const pede = await extrasDoQuestionario(q);
+  return { estado: q, dados: d, pede, faltas: faltasDoQuestionario(q, d, pede), documentosNaPasta: [...docs.ident, ...docs.civil].map((f) => nomeDoAnexo(f, d.nome, vazio(cf.participante_2))), endereco: await enderecoTexto(leadId, cf) };
 }
 
 /** Início manual (e-mail que já tinha chegado antes do fluxo existir): acha o e-mail do questionário ligado ao card. */
