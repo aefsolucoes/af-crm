@@ -10,7 +10,7 @@ import { BANK_LOGOS_BASE64, SELAWIK_BOLD_BASE64, SELAWIK_REGULAR_BASE64 } from '
  * a tabela usa Helvetica como o original, e o cabeçalho usa Selawik (mesmas métricas da Segoe UI do portal).
  */
 
-export type SheetBank = 'INTER' | 'SANTANDER' | 'CREDITAS' | 'ITAU';
+export type SheetBank = 'INTER' | 'SANTANDER' | 'CREDITAS' | 'ITAU' | 'CAIXA';
 
 export interface SheetRow {
   n: number;
@@ -30,7 +30,7 @@ export interface SimulationSheet {
   /** Momento da simulação (padrão: agora, horário de Brasília). */
   when?: Date;
   bank: SheetBank;
-  /** Nome mostrado ao lado do ícone (padrão: Inter / Santander / Creditas / Itaú). */
+  /** Nome mostrado ao lado do ícone (padrão: Inter / Santander / Creditas / Itaú / CAIXA). */
   bankLabel?: string;
   /** Título da faixa azul (padrão "Home Equity | Evolução das parcelas"; o Financiamento usa "Financiamento Imobiliário | Evolução das parcelas"). */
   titulo?: string;
@@ -131,7 +131,7 @@ function drawFirstPageHeader(ctx: Ctx, page: PDFPage, s: SimulationSheet) {
 
   // Banco + aviso
   if (ctx.bankLogo) page.drawImage(ctx.bankLogo, { x: 63, y: 437, width: 30, height: 30 });
-  const label = s.bankLabel || { INTER: 'Inter', SANTANDER: 'Santander', CREDITAS: 'Creditas', ITAU: 'Itaú' }[s.bank];
+  const label = s.bankLabel || { INTER: 'Inter', SANTANDER: 'Santander', CREDITAS: 'Creditas', ITAU: 'Itaú', CAIXA: 'CAIXA' }[s.bank];
   page.drawText(label, { x: 102, y: 447.67, size: 10.5, font: bold, color: rgb(0.141, 0.141, 0.141) });
   page.drawText(DISCLAIMER_TITLE, { x: 158.62, y: 473.29, size: 9, font: bold, color: NOTE });
   justify(page, DISCLAIMER_LINES[0], reg, 9, 158.63, 451.29, 814 - 158.63);
