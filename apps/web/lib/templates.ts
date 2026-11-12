@@ -28,7 +28,7 @@ export const CATEGORY_META: Record<TemplateCategory, { label: string; color: str
 
 export function extractVariables(text: string): string[] {
   const matches = text.match(/\{\{([^}]+)\}\}/g) || [];
-  return [...new Set(matches.map(m => m.replace(/\{\{|\}\}/g, '').trim()))];
+  return Array.from(new Set(matches.map(m => m.replace(/\{\{|\}\}/g, '').trim())));
 }
 
 export function fillTemplate(body: string, vars: Record<string, string>): string {

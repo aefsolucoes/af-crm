@@ -111,7 +111,7 @@ interface MetaTemplate {
 /** Números de variáveis {{1}}, {{2}}... usados no corpo do template (ordenados, sem repetir). */
 function extractMetaVariables(text: string): number[] {
   const matches = text.match(/\{\{(\d+)\}\}/g) || [];
-  const nums = [...new Set(matches.map((m) => parseInt(m.replace(/\D/g, ''), 10)))];
+  const nums = Array.from(new Set(matches.map((m) => parseInt(m.replace(/\D/g, ''), 10))));
   return nums.sort((a, b) => a - b);
 }
 

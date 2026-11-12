@@ -501,7 +501,7 @@ export default function FinanceiroPage() {
                       <td className="px-5 py-3 font-medium text-slate-800">
                         <span className="flex items-center gap-1.5">
                           {(t.isRecurring || t.recurringParentId) && (
-                            <Repeat size={12} className="text-slate-400 flex-shrink-0" title="Lançamento fixo (repete todo mês)" />
+                            <span className="inline-flex flex-shrink-0" title="Lançamento fixo (repete todo mês)"><Repeat size={12} className="text-slate-400" /></span>
                           )}
                           {t.description}
                         </span>
