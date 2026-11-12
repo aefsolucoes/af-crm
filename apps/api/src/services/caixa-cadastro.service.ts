@@ -200,7 +200,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       const { fontes, faltando, ...participante } = pc;
       const p1 = ps.find((x) => x.ordem === 1);
       // avaliacaoFeita: a extensão não relança renda só pra acertar o mês de referência depois do crédito rodado (Fabio 01/11).
-      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: p1.endereco } : null };
+      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: p1.endereco, telefone: p1.telefone || '', email: p1.email || '' } : null }; // celular/e-mail do 1º: o cônjuge sem os dele usa esses (Fabio 12/11)
     }
     const p = participantesDa(cf).find((x) => !c.consultas?.[x.ordem]);
     if (!p) continue;
