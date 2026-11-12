@@ -80,6 +80,32 @@ export const chaveProblema = (p: { doc: string; texto: string[] }) => semAcento(
 export function problemaSemGarantia(problemas: { doc: string; texto: string[] }[]): { doc: string; texto: string[] } | null {
   return problemas.find((p) => /^cessao de direito/i.test(semAcento(p.doc).trim()) || p.texto.some((t) => /nao serve de garantia em nenhum banco/i.test(semAcento(t)))) || null;
 }
+type Duvida = { attachmentId: string; arquivo: string; doc: string; pergunta: string };
+/** Quem segura a conferência: pura. `perguntas` = as DOC_QUESTION do card (uma por anexo). Aberta → segura; fechada (qualquer status) → ressalva; nenhuma → 'abrir' (nunca chegou ao balão);
+ *  dono menor de idade (regra de todos os bancos) segura sempre. */
+export function classificarDuvidas(duvidas: Duvida[], perguntas: { attachmentId: string | null; status: string }[], leituras: Record<string, any>): { seguram: Duvida[]; ressalvas: (Duvida & { fechada: string })[]; abrir: Duvida[] } {
+  const out = { seguram: [] as Duvida[], ressalvas: [] as (Duvida & { fechada: string })[], abrir: [] as Duvida[] };
+  for (const d of duvidas) {
+    const doAnexo = perguntas.filter((q) => q.attachmentId === d.attachmentId);
+    if (leituras?.[d.attachmentId]?.donoMenor) out.seguram.push(d);
+    else if (!doAnexo.length) out.abrir.push(d);
+    else if (doAnexo.some((q) => q.status === 'OPEN')) out.seguram.push(d);
+    else out.ressalvas.push({ ...d, fechada: doAnexo.some((q) => q.status === 'ANSWERED') ? 'ANSWERED' : 'DISMISSED' });
+  }
+  return out;
+}
+
+/** Separa as dúvidas que ainda estão com a equipe (seguram) das que foram fechadas sem resposta (ressalva); a que nunca chegou ao balão é aberta agora e segura. */
+async function separarDuvidas(accountId: string, leadId: string, duvidas: Duvida[], leituras: Record<string, any>, io: Io): Promise<{ seguram: Duvida[]; ressalvas: (Duvida & { fechada: string })[] }> {
+  const perguntas = await prisma.aiTeamQuestion.findMany({ where: { accountId, leadId, kind: 'DOC_QUESTION', attachmentId: { in: duvidas.map((d) => d.attachmentId) } }, select: { attachmentId: true, status: true } });
+  const c = classificarDuvidas(duvidas, perguntas, leituras);
+  const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+  for (const d of c.abrir) {
+    await createDocQuestion({ accountId, leadId, attachmentId: d.attachmentId, fileName: d.arquivo || 'documento', docType: d.doc, question: d.pergunta || 'Não tenho segurança se este documento serve.', io: io as any }).catch((e: any) => console.error('[Docs] não abriu a dúvida:', e?.message || e));
+  }
+  return { seguram: [...c.seguram, ...c.abrir], ressalvas: c.ressalvas };
+}
+
 /** Algum dos rótulos é matrícula/certidão de ônus do imóvel? Pura. */
 export const temMatricula = (docs: string[]) => docs.some((d) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(semAcento(d).toUpperCase().trim()));
 const TEXTO_CESSAO = 'Obrigado pelos documentos! 😊 Pelo que vi, esse imóvel é de cessão de direitos, sem matrícula registrada em cartório, e assim ele não serve de garantia em nenhum banco. Você tem outro imóvel com certidão de matrícula pra colocar em garantia?';
@@ -167,6 +193,17 @@ export async function filtrarRendaDispensada(leadId: string, fhSoComprador: bool
     review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
     review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
   }
+}
+
+/** Dúvida de documento fechada sem resposta (descartada/assumida — Fabio 12/11): agenda a mesma conferência de quando chega documento, mas sem apagar o "te mando depois"
+ *  (`_docsLater`: o cliente não mandou nada) e gravando só a chave. Nas etapas que conferem, a conferência normal; depois delas, a releitura silenciosa (sem mensagem ao cliente). */
+export async function reconferirSemADuvida(leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
+  if (!lead) return;
+  const cf0 = (lead.customFields || {}) as Record<string, any>;
+  const quando = JSON.stringify(new Date(Date.now() + CHECK_DELAY_MS).toISOString());
+  if (etapaConfere(lead.stage.name, cf0)) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsCheckDue}', ${quando}::jsonb, true) WHERE id = ${leadId}`;
+  else if (cf0._docsFaltando || cf0._docProblemsTold) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsRelerDue}', ${quando}::jsonb, true) WHERE id = ${leadId}`;
 }
 
 export async function scheduleDocsCheck(accountId: string, leadId: string, io: Io): Promise<void> {
@@ -624,6 +661,25 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     return !!sentS.success;
   }
 
+  // DÚVIDA QUE SAIU DO BALÃO (Fabio 12/11: "dúvida de documento some do balão e trava a conferência" — 12 cards com leitura em dúvida e nenhuma pergunta aberta): só segura a
+  // conferência a dúvida que AINDA está com a equipe. Pergunta descartada, assumida ou respondida sem a releitura dar veredito → o documento vira ressalva (conta como recebido,
+  // a equipe confere no painel de Documentos / em Documentação Recebida) e a conferência segue. Dúvida que nunca chegou ao balão é aberta agora. Dono menor de idade continua segurando.
+  if (review?.duvidas.length) {
+    // Estado FRESCO (a leitura acima demora e grava `_docReview`): `donoMenor` recém-lido e as ressalvas que outra conferência já anotou.
+    const cfD = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const sep = await separarDuvidas(accountId, leadId, review.duvidas, (cfD._docReview || {}) as Record<string, any>, io).catch((e: any) => { console.error('[Docs] dúvidas sem pergunta:', e?.message || e); return null; });
+    if (sep) {
+      review.duvidas = sep.seguram;
+      const ja = new Set<string>(Array.isArray(cfD._duvidasSemResposta) ? cfD._duvidasSemResposta : []);
+      const novas = sep.ressalvas.filter((d) => !ja.has(d.attachmentId));
+      if (novas.length) {
+        await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_duvidasSemResposta}', COALESCE("customFields"->'_duvidasSemResposta', '[]'::jsonb) || ${JSON.stringify(novas.map((d) => d.attachmentId))}::jsonb, true) WHERE id = ${leadId}`;
+        const porque = (d: (typeof novas)[number]) => d.fechada === 'ANSWERED' ? 'a equipe já respondeu a dúvida deste arquivo, mas a leitura continua em dúvida' : 'a dúvida da IA foi fechada sem resposta';
+        await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Conferir em Documentação Recebida: ${novas.map((d) => `${d.doc} (${d.arquivo}) — ${porque(d)}: "${String(d.pergunta || '').slice(0, 220)}"`).join(' | ')}. O documento conta como recebido e não segura mais a conferência; pra marcar como OK ou com problema, use o painel de Documentos do card.` } }).catch(() => {});
+        console.log(`[Docs] ${lead.name} (${leadId}): ${novas.length} dúvida(s) fechada(s) sem resposta — viraram ressalva, a conferência segue`);
+      }
+    }
+  }
   // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);

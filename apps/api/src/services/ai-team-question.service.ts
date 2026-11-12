@@ -727,6 +727,15 @@ async function descartadaRecente(accountId: string, leadId: string, kind: string
   return rows.some((r) => (r.payload as any)?.descartada === true && (!mesma || mesma(r.payload)));
 }
 
+/** Dúvida de DOCUMENTO fechada sem resposta (descartada ou assumida — Fabio 12/11: a leitura ficava em dúvida pra sempre, nada aparecia no balão e a conferência nunca mais
+ *  dizia o que falta nem movia o card): a conferência volta a rodar em 10 min (reconferirSemADuvida); lá o documento vira ressalva e deixa de segurar. */
+function retomarConferenciaSemADuvida(q: { kind: string; accountId: string; leadId: string; attachmentId: string | null }, io: Io): void {
+  if (q.kind !== 'DOC_QUESTION' || !q.attachmentId) return;
+  const { reconferirSemADuvida } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+  reconferirSemADuvida(q.leadId).catch((e: any) => console.error('[Docs] reconferência após a dúvida fechada:', e?.message || e));
+  void io;
+}
+
 /** "Descartar" (Fabio 31/10: "preciso de um botão para descartar o push de dúvida, quando eu quiser descartar, para que não volte novamente"): fecha a dúvida
  *  de qualquer tipo sem responder, sem mexer na IA do card e sem mandar nada a ninguém. Não volta: o balão/popup só mostram as abertas, e o mesmo tipo de
  *  dúvida no mesmo card não reabre por um tempo (documento e e-mail já não reabriam — uma por arquivo/e-mail). */
@@ -743,6 +752,7 @@ export async function discardAiTeamQuestion(params: { accountId: string; questio
   });
   await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `🗑️ ${user?.name || 'Alguém da equipe'} descartou a dúvida da IA (sem responder; a IA do card não mudou): ${q.question.slice(0, 300)}` } }).catch(() => {});
   emitTo(io, await recipientsFor(accountId, q.departmentId, q.kind === 'LEARN'), 'ai_team_question_updated', { id: q.id });
+  retomarConferenciaSemADuvida(q, io);
   return updated;
 }
 
@@ -763,6 +773,7 @@ export async function dismissAiTeamQuestion(params: { accountId: string; questio
   if (count) io?.to(`lead:${q.leadId}`).emit('lead_ai_toggled', { leadId: q.leadId, active: false });
   await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `${user?.name || 'Alguém da equipe'} assumiu a dúvida da IA e vai falar direto com o cliente. IA desligada neste card.` } }).catch(() => {});
   emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
+  retomarConferenciaSemADuvida(q, io);
   return updated;
 }
 
