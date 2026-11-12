@@ -2,8 +2,10 @@
 import { useState } from 'react';
 import type { Bank } from './shared';
 
-/** Logo do banco. Se existir a imagem oficial em `public/banks/<santander|creditas|inter>.png` ela é usada; senão, um emblema desenhado na cor do banco (não é a marca oficial). */
-const FILE: Record<Bank, string> = { CREDIMORAR: 'santander', CREDITAS: 'creditas', INTER: 'inter' };
+/** Logo do banco. Se existir a imagem oficial em `public/banks/` ela é usada; senão, um emblema desenhado na cor do banco (não é a marca oficial). */
+// Creditas: o SÍMBOLO oficial (creditas-simbolo.svg — o mesmo do selo do card do Kanban e do simulador do site). Antes procurava um creditas.png que não existe e caía sempre no "c" desenhado (Fabio 12/11).
+const FILE: Record<Bank, string> = { CREDIMORAR: 'santander.png', CREDITAS: 'creditas-simbolo.svg', INTER: 'inter.png' };
+const NOME: Record<Bank, string> = { CREDIMORAR: 'santander', CREDITAS: 'creditas', INTER: 'inter' };
 
 export function BankLogo({ bank, size = 40 }: { bank: Bank; size?: number }) {
   const [semImagem, setSemImagem] = useState(false);
@@ -11,7 +13,7 @@ export function BankLogo({ bank, size = 40 }: { bank: Bank; size?: number }) {
   if (!semImagem) {
     return (
       // eslint-disable-next-line @next/next/no-img-element
-      <img src={`/banks/${FILE[bank]}.png`} alt={FILE[bank]} {...base} className="rounded-lg object-contain bg-white" onError={() => setSemImagem(true)} />
+      <img src={`/banks/${FILE[bank]}`} alt={NOME[bank]} {...base} className="rounded-lg object-contain bg-white" onError={() => setSemImagem(true)} />
     );
   }
   if (bank === 'CREDIMORAR') {
