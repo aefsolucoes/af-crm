@@ -30,7 +30,11 @@ Regras:
 - Mantenha a pessoa do texto (eu / a gente) e o tratamento que ele usou com o cliente. Nunca escreva "A&F": se precisar falar da empresa, use "a gente".
 - Sem emojis, sem saudação nem despedida que o original não tenha, sem aspas em volta e sem explicação.
 Devolva SOMENTE o texto ajustado.`,
-  grammar: 'Você é um assistente de escrita. Corrija APENAS erros gramaticais e ortográficos do texto a seguir, mantendo o tom e as palavras originais. Retorne somente o texto corrigido, sem explicações.',
+  // Fabio 12/11: "como vou ter um botão de corrigir gramática se ele erra?" — o modelo rápido deixou "Nos vamos" sem o acento. Agora usa o mesmo modelo do
+  // "Ajustar frase" e a regra cobra acentuação letra por letra.
+  grammar: `Você é revisor de português do Brasil. Corrija TODOS os erros do texto a seguir: ortografia, ACENTUAÇÃO (inclusive palavras que mudam de sentido sem o acento: nós/nos, está/esta, é/e, já, até, você, não, também, número, crédito, imóvel), crase, pontuação, concordância e regência. Confira palavra por palavra antes de responder.
+Não reescreva: mantenha as palavras, a ordem, o tom e o tamanho do texto; mude só o que está errado. Não acrescente nem tire informação, saudação ou emoji.
+Devolva SOMENTE o texto corrigido, sem aspas e sem explicação.`,
 };
 
 // Uso da API da Anthropic por dia × função × modelo (só administrador) — ver lib/anthropic-usage.ts. `estUsd` usa preço de tabela SUPOSTO (confira no console da Anthropic).
@@ -66,9 +70,9 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        // "Ajustar frase" usa o modelo melhor (tom é o que importa) com folga de tokens; os outros modos seguem no rápido.
-        model: mode === 'ajuste' ? 'claude-sonnet-5' : 'claude-haiku-4-5',
-        max_tokens: mode === 'ajuste' ? 4096 : 1024,
+        // Os dois modos usam o modelo melhor, com folga de tokens (ele raciocina antes de responder).
+        model: 'claude-sonnet-5',
+        max_tokens: 4096,
         system: SYSTEM_PROMPTS[mode],
         messages: [
           ...(mode === 'ajuste' ? [{ role: 'user', content: AJUSTE_ANTES }, { role: 'assistant', content: AJUSTE_DEPOIS }] : []),
