@@ -193,6 +193,27 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   });
   const sistema = /price/i.test(r.sistema || '') ? 'PRICE' : 'SAC';
   const indexador = (/\/\s*([A-Z]{2,5})\b/.exec(r.sistema || '') || [])[1] || 'TR';
+  // A tabela "Todas as Parcelas" do simulador é paginada (10 por página): com a 1ª página o resto sai da conta, igual à da CAIXA — taxa mensal = nominal/12,
+  // PRICE (parcela fixa) ou SAC (amortização fixa), MIP = % do saldo anterior (tirado da 1ª linha), DFI e taxa de administração fixos (12/11: conferido no PDF
+  // oficial do Windson de 06/11 — R$ 200 mil, 0,68% a.m., 420 meses → R$ 1.443,82).
+  const total = Number(String(r.prazo || '').replace(/\D/g, '')) || 0;
+  const i = (pct(r.jurosNominais) || 0) / 100 / 12;
+  if (rows.length && total > rows.length && i > 0) {
+    const r1 = rows[0];
+    const mipTaxa = fin ? r1.mip / fin : 0;
+    const dfi = rows[rows.length - 1].dfi, tsa = rows[rows.length - 1].tsa;
+    const pmt = sistema === 'PRICE' ? (fin * i) / (1 - Math.pow(1 + i, -total)) : 0;
+    const amortSac = fin / total;
+    const c2 = (v: number) => Math.round(v * 100) / 100;
+    let saldo = rows[rows.length - 1].saldo;
+    for (let n = rows.length + 1; n <= total; n++) {
+      const juros = c2(saldo * i);
+      const amort = n === total ? c2(saldo) : c2(sistema === 'PRICE' ? pmt - juros : amortSac);
+      const mip = c2(saldo * mipTaxa);
+      saldo = c2(Math.max(0, saldo - amort));
+      rows.push({ n, amort, juros, mip, dfi, tsa, parcela: c2(amort + juros + mip + dfi + tsa), saldo });
+    }
+  }
   const { renderSimulationSheet, taxasDe } = await import('./simulation-sheet.service');
   const taxas = taxasDe({ nominalAA: pct(r.jurosNominais), efetivaAA: pct(r.jurosEfetivos), indexador });
   const bonif = r.bonificada ? ' (bonificada)' : '';
