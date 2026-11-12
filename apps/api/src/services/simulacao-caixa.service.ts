@@ -141,8 +141,15 @@ export async function gravarSimulacaoCaixa(accountId: string, leadId: string, bo
   const etapa = String(body.etapa || '').toUpperCase();
   const campos = (body.campos || []).map((c: any) => `• ${c.rotulo || c.label || '?'}${c.tipo ? ` [${c.tipo}]` : ''}${c.opcoes?.length ? ` — opções: ${c.opcoes.join(' | ')}` : ''}${c.valor ? ` = ${c.valor}` : ''}`).join('\n');
   if (etapa === 'CODIGO_ENVIADO') { await gravar(leadId, { codigoPedidoEm: new Date().toISOString() }); return; }
-  if (etapa === 'MAPEAR') {
-    await gravar(leadId, { status: 'MAPEAR', leaseAt: null, tela: body.tela || null, retrato: { texto: (body.texto || '').slice(0, 4000), campos: body.campos || [] } });
+  if (etapa === 'MAPEAR' || etapa === 'MAPA') {
+    // MAPA = retrato intermediário (a rodada segue); MAPEAR = parou aqui. Cada tela fica em `mapas[tela]` (até 8 telas, 9.000 caracteres cada) pra eu mapear várias de uma vez.
+    const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const mapas = { ...((fresh._caixaSimulacao || {}).mapas || {}) } as Record<string, any>;
+    mapas[String(body.tela || '—').slice(0, 120)] = { texto: (body.texto || '').slice(0, 9000), campos: (body.campos || []).slice(0, 80), em: new Date().toISOString() };
+    const chaves = Object.keys(mapas).sort((a, b) => String(mapas[b].em).localeCompare(String(mapas[a].em))).slice(0, 8);
+    const mapasLimpos = Object.fromEntries(chaves.map((k) => [k, mapas[k]]));
+    if (etapa === 'MAPA') { await gravar(leadId, { mapas: mapasLimpos }); return; }
+    await gravar(leadId, { status: 'MAPEAR', leaseAt: null, tela: body.tela || null, mapas: mapasLimpos, retrato: { texto: (body.texto || '').slice(0, 4000), campos: body.campos || [] } });
     await nota(leadId, `🧮 Simulação CAIXA parou numa tela que a extensão ainda não conhece (${body.tela || '—'}):\n${(body.texto || '').slice(0, 1500)}${campos ? `\n\nCampos:\n${campos}` : ''}`);
     return;
   }
