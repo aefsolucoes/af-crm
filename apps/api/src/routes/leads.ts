@@ -565,15 +565,26 @@ router.put('/:id/venda-futura', async (req: AuthRequest, res: Response) => {
       if (t > new Date(Date.now() + 3 * 365 * 86_400_000).toISOString().slice(0, 10)) return res.status(400).json({ error: 'Data longe demais' });
       date = t;
     }
+    // Horário (Fabio 12/11: "o agendamento para futuro ainda não tem a opção de escolher horário"): opcional, "HH:MM" de Brasília, dentro do horário dos avisos
+    // (07h às 21h). Sem horário, a retomada sai no dia, a partir das 7h.
+    let time: string | null = null;
+    if (date && req.body?.time) {
+      const h = String(req.body.time);
+      if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(h)) return res.status(400).json({ error: 'Horário inválido' });
+      if (h < '07:00' || h >= '21:00') return res.status(400).json({ error: 'Escolha um horário entre 07:00 e 20:59' });
+      const agoraBrt = new Date(Date.now() - 3 * 3_600_000).toISOString();
+      if (date === hoje && h <= agoraBrt.slice(11, 16)) return res.status(400).json({ error: 'Esse horário de hoje já passou' });
+      time = h;
+    }
     const cf: Record<string, any> = { ...((lead.customFields || {}) as Record<string, any>) };
-    if (date) { cf._vendaFuturaAt = date; delete cf._vendaFuturaFailAt; cf._vendaFuturaFails = 0; }
-    else { delete cf._vendaFuturaAt; cf._vendaFuturaBaseAt = new Date().toISOString(); }
+    if (date) { cf._vendaFuturaAt = date; if (time) cf._vendaFuturaHora = time; else delete cf._vendaFuturaHora; delete cf._vendaFuturaFailAt; cf._vendaFuturaFails = 0; }
+    else { delete cf._vendaFuturaAt; delete cf._vendaFuturaHora; cf._vendaFuturaBaseAt = new Date().toISOString(); }
     await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
-    const br = date ? date.split('-').reverse().join('/') : null;
-    await auditNote(lead.id, req.user!.id, br ? `📅 Venda Futura: retomada marcada para ${br} — por ${userName}. Nesse dia o CRM manda a mensagem de retomada ao cliente (com a IA do card ligada).` : `📅 Venda Futura: sem data marcada — por ${userName}. A retomada segue de 30 em 30 dias.`);
+    const br = date ? `${date.split('-').reverse().join('/')}${time ? ` às ${time}` : ''}` : null;
+    await auditNote(lead.id, req.user!.id, br ? `📅 Venda Futura: retomada marcada para ${br} — por ${userName}. ${time ? 'Nesse horário' : 'Nesse dia'} o CRM manda a mensagem de retomada ao cliente (com a IA do card ligada).` : `📅 Venda Futura: sem data marcada — por ${userName}. A retomada segue de 30 em 30 dias.`);
     logActivity({ accountId: req.user!.accountId, userId: req.user!.id, userName, action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: br ? `marcou a retomada da Venda Futura para ${br}` : 'tirou a data da Venda Futura' } as any);
-    res.json({ ok: true, date });
+    res.json({ ok: true, date, time });
   } catch (err: any) {
     console.error('[Venda Futura] data manual:', err?.message);
     res.status(500).json({ error: 'Erro ao salvar a data' });

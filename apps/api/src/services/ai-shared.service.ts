@@ -435,7 +435,7 @@ export async function aiCardState(leadId: string): Promise<string> {
 
   // Agenda
   const agenda: string[] = [];
-  if (cf._vendaFuturaAt) agenda.push(`Venda Futura: retomar em ${String(cf._vendaFuturaAt).slice(0, 10).split('-').reverse().join('/')}`);
+  if (cf._vendaFuturaAt) agenda.push(`Venda Futura: retomar em ${String(cf._vendaFuturaAt).slice(0, 10).split('-').reverse().join('/')}${cf._vendaFuturaHora ? ` às ${cf._vendaFuturaHora}` : ''}`);
   const tarefas = await prisma.task.findMany({ where: { leadId, done: false }, orderBy: { dueAt: 'asc' }, take: 3, select: { title: true, dueAt: true } }).catch(() => []);
   for (const t of tarefas) agenda.push(`tarefa "${t.title.slice(0, 60)}" para ${t.dueAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`);
   if (agenda.length) partes.push(`AGENDA: ${agenda.join('; ')}.`);
@@ -807,6 +807,7 @@ export async function applyAiExtractedActions(
       try {
         const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true, pipelineId: true, stage: { select: { name: true } } } });
         const cfv: Record<string, any> = { ...((atual?.customFields || {}) as Record<string, any>), _vendaFuturaAt: action.resumeOn };
+        delete cfv._vendaFuturaHora; // data nova combinada na conversa: o horário marcado à mão era da data antiga
         delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
         // Sem aprovação (Fabio 03/11): a retomada fica em "Lead Sem Retorno" (o template sai no dia marcado) — não vai pra Venda Futura.

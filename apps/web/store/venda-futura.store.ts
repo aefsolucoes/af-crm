@@ -6,6 +6,8 @@ export interface VendaFuturaRequest {
   leadName: string;
   /** Data já marcada (AAAA-MM-DD), se houver. */
   current?: string | null;
+  /** Horário já marcado (HH:MM), se houver. */
+  currentTime?: string | null;
   /** IA do card ligada? Desligada = no dia a equipe só recebe o aviso, a mensagem não vai sozinha. */
   aiOn?: boolean;
 }

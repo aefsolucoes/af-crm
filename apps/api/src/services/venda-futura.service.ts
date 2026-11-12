@@ -30,7 +30,9 @@ export function vendaFuturaDue(p: { cf: Cf; stageEnteredAt: Date | null; lastInb
   const sent = p.cf._vendaFuturaSentAt ? new Date(p.cf._vendaFuturaSentAt).getTime() : 0;
   const at = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(p.cf._vendaFuturaAt || ''));
   if (at) {
-    const inicio = Date.UTC(Number(at[1]), Number(at[2]) - 1, Number(at[3])) + BRT_MS; // 00h de Brasília do dia combinado
+    // 00h de Brasília do dia combinado; com horário marcado à mão (`_vendaFuturaHora` "HH:MM", Fabio 12/11), só a partir dele. Sem horário, vale o dia (o poller começa às 7h).
+    const hm = /^(\d{2}):(\d{2})$/.exec(String(p.cf._vendaFuturaHora || ''));
+    const inicio = Date.UTC(Number(at[1]), Number(at[2]) - 1, Number(at[3])) + BRT_MS + (hm ? (Number(hm[1]) * 60 + Number(hm[2])) * 60_000 : 0);
     return now >= inicio && sent < inicio ? 'DATA' : null;
   }
   const base = Math.max(p.stageEnteredAt?.getTime() || 0, sent, p.cf._vendaFuturaBaseAt ? new Date(p.cf._vendaFuturaBaseAt).getTime() : 0, p.lastInboundAt?.getTime() || 0);
@@ -119,7 +121,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
       }
       enviados++;
       if (result.success) {
-        await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; c._vendaFuturaCount = Number(c._vendaFuturaCount || 0) + 1; c._vendaFuturaFails = 0; }, { aiAutoReplyActive: true });
+        await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; delete c._vendaFuturaHora; c._vendaFuturaCount = Number(c._vendaFuturaCount || 0) + 1; c._vendaFuturaFails = 0; }, { aiAutoReplyActive: true });
         // Sem aprovação (card em Lead Sem Retorno): depois do template, segue o fluxo do Follow Up (Fabio 03/11: "senão o cliente fica empacado naquele estágio") —
         // o card vai pra Follow Up e o loop continua do Follow Up 2, 3 dias depois (esse template conta como o 1º).
         if (!/venda futura/i.test(l.stage?.name || '')) {
@@ -141,7 +143,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
         const fails = Number(cf._vendaFuturaFails || 0) + 1;
         console.error(`[Venda Futura] ${l.name}: falha no envio (${fails}/3): ${(result as any).error}`);
         if (fails >= 3) {
-          await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; c._vendaFuturaFails = 0; });
+          await saveCf(l.id, (c) => { c._vendaFuturaSentAt = new Date().toISOString(); delete c._vendaFuturaAt; delete c._vendaFuturaHora; c._vendaFuturaFails = 0; });
           await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ Venda Futura: o WhatsApp não aceitou a mensagem de retomada 3 vezes (${(result as any).error}). Tento de novo em 30 dias.` } }).catch(() => {});
         } else {
           await saveCf(l.id, (c) => { c._vendaFuturaFails = fails; c._vendaFuturaFailAt = new Date().toISOString(); });
@@ -197,7 +199,7 @@ export async function processVfSilencio(io: Io): Promise<void> {
     if (await prisma.message.count({ where: { leadId: lead.id, direction: 'INBOUND', createdAt: { gt: q.createdAt } } })) continue; // respondeu: a IA cuida
     const { stage: vf, aprovado } = await etapaDaRetomada(lead);
     const data = diasDepois(15, q.createdAt.getTime());
-    await saveCf(lead.id, (c) => { c._vfSilencio = q.createdAt.toISOString(); if (vf) { c._vendaFuturaAt = data; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; } });
+    await saveCf(lead.id, (c) => { c._vfSilencio = q.createdAt.toISOString(); if (vf) { c._vendaFuturaAt = data; delete c._vendaFuturaHora; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; } });
     if (!vf) { await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📅 O cliente não respondeu a pergunta da data de retomada, mas este funil não tem a etapa ${aprovado ? 'Venda Futura' : 'Lead Sem Retorno'}: mova à mão.` } }).catch(() => {}); continue; }
     const dd = (s: string) => s.split('-').reverse().join('/');
     if (vf.name !== lead.stage?.name) {
@@ -219,7 +221,7 @@ export async function rejectedToVendaFutura(p: { accountId: string; leadId: stri
   const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
   await updateLeadStage(lead.id, p.accountId, vf.id);
   const sug = diasDepois(15);
-  await saveCf(lead.id, (c) => { c._vendaFuturaAt = sug; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; delete c._rejQuestionAt; delete c._autoCloseAfterNotice; }, { aiAutoReplyActive: true });
+  await saveCf(lead.id, (c) => { c._vendaFuturaAt = sug; delete c._vendaFuturaHora; delete c._vendaFuturaBaseAt; delete c._vendaFuturaSentAt; delete c._vendaFuturaFailAt; c._vendaFuturaCount = 0; delete c._rejQuestionAt; delete c._autoCloseAfterNotice; }, { aiAutoReplyActive: true });
   const motivos = (p.reasons || []).join('; ');
   await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${vf.name}" — reprovado por motivo temporário${motivos ? ` (${motivos})` : ''}; a equipe decidiu Venda Futura. A IA pergunta ao cliente a melhor data pra tentar de novo; sem resposta, a retomada fica pra ${sug.split('-').reverse().join('/')} (15 dias).` } }).catch(() => {});
   logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: 'reprovado por motivo temporário → Venda Futura' } as any);

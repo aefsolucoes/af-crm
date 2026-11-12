@@ -24,16 +24,23 @@ export function VendaFuturaPrompt() {
   const { request, close } = useVendaFuturaStore();
   const queryClient = useQueryClient();
   const [date, setDate] = useState('');
+  const [time, setTime] = useState(''); // horário opcional (Fabio 12/11); vazio = no dia, a partir das 7h
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (request) setDate(request.current && request.current >= hojeBrt() ? request.current : ''); }, [request]);
+  useEffect(() => {
+    if (!request) return;
+    const vale = !!request.current && request.current >= hojeBrt();
+    setDate(vale ? (request.current as string) : '');
+    setTime(vale && /^\d{2}:\d{2}$/.test(String(request.currentTime || '')) ? String(request.currentTime) : '');
+  }, [request]);
   if (!request) return null;
 
   async function save(value: string | null) {
     if (!request) return;
     setSaving(true);
     try {
-      await api.put(`/api/leads/${request.leadId}/venda-futura`, { date: value });
-      toast(value ? `Retomada marcada para ${br(value)}` : 'Sem data: a retomada segue de 30 em 30 dias', 'success');
+      const hora = value && time ? time : null;
+      await api.put(`/api/leads/${request.leadId}/venda-futura`, { date: value, time: hora });
+      toast(value ? `Retomada marcada para ${br(value)}${hora ? ` às ${hora}` : ''}` : 'Sem data: a retomada segue de 30 em 30 dias', 'success');
       ['lead', 'leads', 'leads-all', 'conversations'].forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
       close();
     } catch (e: any) {
@@ -53,10 +60,15 @@ export function VendaFuturaPrompt() {
             <button key={label} type="button" onClick={() => setDate(v)} className={`text-xs px-2.5 py-1 rounded-full border ${date === v ? 'bg-af-mid text-white border-af-mid' : 'border-af-border text-slate-600 hover:bg-af-light'}`}>{label} <span className="opacity-70">({br(v).slice(0, 5)})</span></button>
           ))}
         </div>
-        <label className="flex flex-col gap-1 text-xs text-slate-500">Data
-          <input type="date" min={hojeBrt()} value={date} onChange={(e) => setDate(e.target.value)} className="border border-af-border rounded-lg px-2.5 py-2 text-sm text-slate-800" />
-        </label>
-        {date && <p className="text-xs text-slate-500">Retomada em <b>{diaSemana(date)}, {br(date)}</b>, a partir das 7h.</p>}
+        <div className="flex gap-2">
+          <label className="flex flex-col gap-1 text-xs text-slate-500 flex-1 min-w-0">Data
+            <input type="date" min={hojeBrt()} value={date} onChange={(e) => setDate(e.target.value)} className="border border-af-border rounded-lg px-2.5 py-2 text-sm text-slate-800" />
+          </label>
+          <label className="flex flex-col gap-1 text-xs text-slate-500 w-32">Horário (opcional)
+            <input type="time" min="07:00" max="20:59" step={300} value={time} onChange={(e) => setTime(e.target.value)} className="border border-af-border rounded-lg px-2.5 py-2 text-sm text-slate-800" />
+          </label>
+        </div>
+        {date && <p className="text-xs text-slate-500">Retomada em <b>{diaSemana(date)}, {br(date)}</b>, {time ? <>às <b>{time}</b></> : 'a partir das 7h'}.{time && (time < '07:00' || time >= '21:00') ? <span className="text-amber-700"> O horário precisa ser entre 07:00 e 20:59.</span> : null}</p>}
         <p className={`text-xs rounded-lg px-3 py-2 border ${request.aiOn === false ? 'text-amber-700 bg-amber-50 border-amber-200' : 'text-slate-500 bg-slate-50 border-slate-200'}`}>
           {request.aiOn === false
             ? 'A IA deste card está desligada: no dia você recebe só um aviso (nota + notificação) e a mensagem NÃO vai sozinha. Ligue a IA se quiser que ela mande.'
@@ -79,10 +91,11 @@ export function VendaFuturaDateRow({ leadId, leadName, stageName, customFields, 
   if (!isVendaFuturaStage(stageName)) return null;
   const at = String((customFields || {})._vendaFuturaAt || '');
   const marcada = /^\d{4}-\d{2}-\d{2}$/.test(at) ? at : null;
+  const hora = marcada && /^\d{2}:\d{2}$/.test(String((customFields || {})._vendaFuturaHora || '')) ? String((customFields || {})._vendaFuturaHora) : null;
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg border border-af-border bg-af-light/40 px-2.5 py-1.5">
-      <span className="text-xs text-slate-600 min-w-0 truncate">📅 {marcada ? <>Retomar contato: <b>{br(marcada)}</b></> : 'Sem data de retomada (30 em 30 dias)'}</span>
-      <button type="button" onClick={() => askVendaFuturaDate({ leadId, leadName, current: marcada, aiOn })} className="text-[11px] font-medium text-af-mid hover:underline flex-shrink-0">{marcada ? 'alterar' : 'marcar data'}</button>
+      <span className="text-xs text-slate-600 min-w-0 truncate">📅 {marcada ? <>Retomar contato: <b>{br(marcada)}{hora ? ` às ${hora}` : ''}</b></> : 'Sem data de retomada (30 em 30 dias)'}</span>
+      <button type="button" onClick={() => askVendaFuturaDate({ leadId, leadName, current: marcada, currentTime: hora, aiOn })} className="text-[11px] font-medium text-af-mid hover:underline flex-shrink-0">{marcada ? 'alterar' : 'marcar data'}</button>
     </div>
   );
 }
