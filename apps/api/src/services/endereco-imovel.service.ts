@@ -59,33 +59,52 @@ export function limpaCidade(v: unknown): string {
 }
 
 const UFS = new Set('AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO'.split(' '));
-/** Cidade escrita num endereço ("…, MEIA PRAIA, ITAPEMA/SC, CEP 88220000", "…, SOBRADINHO, BRASILIA - DF"): só vale com uma UF de verdade ao lado ("…, SN, …" não é UF). Pura. */
-export function cidadeDeEndereco(txt: unknown): string {
+/** Cidade + UF do "Local e Data" (Fabio 12/11: "local do formulario USECASE precisa adicionar cidade/ UF"). uf '' = não achou (nunca inventada). */
+export type LocalAssinatura = { cidade: string; uf: string };
+const SEM_LOCAL: LocalAssinatura = { cidade: '', uf: '' };
+const ufValida = (v: unknown) => { const u = String(v ?? '').trim().toUpperCase(); return UFS.has(u) ? u : ''; };
+/** UF escrita junto da cidade ("Brasília/DF", "Belém - PA", "SAO PAULO / sp") — o mesmo final que limpaCidade tira; só uma das 27 siglas. '' = não tem. Pura. */
+export function ufDoTexto(v: unknown): string {
+  const m = /(?:\s*\/\s*([A-Za-z]{2})|\s+[–-]\s*([A-Z]{2}))\s*$/.exec(String(v ?? '').replace(/\s+/g, ' ').replace(/[\s,;.]+$/, ''));
+  return ufValida(m?.[1] || m?.[2]);
+}
+/** "Brasília/DF" (sem UF: só "Brasília"; sem cidade: ''). Pura. */
+export const textoDoLocal = (l: LocalAssinatura) => (l.cidade ? (l.uf ? `${l.cidade}/${l.uf}` : l.cidade) : '');
+
+/** Cidade e UF escritas num endereço ("…, MEIA PRAIA, ITAPEMA/SC, CEP 88220000", "…, SOBRADINHO, BRASILIA - DF"): só vale com uma UF de verdade ao lado ("…, SN, …" não é UF). Pura. */
+export function localDeEndereco(txt: unknown): LocalAssinatura {
   const t = String(txt ?? '').replace(/\s+/g, ' ').replace(/,?\s*CEP[:\s]*[\d.\-]{8,10}/i, '').replace(/\b\d{2}\.?\d{3}-?\d{3}\b/, '').replace(/\s+[—–]\s+/g, ', ').trim();
-  if (vazio(t)) return '';
+  if (vazio(t)) return SEM_LOCAL;
   const barra = /\/\s*([A-Za-z]{2})\b/.exec(t);
   if (barra && UFS.has(barra[1].toUpperCase())) {
     const c = limpaCidade(t.slice(0, barra.index).split(/\s*[,;]\s*|\s+[–-]\s+/).pop());
-    if (c) return c;
+    if (c) return { cidade: c, uf: barra[1].toUpperCase() };
   }
   const soltas = [...t.matchAll(/([A-Za-zÀ-ú' ]{2,40}?)\s*[,–-]\s*([A-Z]{2})\s*(?=,|$)/g)].filter((m) => UFS.has(m[2]));
-  return soltas.length ? limpaCidade(soltas[soltas.length - 1][1]) : '';
+  const ult = soltas[soltas.length - 1];
+  const c = ult ? limpaCidade(ult[1]) : '';
+  return c ? { cidade: c, uf: ult[2] } : SEM_LOCAL;
 }
+export const cidadeDeEndereco = (txt: unknown): string => localDeEndereco(txt).cidade;
 
-/** Cidade que já está escrita no card, sem buscar nada fora — nessa ordem: as que quem chama já tem (proposta do site), a residência lida nos documentos (ficha cadastral),
- *  os campos de cidade do card e o endereço do imóvel (campo do card ou o que está escrito na matrícula/ônus, IPTU ou escritura). '' = não achou. Pura (testável). */
-export function cidadeNoCard(cf: Cf, preferidas: unknown[] = []): string {
-  const achadas: string[] = [];
-  const poe = (v: unknown) => { const c = limpaCidade(v); if (c) achadas.push(c); };
-  preferidas.forEach(poe);
+/** Cidade e UF que já estão escritas no card, sem buscar nada fora — nessa ordem: as que quem chama já tem (proposta do site/WhatsApp: "Brasília/DF", ou { cidade, uf }),
+ *  a residência lida nos documentos (ficha cadastral), os campos de cidade do card (cada um com a sua UF: cidade_1/uf_1, cidade/uf, cidade_imovel/uf_imovel) e o endereço
+ *  do imóvel (campo do card ou o que está escrito na matrícula/ônus, IPTU ou escritura). A cidade é a da 1ª fonte; a UF, a da 1ª fonte com essa MESMA cidade que traga UF
+ *  (UF de outra cidade não serve). cidade '' = não achou. Pura (testável). */
+export function localNoCard(cf: Cf, preferidas: unknown[] = []): LocalAssinatura {
+  const achadas: LocalAssinatura[] = [];
+  const poe = (cidade: unknown, uf?: unknown) => { const c = limpaCidade(cidade); if (c) achadas.push({ cidade: c, uf: ufDoTexto(cidade) || ufValida(uf) }); };
+  for (const p of preferidas) { if (p && typeof p === 'object') poe((p as any).cidade, (p as any).uf); else poe(p); }
   const ficha = ((cf._fichaCadastral?.participantes || []) as any[]).filter(Boolean).slice().sort((a, b) => (Number(a.ordem) || 9) - (Number(b.ordem) || 9));
-  for (const p of ficha) poe(p.endereco?.cidade);
-  for (const k of ['cidade_1', 'cidade', 'cidade_imovel']) poe(cf[k]);
-  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) poe(cidadeDeEndereco(txt));
-  if (!achadas.length) return '';
+  for (const p of ficha) poe(p.endereco?.cidade, p.endereco?.uf);
+  poe(cf.cidade_1, cf.uf_1); poe(cf.cidade, cf.uf); poe(cf.cidade_imovel, ufValida(cf.uf_imovel) || cf.imovel_uf);
+  for (const txt of [cf.endereco_imovel, enderecoDosDocs(cf)?.texto]) { const l = localDeEndereco(txt); if (l.cidade) achadas.push(l); }
+  if (!achadas.length) return SEM_LOCAL;
+  const mesma = achadas.filter((a) => norm(a.cidade) === norm(achadas[0].cidade));
   // A mesma cidade escrita com acento em outra fonte ("SAO JOSE DOS CAMPOS" na conta de luz × "São José dos Campos" no card): fica a acentuada.
-  return achadas.find((c) => norm(c) === norm(achadas[0]) && /[^\x00-\x7F]/.test(c)) || achadas[0];
+  return { cidade: mesma.find((a) => /[^\x00-\x7F]/.test(a.cidade))?.cidade || achadas[0].cidade, uf: mesma.find((a) => a.uf)?.uf || '' };
 }
+export const cidadeNoCard = (cf: Cf, preferidas: unknown[] = []): string => localNoCard(cf, preferidas).cidade;
 
 /** CEPs que o card conhece (imóvel primeiro, depois a residência dos participantes e o que estiver escrito no endereço do imóvel). Pura. */
 function cepsDoCard(cf: Cf): string[] {
@@ -97,22 +116,34 @@ function cepsDoCard(cf: Cf): string[] {
   return out;
 }
 
-/** Cidade pro "Local e Data" (Fabio 11/11: "quando o CRM for preencher o USECASA pra solicitar a vistoria do Santander, precisa colocar o local também" — a autorização do
- *  Home Equity só olhava a proposta do site; cliente que veio pelo WhatsApp recebia o formulário só com a data). Card primeiro (cidadeNoCard); sem nada escrito, o endereço
- *  do imóvel montado pela proposta/documentos e, por último, o CEP (ViaCEP). '' = não achou em lugar nenhum (quem chama segura o formulário e avisa a equipe). */
-export async function cidadeDaAssinatura(leadId: string, cf: Cf, preferidas: unknown[] = []): Promise<string> {
-  const escrita = cidadeNoCard(cf, preferidas);
-  if (escrita) return escrita;
+/** Junta a fonte seguinte ao local já achado: sem cidade ainda, ela vira o local; com cidade, só a UF dela entra, e só se for a MESMA cidade. Devolve se o local ficou completo. Pura. */
+export function completaLocal(achou: LocalAssinatura, l: LocalAssinatura): { local: LocalAssinatura; completo: boolean } {
+  let local = achou;
+  if (l.cidade) {
+    if (!local.cidade) local = l;
+    else if (!local.uf && l.uf && norm(l.cidade) === norm(local.cidade)) local = { ...local, uf: l.uf };
+  }
+  return { local, completo: !!(local.cidade && local.uf) };
+}
+
+/** Cidade/UF pro "Local e Data" (Fabio 11/11: "quando o CRM for preencher o USECASA pra solicitar a vistoria do Santander, precisa colocar o local também" — a autorização do
+ *  Home Equity só olhava a proposta do site; cliente que veio pelo WhatsApp recebia o formulário só com a data; 12/11: "precisa adicionar cidade/ UF"). Card primeiro
+ *  (localNoCard); sem nada escrito — ou cidade escrita sem UF —, o endereço do imóvel montado pela proposta/documentos e, por último, o CEP (ViaCEP). A UF dessas fontes
+ *  só entra se a cidade for a mesma. cidade '' = não achou em lugar nenhum (quem chama segura o formulário e avisa a equipe); uf '' = sai só a cidade. */
+export async function localDaAssinatura(leadId: string, cf: Cf, preferidas: unknown[] = []): Promise<LocalAssinatura> {
+  let r = completaLocal(SEM_LOCAL, localNoCard(cf, preferidas));
+  if (r.completo) return r.local;
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const e = await enderecoDoImovel(leadId, cf).catch(() => null);
-  const doImovel = limpaCidade(e?.cidade);
-  if (doImovel) return doImovel;
+  r = completaLocal(r.local, { cidade: limpaCidade(e?.cidade), uf: ufDoTexto(e?.cidade) || ufValida(e?.uf) });
+  if (r.completo) return r.local;
   for (const cep of cepsDoCard(cf)) {
-    const v = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(6000) }).then((r) => (r.ok ? r.json() : null)).catch(() => null) as Record<string, any> | null;
-    const c = v && !v.erro ? limpaCidade(v.localidade) : '';
-    if (c) return c;
+    const v = await fetch(`https://viacep.com.br/ws/${cep}/json/`, { signal: AbortSignal.timeout(6000) }).then((x) => (x.ok ? x.json() : null)).catch(() => null) as Record<string, any> | null;
+    if (!v || v.erro) continue;
+    r = completaLocal(r.local, { cidade: limpaCidade(v.localidade), uf: ufValida(v.uf) });
+    if (r.completo) return r.local;
   }
-  return '';
+  return r.local;
 }
 
 export async function enderecoDoImovelInfo(leadId: string, cf: Cf): Promise<Info | null> {

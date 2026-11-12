@@ -292,9 +292,9 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
       if (opts.manual || !st.teamAskNoteAt) { await salvaSt(leadId, { teamAskNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander (Financiamento): a janela de 24 h do WhatsApp está fechada. Os formulários saem assim que o cliente responder qualquer mensagem.'); }
       return false;
     }
-    // "Local e Data" sempre com a cidade (Fabio 11/11): imóvel → residência dos documentos → campos do card → CEP. Sem cidade em lugar nenhum, os formulários não saem sem o local.
-    const { cidadeDaAssinatura } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
-    const cidade = await cidadeDaAssinatura(leadId, cf, [endImovel?.cidade, c1.endereco?.cidade]);
+    // "Local e Data" sempre com a cidade (Fabio 11/11) e a UF (12/11: "Brasília/DF"): imóvel → residência dos documentos → campos do card → CEP. Sem cidade em lugar nenhum, os formulários não saem sem o local; sem UF, sai só a cidade.
+    const { localDaAssinatura, textoDoLocal } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+    const cidade = textoDoLocal(await localDaAssinatura(leadId, cf, [{ cidade: endImovel?.cidade, uf: endImovel?.uf }, { cidade: c1.endereco?.cidade, uf: c1.endereco?.uf }]));
     if (!cidade) {
       if (opts.manual || !st.semLocalNoteAt) { await salvaSt(leadId, { semLocalNoteAt: new Date().toISOString() }); await note(leadId, '🏦 Santander (Financiamento): não achei a cidade pro campo "Local e data" da autorização e da declaração de saúde, e sem o local os formulários não saem. Preencha "Cidade do imóvel" (ou o CEP do imóvel) no card — o CRM manda em seguida.'); push(accountId, '🏦 Vistoria Santander', `${lead.name}: falta a cidade pro "Local e data" dos formulários`, leadId); }
       return false;
