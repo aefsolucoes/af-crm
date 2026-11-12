@@ -161,7 +161,9 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
 // Avaliação de Risco (passo 2): equipe pede; extensão devolve o que viu/fez.
 router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
-  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true }).catch((e) => e?.message || 'erro');
+  // `denovo` + `amortizacao` (SAC|PRICE): reabre a avaliação que deu erro e troca só a amortização (Fabio 12/11, Isidro: PRICE recusada no prazo → "pode aprovar na SAC").
+  const amort = /^(SAC|PRICE)$/i.test(String(req.body?.amortizacao || '')) ? String(req.body.amortizacao).toUpperCase() : null;
+  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true, denovo: req.body?.denovo === true, ...(amort ? { ajuste: { amortizacao: amort } } : {}) }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });

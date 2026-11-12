@@ -583,12 +583,15 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(construcao ? { construcaoPedida: true, ...(opts.construcaoConferida ? { construcaoConferida: true } : {}) } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(construcao ? { construcaoPedida: true, ...(opts.construcaoConferida ? { construcaoConferida: true } : {}) } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.amortizacao ? { amortizacao: String(opts.ajuste.amortizacao).toUpperCase() } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
   const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
-  const comoRefaz = refazer && opts.ajuste
+  const trocaAmort = refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.amortizacao ? String(opts.ajuste.amortizacao).toUpperCase() : null;
+  const comoRefaz = trocaAmort
+    ? ` A extensão reabre a proposta ${refazer!.proposta || '(a mais recente)'} em Formulários Enviados, troca SÓ a amortização pra ${trocaAmort}${trocaAmort === 'PRICE' ? ' (prazo acima de 360 vira 360)' : ''} e envia de novo (Fabio 12/11: "pode aprovar na SAC"). O resultado sai na consulta.`
+    : refazer && opts.ajuste
     ? ` CONDICIONADA (Fabio 03/11): a extensão reabre a proposta ${refazer.proposta || '(a mais recente)'} em Formulários Enviados, troca só a prestação pela possível (R$ ${Number(opts.ajuste.prestacao).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}) e a amortização pra PRICE, e envia de novo. O resultado sai na consulta.`
     : refazer
     ? ` A extensão REABRE em Formulários Enviados a avaliação que deu erro (${refazer.proposta ? `proposta ${refazer.proposta}${refazer.data ? ` de ${refazer.data}` : ''}` : 'a mais recente do produto — o nº da proposta não estava no card'}), clica em Avançar e segue com os dados que já estão nela (não preenche avaliação nova). Tela que ela não conhece ou botão que não achar: para sem clicar e anota aqui o que viu. A anterior foi pro histórico; o resultado é consultado de novo depois do envio.`
@@ -756,7 +759,7 @@ export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number
   // Valor do imóvel no Financiamento = o de COMPRA E VENDA da proposta que o próprio cliente mandou (Fabio 02/11), não o do card.
   if (fh) return operacaoFh(cf, { imovel: fh.construcao ? imovel : fh.compraVenda && fh.compraVenda > 0 ? fh.compraVenda : imovel, credito, renda, prazoPedido, pediuPrice: !!fh.pediuPrice, construcao: !!fh.construcao });
   return { portabilidade: 'NAO', origem: 'CAIXA', prazo: prazoPedido && prazoPedido > 0 ? Math.round(prazoPedido) : 240, valorImovel: imovel, valorFinanciamento: credito,
-    rendaBruta: Math.round(renda * 100) / 100, prestacao: Math.round(renda * 0.3 * 100) / 100, garantia: 'alienacao fiduciaria', amortizacao: he?.pediuSac ? 'SAC' : 'PRICE', indexador: 'TR' }; // Home Equity sempre PRICE, salvo o cliente pedir SAC (Fabio 02/11)
+    rendaBruta: Math.round(renda * 100) / 100, prestacao: Math.round(renda * 0.3 * 100) / 100, garantia: 'alienacao fiduciaria', amortizacao: 'SAC', indexador: 'TR' }; // SAC também no Home Equity (Fabio 12/11: "SAC para todas na CAIXA"; antes PRICE salvo pedido)
 }
 
 /** Imóvel NOVO no Financiamento (Fabio 02/11: "caso o imóvel seja novo, deverá gerar um push para a equipe e não rodar o crédito, apenas fazer o cadastro"):
@@ -827,11 +830,12 @@ function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number;
     : v.renda <= MCMV_LIMITES.classeMedia.renda && v.imovel <= MCMV_LIMITES.classeMedia.imovel ? 'MCMV_CM' : 'SBPE';
   const prazo = v.prazoPedido && v.prazoPedido > 0 ? Math.min(Math.round(v.prazoPedido), PRAZO_MAX_FH) : (Number(String(cf.prazo_financ || '').match(/(\d+)\s*mes/)?.[1]) || PRAZO_MAX_FH);
   const prestacao = Math.round(v.renda * 0.3 * 100) / 100;
-  const i = Math.pow(1 + TAXA_ESTIMADA[faixa], 1 / 12) - 1;
-  const sac1 = Math.round((v.credito / prazo + v.credito * i) * 100) / 100;
-  const amortizacao = v.pediuPrice || sac1 > prestacao ? 'PRICE' : 'SAC';
-  const porque = v.pediuPrice ? 'o cliente pediu PRICE' : sac1 > prestacao ? `a 1ª parcela estimada na SAC (R$ ${sac1.toLocaleString('pt-BR')}) passa dos 30% da renda (R$ ${prestacao.toLocaleString('pt-BR')})` : `SAC cabe na renda (1ª parcela estimada R$ ${sac1.toLocaleString('pt-BR')})`;
-  const base = { fh: true, portabilidade: 'NAO', prazo, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
+  // SAC é o padrão em TODAS as avaliações da CAIXA (Fabio 12/11, Isidro: "o padrão vai ser SAC para todas na CAIXA"); PRICE só a pedido do cliente. Depois de
+  // aprovar, o cliente recebe a simulação na SAC e na PRICE e escolhe — se quiser a outra, cancela e refaz nela. (Antes: PRICE quando a SAC passava de 30% da renda.)
+  const amortizacao = v.pediuPrice ? 'PRICE' : 'SAC';
+  const porque = v.pediuPrice ? 'o cliente pediu PRICE' : 'SAC é o padrão da CAIXA (Fabio 12/11)';
+  const prazoFinal = amortizacao === 'PRICE' && faixa === 'SBPE' ? Math.min(prazo, 360) : prazo; // SBPE na PRICE: no máximo 360 meses (SIRIC recusou 420 no Isidro, 12/11)
+  const base = { fh: true, portabilidade: 'NAO', prazo: prazoFinal, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
   // Construção em terreno próprio (Fabio 12/11, Isidro): mesma faixa/prazo/SAC-PRICE; muda a modalidade e o produto. Os nomes exatos das listas da CAIXA ainda não
   // foram vistos — a extensão escolhe o mais parecido e a 1ª rodada PARA na tela pra conferência (nada é enviado sem o OK).
   if (v.construcao) {

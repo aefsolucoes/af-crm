@@ -89,10 +89,10 @@ function imovelDoCard(cf: Record<string, any>, he: boolean) {
 }
 
 /** Como a CAIXA aprovou (detalhe da avaliação em `_caixaResultado.ultimaTela`, quando a extensão leu): modalidade (SBPE/MCMV), SAC/PRICE e prazo; e a entrada que
- *  dá o financiamento do card (imóvel − crédito). Sem o detalhe: PRICE no prazo máximo (Fabio: sempre o prazo máximo; a CAIXA refaz na PRICE quando condiciona). */
+ *  dá o financiamento do card (imóvel − crédito). Sem o detalhe: SAC no prazo máximo (Fabio 12/11: "o padrão vai ser SAC para todas na CAIXA"). */
 function condicoesDaAprovacao(cf: Record<string, any>) {
   const tela = String(cf._caixaResultado?.ultimaTela || '');
-  const sistema = /\bSAC\b/i.test(tela) && !/\bPRICE\b/i.test(tela) ? 'SAC' : 'PRICE';
+  const sistema = /\bPRICE\b/i.test(tela) && !/\bSAC\b/i.test(tela) ? 'PRICE' : 'SAC'; // SAC é o padrão da CAIXA (Fabio 12/11); PRICE só se a aprovação foi na PRICE
   const modalidade = /SBPE/i.test(tela) ? 'sbpe' : /MCMV|minha casa/i.test(tela) ? 'mcmv' : '';
   const imovel = num(cf.valor_imovel), credito = num(cf.valor_credito);
   return { sistema, modalidade, entradaDesejada: imovel && credito && imovel > credito ? brl(imovel - credito) : '' };
