@@ -231,6 +231,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   let pdfPronto: Buffer | null = null;
   try {
     if (!rows.length) throw new Error('a tabela de parcelas veio vazia');
+    if (!fin || !pct(r.jurosNominais)) throw new Error('faltou o valor financiado ou a taxa (o painel de condições não foi lido) — não montei o PDF');
     const pdf = await renderSimulationSheet({
       clientName: nome, bank: 'CAIXA', titulo: 'Financiamento Imobiliário | Evolução das parcelas',
       summary: {
