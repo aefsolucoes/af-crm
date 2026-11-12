@@ -713,7 +713,7 @@ async function marcarNovaPropostaRecusada(db: Db, row: { id: string; leadId: str
 /** Card que a própria análise FECHOU como reprovado/desqualificado (Perdidos) e depois um banco APROVOU (rodada refeita — prazo máximo, novo valor, troco…): reabre sozinho (Fabio 21/10, Paulino:
  *  "se o cliente aprovar, o CRM precisa alterar o card pra Aguardando Documentação e encaminhar a proposta de aprovação"). Volta pra Pré-Análise do funil de vendas do setor e deixa o fluxo normal fazer o resto:
  *  o aviso de aprovação (com IA do card ligada) manda a proposta e MOVE pra Aguardando Documentação. Só mexe em card perdido por reprovação/desqualificação — nunca no que a equipe marcou Perdido por outro motivo. */
-export async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean }): Promise<void> {
+async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean }): Promise<void> {
   if (row.dryRun) return;
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, status: true, lostReason: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'LOST') return;

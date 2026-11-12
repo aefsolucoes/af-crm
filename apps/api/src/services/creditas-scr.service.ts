@@ -123,21 +123,22 @@ async function findLeadByName(accountId: string, name: string): Promise<{ id: st
   return iguais.length === 1 ? iguais[0] : null;
 }
 
-/** Fechados ANTES disto (02/11–12/11: Fabricio, Marili, Michele…) a equipe confere caso a caso — a correção não reabre card antigo nem avisa cliente sozinha. */
+/** Fechados ANTES disto (02/11–12/11: Fabricio, Marili, Michele…) a equipe confere caso a caso — a correção nem anota nesses cards. */
 const FECHADO_PELA_ANALISE_DESDE = new Date('2026-11-12T23:00:00Z');
 const MOTIVO_DA_ANALISE = /reprov|desqualific|n[aã]o aprov/i;
 
 /** Card que a PRÓPRIA análise fechou (Perdidos com a negativa) antes deste e-mail — nos últimos 30 dias e depois de FECHADO_PELA_ANALISE_DESDE —, pelo CPF ou pelo nome IGUAL
  *  (só vale se for um único). Pra pré-aprovação que chega DEPOIS da negativa (Fabio 12/11, Fabricio: a Creditas pré-aprovou no dia seguinte e o e-mail ficou só na caixa,
- *  porque a busca só via card aberto). */
+ *  porque a busca só via card aberto). Reprovado tem `rejectedAt`; desqualificado não — vale a entrada em Perdidos (`stageEnteredAt`). */
 async function findLeadClosedByAnalysis(accountId: string, c: { name: string; cpf?: string }, emailDate: Date): Promise<{ id: string; name: string; customFields: any } | null> {
   const desde = new Date(Math.max(FECHADO_PELA_ANALISE_DESDE.getTime(), emailDate.getTime() - 30 * 86_400_000));
   if (desde.getTime() >= emailDate.getTime()) return null;
   const alvo = norm(c.name || '');
   if (!c.cpf && alvo.split(' ').length < 2) return null;
+  const janela = { gte: desde, lte: emailDate };
   const cands = await prisma.lead.findMany({
-    where: { accountId, status: 'LOST', isGroup: false, rejectedAt: { gte: desde, lte: emailDate }, ...(c.cpf ? {} : { name: { contains: c.name.trim().split(' ')[0], mode: 'insensitive' as const } }) },
-    select: { id: true, name: true, customFields: true, lostReason: true }, orderBy: { rejectedAt: 'desc' }, take: 300,
+    where: { accountId, status: 'LOST', isGroup: false, OR: [{ rejectedAt: janela }, { rejectedAt: null, stageEnteredAt: janela }], ...(c.cpf ? {} : { name: { contains: c.name.trim().split(' ')[0], mode: 'insensitive' as const } }) },
+    select: { id: true, name: true, customFields: true, lostReason: true }, orderBy: { updatedAt: 'desc' }, take: 300,
   });
   const iguais = cands.filter((l) => {
     if (!MOTIVO_DA_ANALISE.test(l.lostReason || '')) return false;
@@ -146,6 +147,25 @@ async function findLeadClosedByAnalysis(accountId: string, c: { name: string; cp
     return [l.name, cf.participante_1, cf.participante_2].some((n) => n && norm(String(n)) === alvo);
   });
   return iguais.length === 1 ? { id: iguais[0].id, name: iguais[0].name, customFields: iguais[0].customFields } : null;
+}
+
+type PreAprovacao = NonNullable<ReturnType<typeof import('./creditas-preapproval.service').parsePreApproval>>;
+
+/** Pré-aprovação da Creditas num card que a análise FECHOU com a negativa: SEGURADA (Fabio 12/11 — nada vai ao cliente sem o OK de uma pessoa). Só nota no card + push pra equipe,
+ *  uma vez por proposta (o Jonatas reenvia o mesmo e-mail cobrando devolutiva). Não registra a aprovação, não vincula o e-mail e não reabre o card. */
+async function avisarPreAprovacaoEmCardFechado(accountId: string, lead: { id: string; name: string }, row: EmailMessage, pre: PreAprovacao): Promise<void> {
+  const atual = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
+  const cf = (atual?.customFields || {}) as Record<string, any>;
+  const vistos: Record<string, any> = cf._creditasPreAprovFechado && typeof cf._creditasPreAprovFechado === 'object' ? cf._creditasPreAprovFechado : {};
+  const chave = pre.creditasId || `liquido-${Math.round(pre.liquido)}`;
+  if (vistos[chave]) return;
+  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _creditasPreAprovFechado: { ...vistos, [chave]: { emailId: row.id, at: row.date.toISOString() } } } } });
+  const brl = (v: number | null | undefined) => (v == null ? '' : v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
+  const dia = row.date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+  const taxa = pre.taxaMes ? `, ${pre.taxaMes}${pre.indexador ? ` + ${pre.indexador}` : ''}` : '';
+  await addNote(lead.id, `🔒 A Creditas PRÉ-APROVOU por e-mail (${dia}${pre.creditasId ? `, ID ${pre.creditasId}` : ''}) DEPOIS da negativa deste card: ${pre.total ? `crédito ${brl(pre.total)}, ` : ''}líquido ${brl(pre.liquido)}${pre.dividas ? ` (depois de quitar ${brl(pre.dividas)} de dívidas)` : ''}, ${pre.prazo} meses${taxa}. O card continua em Perdidos e NADA foi enviado ao cliente nem mudado no card. Se for seguir: reabra o card, vincule o e-mail do Jonatas (Caixa de e-mail) e avise o cliente.`);
+  try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: '🔒 Creditas aprovou depois da negativa', body: `${lead.name}: pré-aprovação por e-mail, card em Perdidos — cliente NÃO avisado. Confira.`, leadId: lead.id }).catch(() => {}); } catch { /* push é extra */ }
+  console.log(`[Creditas e-mail] ${lead.name}: pré-aprovação depois da negativa — segurada (nota + push), e-mail ${row.id}`);
 }
 
 const STANDBY_RX =/descontinuad[ao] por falta de movimenta/i;
@@ -203,12 +223,14 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
   let ligado = false;
   let tratados = 0;
   for (const c of citedClients(row.subject, text)) {
-    let lead = c.cpf ? await findLeadByCpf(acc.accountId, c.cpf) : await findLeadByName(acc.accountId, c.name);
-    // Sem card aberto: pré-aprovação que chegou DEPOIS da negativa (Fabio 12/11) vale pro card que a análise fechou — registra a aprovação e ele reabre (regra de 21/10).
-    let fechado = false;
+    const lead = c.cpf ? await findLeadByCpf(acc.accountId, c.cpf) : await findLeadByName(acc.accountId, c.name);
+    // Sem card aberto: pré-aprovação que chegou DEPOIS da negativa (Fabio 12/11) — acha o card que a análise fechou e avisa a EQUIPE (nota + push). Fica SEGURADO: não registra
+    // a aprovação, não vincula o e-mail (a IA da conversa leria) e não reabre o card — nada vai ao cliente sem o OK de uma pessoa.
     if (!lead && !scr && !STANDBY_RX.test(text)) {
       const { parsePreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service');
-      if (parsePreApproval(row.subject, row.textBody || '')) { lead = await findLeadClosedByAnalysis(acc.accountId, c, row.date); fechado = !!lead; }
+      const pre = parsePreApproval(row.subject, text);
+      const fechado = pre ? await findLeadClosedByAnalysis(acc.accountId, c, row.date) : null;
+      if (pre && fechado) { await avisarPreAprovacaoEmCardFechado(acc.accountId, fechado, row, pre).catch((e: any) => console.warn('[Creditas e-mail] pré-aprovação em card fechado:', e?.message)); continue; }
     }
     if (!lead) { console.log(`[Creditas e-mail] ${c.cpf ? 'CPF do e-mail' : c.name} sem card aberto no CRM — e-mail ${row.id} só fica na caixa`); continue; }
     tratados++;
@@ -216,11 +238,6 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
       ligado = true;
       try { await linkEmailToLead(acc, row.id, lead.id, io); } catch (e: any) { console.warn('[Creditas e-mail] não liguei o e-mail ao card:', e?.message); }
       if (!scr && fresh) { try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(acc.accountId, { title: `📧 Creditas — ${lead.name}`, body: row.subject || 'Novo e-mail da Creditas', leadId: lead.id }).catch(() => {}); } catch { /* push é extra */ } }
-    }
-    // Card fechado pela análise: só a pré-aprovação (registerPreApproval reabre o card) — nada de stand-by, SCR ou resposta ao suporte num card em Perdidos.
-    if (fechado) {
-      try { const { registerPreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service'); await registerPreApproval({ accountId: acc.accountId, leadId: lead.id, leadName: lead.name, row, io }); } catch (e: any) { console.warn('[Creditas e-mail] pré-aprovação (card fechado):', e?.message); }
-      continue;
     }
     // "Essa proposta foi descontinuada por falta de movimentação" (Fabio 03/11): STAND-BY, não reprovação — o card fica sabendo e a IA não confirma a aprovação.
     if (!scr && STANDBY_RX.test(text)) { await marcarStandByCreditas(acc.accountId, lead, row, c, fresh); continue; }

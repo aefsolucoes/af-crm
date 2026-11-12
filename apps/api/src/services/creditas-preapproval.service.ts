@@ -84,8 +84,6 @@ export async function registerPreApproval(p: { accountId: string; leadId: string
   });
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `✅ A Creditas PRÉ-APROVOU por e-mail (${dia}${pre.creditasId ? `, ID ${pre.creditasId}` : ''}): ${conditions}. Registrei como aprovação da Creditas.` } }).catch(() => {});
   p.io?.to(`account_${p.accountId}`).emit('credit_analysis_updated', { leadId: p.leadId });
-  // Card que a análise fechou com a negativa e a Creditas pré-aprovou DEPOIS (Fabio 12/11): reabre pela regra de 21/10 — o aviso da aprovação sai pelo fluxo normal. Card aberto: não faz nada.
-  try { const { reabrirSeAprovouDepoisDaNegativa } = require('./credit-analysis.service') as typeof import('./credit-analysis.service'); await reabrirSeAprovouDepoisDaNegativa(prisma, { leadId: p.leadId, bank: 'CREDITAS', dryRun: false }); } catch (e: any) { console.warn('[Creditas e-mail] reabrir após pré-aprovação:', e?.message); }
   return 'criada';
 }
 
