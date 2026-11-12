@@ -1785,6 +1785,12 @@ export async function leadAnalyses(db: Db, p: { accountId: string; leadId: strin
     followed, onlyFollowed: !!followed && posAprovacao, autoPaused: !!cf._autoPaused,
     eligible: /home equity/i.test(lead.pipeline?.department?.name || ''),
     rejectionPending: (require('./credit-auto.service') as typeof import('./credit-auto.service')).rejectionPendingOf(history, { status: lead.status, stage: lead.stage?.name, aiOn: lead.aiAutoReplyActive, paused: !!(lead.customFields as any)?._autoPaused }),
+    // Botão "Mandar propostas pra escolher" (Fabio 12/11): em contratação (documentação completa), 2+ bancos do Home Equity aprovados e nenhuma ⭐.
+    choicePending: (() => {
+      if (lead.status !== 'OPEN' || cf._autoPaused || !/contrata/i.test(lead.pipeline?.name || '') || history.some((a) => a.chosen) || aprovadas.some((a) => a.chosen)) return null;
+      const he = Array.from(new Set(aprovadas.filter((a) => ['INTER', 'CREDITAS', 'CREDIMORAR'].includes(a.bank)).map((a) => a.bank)));
+      return he.length >= 2 ? { bancos: he, sentAt: (cf._escolhaPedidaAt as string) || null, aiOn: lead.aiAutoReplyActive } : null;
+    })(),
     latest, ...(() => { const bp = latestByParticipant(history, cf, lead.name); return { latestP1: bp.p1, latestP2: bp.p2 }; })(), history, chosenId: history.find((a) => a.chosen)?.id || null,
     overrides: Object.fromEntries(overrides.map((o) => [o.bank, o.data])),
     participants: { name1: String(cf.participante_1 || lead.name || ''), name2: String(cf.participante_2 || ''), inverted: overrides.some((o) => (o.data as any)?.inverter === true) },

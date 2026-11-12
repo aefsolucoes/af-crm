@@ -53,7 +53,7 @@ export async function processVistoriaAi(accountId: string, io: Io): Promise<void
 }
 
 async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused) return;
@@ -111,10 +111,30 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   const bancos = Array.from(new Set(aprov.map((a) => a.bank)));
   const banco = fh ? 'INTER' : escolhido || (bancos.length === 1 ? bancos[0] : null); // Financiamento: o cliente já escolheu o Inter ("Seguir com esta")
   if (!banco) {
+    // As propostas vão ao cliente com o botão "Seguir com esta" (Fabio 12/11: "encaminhe as propostas aprovadas ao cliente para que ele escolha clicando em Seguir com esta"):
+    // IA do card ligada → o CRM manda sozinho (07h–21h, uma vez; espera o print do saldo devedor pedido há menos de 24 h e a rodada nova que ele dispara);
+    // IA desligada → nada sai sozinho: a equipe usa o botão "Mandar propostas pra escolher" do card.
+    const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+    const sd = (cf._saldoDevedor || {}) as { askedAt?: string; doneAt?: string };
+    const esperaSaldo = !!sd.askedAt && !sd.doneAt && Date.now() - new Date(sd.askedAt).getTime() < 24 * 3_600_000;
+    const iaOn = !!lead.aiAutoReplyActive;
+    const envio = iaOn && !cf._escolhaPedidaAt && !esperaSaldo && an.inNoticeWindow()
+      ? await an.sendProposalChoice({ accountId, leadId, io, quem: 'auto', abertura: 'Sua documentação está completa! ✅' }).catch((e: any) => ({ ok: false, error: String(e?.message || e), espera: false }))
+      : null;
     if (st.status !== 'ESCOLHER') {
       await salva(leadId, { status: 'ESCOLHER', since: new Date().toISOString() });
-      await note(leadId, `🏠 Documentação completa e o cliente tem aprovação em ${bancos.length} bancos (${bancos.map((b) => BANCO[b] || b).join(', ')}). Confirme com ele qual segue e marque a ⭐ "Escolher esta proposta": aí a IA solicita a vistoria sozinha.`);
-      push(accountId, '🏠 Escolher o banco', `${lead.name}: aprovado em ${bancos.length} bancos — confirmar qual segue`, leadId);
+      // Mandou (agora ou na conferência de documentos): o envio já deixou a nota no card. Senão, a equipe fica sabendo do botão.
+      if (!envio?.ok && !cf._escolhaPedidaAt) {
+        const lista = bancos.map((b) => BANCO[b] || b).join(', ');
+        // Vai sozinho mais tarde (fora do horário, esperando o print do saldo devedor ou a rodada nova): só a nota. Não vai sozinho (IA desligada, conversa fechada…): nota + push.
+        const vaiSozinho = iaOn && (esperaSaldo || !envio || !!envio.espera);
+        const porque = !iaOn ? ' A IA deste card está desligada, então as propostas NÃO foram sozinhas:'
+          : esperaSaldo ? ' As propostas vão sozinhas depois do print do saldo devedor (ou em 24 h); pra mandar antes,'
+          : envio?.espera ? ' As propostas vão sozinhas quando a rodada de análise em andamento terminar; pra mandar antes,'
+          : envio?.error ? ` As propostas não foram sozinhas (${envio.error}):` : ' Fora do horário (07h–21h): as propostas vão sozinhas no horário; pra mandar antes,';
+        await note(leadId, `🏠 Documentação completa e o cliente tem aprovação em ${bancos.length} bancos (${lista}).${porque} use o botão "Mandar propostas pra escolher" na aba Financiamento do card, em "Análises de crédito" (o cliente escolhe no botão "Seguir com esta"), ou confirme com ele e marque a ⭐ "Escolher esta proposta".`);
+        if (!vaiSozinho) push(accountId, '🏠 Escolher o banco', `${lead.name}: aprovado em ${bancos.length} bancos — mandar as propostas pra ele escolher`, leadId);
+      }
     }
     return;
   }

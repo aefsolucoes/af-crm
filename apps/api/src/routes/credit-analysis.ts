@@ -265,6 +265,19 @@ router.post('/notify-rejection', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao avisar a negativa'); }
 });
 
+// Botão "Mandar propostas pra escolher" (Fabio 12/11): documentação completa, 2+ bancos aprovados e nenhuma ⭐ — com a IA do card desligada as propostas não vão sozinhas;
+// a equipe manda por aqui (uma mensagem por proposta com o botão "Seguir com esta" e a orientação de tocar). Pode mandar de novo.
+router.post('/ask-choice', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    const { sendProposalChoice } = require('../services/approval-notice.service') as typeof import('../services/approval-notice.service');
+    const out = await sendProposalChoice({ accountId: req.user!.accountId, leadId, userId: req.user!.id, io: io(req), quem: 'equipe' });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao mandar as propostas'); }
+});
+
 // Chave da análise automática (só admin liga/desliga). A extensão consulta pra não rodar sozinha em duplicidade.
 router.get('/auto', async (req: AuthRequest, res: Response) => {
   try { res.json(await getAutoSetting(req.user!.accountId)); } catch (err) { fail(res, err, 'Erro ao ler a análise automática'); }

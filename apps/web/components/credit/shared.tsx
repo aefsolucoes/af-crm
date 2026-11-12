@@ -95,6 +95,8 @@ export interface LeadAnalyses {
   cardProposal?: { bank: Bank; numero: string } | null;
   eligible: boolean;
   rejectionPending?: boolean;
+  /** Em contratação (documentação completa), 2+ bancos aprovados e nenhuma ⭐: o botão "Mandar propostas pra escolher" (Fabio 12/11). `sentAt` = quando as propostas já foram ao cliente. */
+  choicePending?: { bancos: Bank[]; sentAt: string | null; aiOn: boolean } | null;
   latest: Partial<Record<Bank, Analysis>>;
   latestP1?: Partial<Record<Bank, Analysis>>; latestP2?: Partial<Record<Bank, Analysis>>;
   history: Analysis[];

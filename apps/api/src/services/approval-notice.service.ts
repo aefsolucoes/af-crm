@@ -682,37 +682,89 @@ async function sendApprovalSummary(p: { accountId: string; leadId: string; userI
   return { success: true };
 }
 
-/** Documentação completa e o cliente ainda não escolheu a proposta (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação,
- *  então a IA deve verificar com ele sobre qual proposta ele deverá seguir"). Com 2+ bancos aprovados e nenhuma ⭐: manda as propostas de novo, uma por mensagem,
- *  com o botão "Seguir com esta" (o clique marca a escolhida, como no aviso de aprovação). Uma vez por card (`_escolhaPedidaAt`). true = perguntou. */
-export async function askProposalChoice(accountId: string, leadId: string, io?: any, abertura = 'Recebi toda a documentação, obrigada!'): Promise<boolean> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
-  if (!lead?.aiAutoReplyActive) return false;
+/** Bancos do Home Equity com aprovação (com valor) no card — o mesmo critério do poller da vistoria pra saber se o CRM segue sozinho (1 banco) ou se o cliente escolhe (2+). */
+export async function bancosAprovadosHe(leadId: string): Promise<string[]> {
+  const rows = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: ['INTER', 'CREDITAS', 'CREDIMORAR'] }, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true } });
+  return Array.from(new Set(rows.map((r) => r.bank)));
+}
+
+/** DOCUMENTAÇÃO COMPLETA → AS PROPOSTAS APROVADAS VÃO AO CLIENTE PRA ELE ESCOLHER (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação";
+ *  12/11: "encaminhe as propostas aprovadas ao cliente para que ele escolha clicando em Seguir com esta. Orientar ele a clicar.").
+ *  Uma mensagem por proposta com o botão "Seguir com esta" (o clique marca a ⭐ e a contratação segue por aquele banco), com a orientação de tocar no botão na abertura e no fim.
+ *  Só quando o CRM não sabe sozinho por qual banco seguir: nenhuma ⭐ e 2+ bancos aprovados (com 1 banco a contratação já segue por ele). Se o aviso de aprovação mostrou só uma
+ *  proposta (Inter pelo valor total), vai essa uma, pra ele confirmar no botão.
+ *  `quem` 'auto' (conferência de documentos e poller da vistoria): só com a IA do card ligada, uma vez por card (`_escolhaPedidaAt`), sem rodada de análise em andamento.
+ *  `quem` 'equipe' (botão "Mandar propostas pra escolher" do card — Fabio 12/11: com a IA desligada nada sai sozinho, a equipe decide quando mandar): vale com a IA desligada e pode repetir. */
+export async function sendProposalChoice(p: { accountId: string; leadId: string; io?: any; userId?: string; quem: 'auto' | 'equipe'; abertura?: string }): Promise<{ ok: boolean; error?: string; propostas?: number; espera?: boolean }> {
+  const { accountId, leadId } = p;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, aiAutoReplyActive: true, customFields: true } });
+  if (!lead || lead.status !== 'OPEN') return { ok: false, error: 'Card não encontrado ou já fechado.' };
   const cf = (lead.customFields || {}) as Record<string, any>;
-  if (cf._escolhaPedidaAt || cf._autoPaused) return false;
-  if (await prisma.creditAnalysis.findFirst({ where: { leadId, chosen: true }, select: { id: true } })) return false;
-  const built = await buildApprovalText(leadId);
-  if (!built || built.source !== 'analises' || new Set(built.options.map((o) => o.instituicao)).size < 2) return false;
-  const parts = renderApprovalParts(built.options);
-  const intro = `${abertura} Antes de eu seguir com o banco, me diz com qual proposta você quer continuar:`;
-  const sent = await sendApprovalSummary({ accountId, leadId, io }, `${intro}\n\n${built.text}\n\n👉 É só me responder por aqui qual opção você prefere.`, parts ? { ...parts, intro } : null);
-  if (!sent.success) return false;
-  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _escolhaPedidaAt: new Date().toISOString() } as any } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🗳️ Documentação completa e nenhuma proposta escolhida: mandei as ${built.options.length} propostas aprovadas (${built.options.map((o) => o.instituicao).join(', ')}) com o botão "${CHOOSE_BUTTON}" pro cliente escolher com qual banco seguir.` } }).catch(() => {});
-  logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName: lead.name, summary: 'documentação completa: perguntou com qual proposta o cliente quer seguir' });
-  return true;
+  if (cf._autoPaused) return { ok: false, error: 'O STOP TOTAL deste cliente está ligado.' };
+  if (p.quem === 'auto' && !lead.aiAutoReplyActive) return { ok: false, error: 'IA do card desligada' };
+  if (p.quem === 'auto' && cf._escolhaPedidaAt) return { ok: false, error: 'As propostas já foram mandadas pra escolher.' };
+  if (await prisma.creditAnalysis.findFirst({ where: { leadId, chosen: true }, select: { id: true } })) return { ok: false, error: 'O cliente já tem uma proposta escolhida (⭐).' };
+  const bancos = await bancosAprovadosHe(leadId);
+  if (p.quem === 'auto' && bancos.length < 2) return { ok: false, error: 'Só um banco aprovado: a contratação segue por ele.' };
+  // Rodada nova em andamento (ex.: o print do saldo devedor chegou e o CRM refaz a análise com o valor novo): espera o resultado, senão vão os números velhos.
+  if (p.quem === 'auto' && (await prisma.creditAnalysis.findFirst({ where: { leadId, dryRun: false, status: { in: ['REQUESTED', 'RUNNING', 'SENT'] }, createdAt: { gte: new Date(Date.now() - 24 * 3_600_000) } }, select: { id: true } }))) return { ok: false, error: 'Rodada de análise em andamento.', espera: true };
+  if (!(await whatsappWindowOpen(leadId))) return { ok: false, error: 'Conversa fechada (mais de 24 h sem mensagem do cliente): o botão só chega com a conversa aberta.' };
+  // Só as análises de crédito (cada proposta sabe de qual análise veio — é o que o botão marca). Sem cair na leitura das notas com IA: o poller chama isto a cada minuto.
+  const fromAnalyses = await optionsFromAnalyses(leadId).catch(() => null);
+  if (!fromAnalyses?.length) return { ok: false, error: 'Não achei proposta aprovada com valor nas análises do card.' };
+  const options = await withPayoff(leadId, await withHolders(leadId, fromAnalyses));
+  if (options.some((o) => o.condicionalSemNumeros || !o.analysisId)) return { ok: false, error: 'Há proposta sem os números (aprovação condicional): mande à mão.' };
+  const blocks = options.map((o) => ({ text: approvalBlock(o), analysisId: o.analysisId as string }));
+  if (blocks.some((b) => b.text.length > INTERACTIVE_BODY_MAX)) return { ok: false, error: 'O texto de uma proposta passa do limite do WhatsApp pra mensagem com botão: mande à mão.' };
+
+  const n = blocks.length;
+  const abertura = p.abertura || (p.quem === 'equipe' ? 'Sua documentação está completa! ✅' : 'Recebi toda a documentação, obrigada!');
+  const intro = n > 1
+    ? `${abertura}\n\nAgora falta só você escolher com qual proposta quer seguir. Vou te mandar as ${n} propostas aprovadas, uma em cada mensagem: toque no botão *${CHOOSE_BUTTON}* embaixo da que você preferir. 👇`
+    : `${abertura}\n\nPra eu seguir com o banco, confirme a proposta abaixo tocando no botão *${CHOOSE_BUTTON}* embaixo dela. 👇`;
+  const { notaInter, notaPend } = approvalNotes(options, []);
+  const lembrete = n > 1
+    ? `👆 É só tocar em *${CHOOSE_BUTTON}* na proposta que você escolher (ou me responder aqui o nome do banco). Se ficar com dúvida entre elas, me chama que eu te ajudo a comparar.`
+    : `👆 É só tocar em *${CHOOSE_BUTTON}* pra confirmar.`;
+  const outro = [`${notaInter}${notaPend}`.trim(), lembrete].filter(Boolean).join('\n\n');
+  // Se a 1ª proposta não sair com o botão, vai tudo num texto só, pedindo a resposta por escrito.
+  const textoUnico = `${abertura}\n\nAgora falta só você escolher com qual proposta quer seguir:\n\n${blocks.map((b) => b.text).join('\n\n')}${notaInter}${notaPend}\n\n👉 É só me responder por aqui qual opção você prefere.`;
+  // Só a chave (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
+  // No automático a marca é RESERVADA antes de enviar: a conferência de documentos e o poller da vistoria podem chegar aqui no mesmo minuto — só um manda.
+  const marca = JSON.stringify(new Date().toISOString());
+  if (p.quem === 'auto') {
+    const reservou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_escolhaPedidaAt}', ${marca}::jsonb, true) WHERE id = ${leadId} AND NOT jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_escolhaPedidaAt')`;
+    if (!reservou) return { ok: false, error: 'As propostas já foram mandadas pra escolher.' };
+  }
+  const sent = await sendApprovalSummary({ accountId, leadId, io: p.io, userId: p.userId }, textoUnico, { intro, blocks, outro });
+  if (!sent.success) {
+    if (p.quem === 'auto') await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_escolhaPedidaAt' WHERE id = ${leadId}`; // não saiu nada: o poller tenta de novo
+    return { ok: false, error: sent.error || 'O WhatsApp não aceitou a mensagem.' };
+  }
+  if (p.quem === 'equipe') await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_escolhaPedidaAt}', ${marca}::jsonb, true) WHERE id = ${leadId}`;
+  const quem = p.quem === 'equipe' && p.userId ? (await prisma.user.findUnique({ where: { id: p.userId }, select: { name: true } }).catch(() => null))?.name || 'A equipe' : null;
+  const lista = options.map((o) => o.instituicao).join(', ');
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🗳️ ${quem ? `${quem} mandou` : 'Documentação completa e nenhuma proposta escolhida: mandei'} ao cliente ${n > 1 ? `as ${n} propostas aprovadas (${lista})` : `a proposta aprovada (${lista}) pra ele confirmar`}, cada uma com o botão "${CHOOSE_BUTTON}", com a orientação de tocar no botão. Quando ele tocar, a ⭐ é marcada e a contratação segue por esse banco.` } }).catch(() => {});
+  logActivity({ accountId, userId: p.userId || null, userName: quem || 'Assistente IA', action: quem ? 'lead_updated' : 'ai_replied', leadId, leadName: lead.name, summary: `documentação completa: mandou ${n > 1 ? `as ${n} propostas` : 'a proposta'} com o botão "${CHOOSE_BUTTON}" pro cliente escolher` });
+  p.io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
+  return { ok: true, propostas: n };
+}
+
+/** Conferência de documentos (documentação completa): manda as propostas pra escolher, se for o caso. true = mandou (a mensagem já diz que a documentação chegou). */
+export async function askProposalChoice(accountId: string, leadId: string, io?: any, abertura = 'Recebi toda a documentação, obrigada!'): Promise<boolean> {
+  return (await sendProposalChoice({ accountId, leadId, io, quem: 'auto', abertura })).ok;
 }
 
 /** Bloco pra IA da conversa: card já em contratação (documentação completa), 2+ bancos aprovados e nenhuma proposta escolhida — confirmar com o cliente. */
 export async function aiEscolhaPendenteContext(leadId: string): Promise<string> {
-  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } } } });
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, pipeline: { select: { name: true } } } });
   if (!l || !/contrata/i.test(l.pipeline?.name || '')) return '';
   if (await prisma.creditAnalysis.findFirst({ where: { leadId, chosen: true }, select: { id: true } })) return '';
   const nome: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
   const bancos = Array.from(new Set((await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: 'APPROVED', approvedValue: { gt: 0 } }, select: { bank: true } })).map((a) => nome[a.bank] || a.bank)));
   if (bancos.length < 2) return '';
-  return `ESCOLHA DA PROPOSTA PENDENTE (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação"): a documentação já está completa, mas o cliente ainda não disse com qual proposta vai seguir (aprovados: ${bancos.join(', ')}). Antes de falar de qualquer passo da contratação (vistoria, laudo, contrato), confirme com ele qual proposta quer seguir — se ele tiver dúvida, compare as condições do bloco de análise. Quando ele disser, marque "chooseBank". Nunca escolha por ele.`;
+  const mandadas = !!((l.customFields || {}) as Record<string, any>)._escolhaPedidaAt;
+  return `ESCOLHA DA PROPOSTA PENDENTE (Fabio 28/10: "o cliente precisa escolher uma proposta após encaminhar toda a documentação"): a documentação já está completa, mas o cliente ainda não disse com qual proposta vai seguir (aprovados: ${bancos.join(', ')}). Antes de falar de qualquer passo da contratação (vistoria, laudo, contrato), confirme com ele qual proposta quer seguir — se ele tiver dúvida, compare as condições do bloco de análise.${mandadas ? ` As propostas JÁ foram mandadas a ele, uma por mensagem, cada uma com o botão "${CHOOSE_BUTTON}" (Fabio 12/11: "orientar ele a clicar"): oriente-o a tocar no botão "${CHOOSE_BUTTON}" embaixo da proposta que ele preferir; não reescreva as propostas.` : ''} Quando ele disser por escrito qual banco, marque "chooseBank". Nunca escolha por ele.`;
 }
 
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */
@@ -785,8 +837,13 @@ export async function maybeHandleChooseButton(accountId: string, leadId: string,
     return true;
   }
   const docsJa = await docsAlreadySent(leadId);
+  // Documentação já completa (card em contratação — a escolha veio das propostas mandadas na documentação completa, Fabio 12/11): não pede documento de novo.
+  const emContratacao = /contrata/i.test((await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { name: true } } } }))?.pipeline?.name || '');
+  const seguinte = emContratacao
+    ? '\n\nJá estou com toda a sua documentação: agora sigo com o banco e te aviso por aqui o próximo passo (a vistoria do imóvel). 😊'
+    : docsJa ? '\n\nAgora é só me enviar os documentos da lista que te passei, que eu já dou andamento. 😊' : '\n\nJá te passo os próximos passos.';
   const resposta = escolhida
-    ? `Perfeito! ✅ Vamos seguir com a proposta ${qual}.${avisoContaNoBanco(par.inst) ? `\n\n${avisoContaNoBanco(par.inst)}` : ''}${docsJa ? '\n\nAgora é só me enviar os documentos da lista que te passei, que eu já dou andamento. 😊' : '\n\nJá te passo os próximos passos.'}`
+    ? `Perfeito! ✅ Vamos seguir com a proposta ${qual}.${avisoContaNoBanco(par.inst) ? `\n\n${avisoContaNoBanco(par.inst)}` : ''}${seguinte}`
     : `Anotado! Vou confirmar com a equipe a proposta ${qual} e já te retorno por aqui.`;
   await sendOutboundWhatsApp({ accountId, leadId, content: resposta, io });
   return true;

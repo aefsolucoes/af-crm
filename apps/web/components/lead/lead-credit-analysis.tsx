@@ -197,6 +197,39 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
         </Link>
       </div>
 
+      {/* Documentação completa e 2+ bancos aprovados sem ⭐ (Fabio 12/11): as propostas vão ao cliente com o botão "Seguir com esta" — sozinhas com a IA ligada; com ela desligada, por aqui. */}
+      {data.choicePending && (
+        <div className="mb-2 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] text-violet-900">
+          <p>
+            🗳️ Documentação completa e aprovado em {data.choicePending.bancos.map((b) => BANKS.find((x) => x.key === b)?.short || b).join(', ')}, sem proposta escolhida.{' '}
+            {data.choicePending.sentAt
+              ? <>As propostas foram ao cliente em {new Date(data.choicePending.sentAt).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}: falta ele tocar em <b>Seguir com esta</b>.</>
+              : data.choicePending.aiOn
+                ? <>Com a IA ligada as propostas vão sozinhas (07h–21h, com a conversa aberta); dá pra mandar agora.</>
+                : <>A IA deste card está desligada: as propostas só vão pelo botão.</>}
+          </p>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={async () => {
+              const n = data.choicePending!.bancos.length;
+              if (!confirm(`Mandar ao cliente pelo WhatsApp ${n > 1 ? `as ${n} propostas aprovadas` : 'a proposta aprovada'}, cada uma com o botão "Seguir com esta", orientando ele a tocar na que preferir?`)) return;
+              setBusy(true);
+              try {
+                const { data: r } = await api.post('/api/credit-analysis/ask-choice', { leadId });
+                toast(`${r?.propostas > 1 ? `As ${r.propostas} propostas foram` : 'A proposta foi'} ao cliente com o botão "Seguir com esta"`, 'success');
+                refresh(); onChanged?.();
+              } catch (e: any) { toast(e?.response?.data?.error || 'Não consegui mandar as propostas', 'error'); }
+              finally { setBusy(false); }
+            }}
+            className="mt-1 inline-flex items-center gap-1 rounded bg-violet-600 px-2 py-0.5 font-semibold text-white hover:bg-violet-700 disabled:opacity-50"
+            title='Uma mensagem por proposta, cada uma com o botão "Seguir com esta"; o toque do cliente marca a ⭐'
+          >
+            <Send size={10} /> {data.choicePending.sentAt ? 'Mandar de novo' : 'Mandar propostas pra escolher'}
+          </button>
+        </div>
+      )}
+
       {data.cardProposal && !data.latest[data.cardProposal.bank] && (
         <div className="mb-2 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] text-amber-800">
           A proposta <b>{data.cardProposal.numero}</b> ({BANKS.find((b) => b.key === data.cardProposal!.bank)?.short || data.cardProposal.bank}) está só anotada no card — o CRM ainda não leu as condições dela.
