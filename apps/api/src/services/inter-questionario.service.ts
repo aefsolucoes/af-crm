@@ -69,6 +69,52 @@ async function extrasDoQuestionario(q: Q): Promise<ExtrasQ> {
   return extrasDoEmail(freshPart(interEmailTexto(em.textBody, em.htmlBody)));
 }
 
+// ─── Valor liberado MENOR que o pedido (Fabio 12/11: "quando vier valor menor e for menor que o solicitado, colocar no e-mail o valor que a cliente precisa e pedir pra
+//     revisar o valor. Lembrando da cota de 60% sobre o valor de avaliação") ───
+const COTA_AVALIACAO = 0.6;
+const brl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const numBr = (s: string | null | undefined) => { const v = Number(String(s || '').replace(/\./g, '').replace(',', '.')); return Number.isFinite(v) && v > 0 ? v : null; };
+
+/** Quanto pedir na revisão: o que o cliente precisa, limitado a 60% da avaliação. null = não há o que pedir (liberou o pedido, ou o liberado já é o teto). Pura. */
+export function revisaoDeValor(p: { liberado: number | null; solicitado: number | null; avaliacao: number | null }): { alvo: number; teto: number | null } | null {
+  const { liberado, solicitado, avaliacao } = p;
+  if (!liberado || !solicitado || liberado >= solicitado - 1) return null;
+  const teto = avaliacao ? Math.floor(avaliacao * COTA_AVALIACAO) : null;
+  const alvo = teto ? Math.min(solicitado, teto) : solicitado;
+  return alvo > liberado + 1 ? { alvo, teto } : null;
+}
+
+/** Parágrafo do e-mail pedindo a revisão. Pura. */
+export function textoRevisaoValor(p: { liberado: number; solicitado: number; avaliacao: number | null; alvo: number; teto: number | null; oa: 'a' | 'o' }): string {
+  const cota = p.teto && p.avaliacao ? ` Pela cota de 60% da avaliação do imóvel (${brl(p.avaliacao)}), cabe até ${brl(p.teto)}.` : '';
+  return `Só um ponto sobre o valor: o valor liberado veio de ${brl(p.liberado)}, mas ${p.oa} cliente precisa de ${brl(p.solicitado)}.${cota} Conseguem revisar o valor para ${brl(p.alvo)}${cota ? '' : ', dentro da cota de 60% da avaliação do imóvel'}?`;
+}
+
+/** Liberado (texto do e-mail), pedido (card) e avaliação: o e-mail, o campo "Avaliação do imóvel" do card ou — no Inter, depois da vistoria — o "Valor estimado do imóvel"
+ *  da simulação anexa (Marli 12/11: rodamos com R$ 200 mil, a simulação pós-vistoria veio com R$ 185 mil, que é o do laudo). */
+async function valoresDoEmail(acc: any, row: { uid: number | null; folder: string; textBody: string | null; htmlBody: string | null }, cf: Cf, leadId: string) {
+  const { interEmailTexto, freshPart } = require('./inter-email.service') as typeof import('./inter-email.service');
+  const texto = freshPart(interEmailTexto(row.textBody, row.htmlBody));
+  const liberado = numBr((/valor\s+(?:liberado|aprovado)\s*:?\s*R\$\s*([\d.]+,\d{2})/i.exec(texto) || [])[1]);
+  let avaliacao = numBr((/(?:valor\s+de\s+avalia[cç][aã]o|avalia[cç][aã]o\s+do\s+im[oó]vel|avaliado\s+em)[^R\n]{0,40}R\$\s*([\d.]+,\d{2})/i.exec(texto) || [])[1]);
+  let fonte = avaliacao ? 'e-mail do banco' : '';
+  if (!avaliacao && Number(cf.valor_de_avaliacao) > 0) { avaliacao = Number(cf.valor_de_avaliacao); fonte = 'card'; }
+  const vc = String(cf.valor_credito ?? '').trim();
+  let solicitado = /,\d{1,2}$/.test(vc) ? numBr(vc.replace(/[^\d.,]/g, '')) : Number(vc.replace(/[^\d.]/g, '')) || null; // "80000" ou "80.000,00"
+  if (!solicitado) solicitado = (await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', kind: 'RUN', dryRun: false, requestedValue: { not: null } }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true } }).catch(() => null))?.requestedValue || null;
+  if (!avaliacao && liberado && solicitado && liberado < solicitado - 1) {
+    try {
+      const { getEmailAttachments } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+      const pdfParse = require('pdf-parse') as (b: Buffer, o?: any) => Promise<{ text: string }>;
+      for (const a of (await getEmailAttachments(acc, row, { max: 3 })).filter((x) => x.kind === 'pdf')) {
+        const m = /Valor\s*estimado\s*do\s*im[oó]vel\s*:?\s*(?:R\$\s*)?([\d.]+,\d{2})/i.exec((await pdfParse(Buffer.from(a.base64, 'base64'), { max: 1 })).text);
+        if (m && numBr(m[1])) { avaliacao = numBr(m[1]); fonte = 'simulação anexa ao e-mail'; break; }
+      }
+    } catch (e: any) { console.warn('[Questionário Inter] avaliação na simulação anexa:', e?.message); }
+  }
+  return { liberado, solicitado, avaliacao, fonte };
+}
+
 /** Erro de login no envio (Titan suspendeu o comercial@ em 09/11: o SMTP responde 535 com a senha certa). */
 const ERRO_LOGIN = /\b535\b|invalid login|authentication failed|EAUTH/i;
 type Dados = { nome: string; profissao: string | null; email: string | null; telefone: string | null };
@@ -181,15 +227,16 @@ export function textoCobranca(nome: string, faltas: FaltaQ[], d: Dados, q: Q = {
   return `${nome ? `${nome}, o` : 'O'}brigado! Pra fechar com o banco, só falta me dizer ${lista(faltas.map((x) => t[x]))}.`;
 }
 
-export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; zeev: { nome: string; cpf: string; email: string }; pede?: Partial<ExtrasQ>; quitado?: boolean | null }): string {
+export function corpoEmailQuestionario(p: { consultor: string; q: Q; d: Dados; endereco: string | null; zeev: { nome: string; cpf: string; email: string }; pede?: Partial<ExtrasQ>; quitado?: boolean | null; revisao?: string | null; oa?: 'a' | 'o' }): string {
   const { q, d } = p;
   const ex = p.pede || {};
   const imovel = p.quitado === true ? 'Quitado' : p.quitado === false ? 'Possui saldo em aberto (envio a planilha de evolução do empréstimo em seguida)' : '(confirmo em seguida)';
   return [
     `Olá, ${p.consultor || 'tudo bem'}${p.consultor ? ', tudo bem?' : '?'}`,
     '',
-    'Sim, o cliente aceita prosseguir com a contratação. Seguem as informações:',
+    `Sim, ${p.oa || 'o'} cliente aceita prosseguir com a contratação. Seguem as informações:`,
     '',
+    ...(p.revisao ? [p.revisao, ''] : []),
     'QUESTIONÁRIO:',
     `• Data de vencimento das parcelas: dia ${q.vencimento}`,
     ...(ex.carencia ? [`• Carência de 90 dias para iniciar o pagamento das parcelas: ${q.carencia === 'SIM' ? 'Sim' : 'Não'}`] : []),
@@ -375,11 +422,12 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
   const pede = await extrasDoQuestionario(q);
   const duras = faltasDoQuestionario(q, d, pede).filter((f) => f !== 'confirmar');
   if (duras.length) return { ok: false, erro: `Falta: ${duras.join(', ')}` };
-  const row = q.emailId ? await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, toList: true, ccList: true } }) : null;
+  const row = q.emailId ? await prisma.emailMessage.findUnique({ where: { id: q.emailId }, select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, toList: true, ccList: true, uid: true, folder: true, textBody: true, htmlBody: true } }) : null;
   const acc = row ? await prisma.emailAccount.findUnique({ where: { id: row.emailAccountId } }) : null;
   const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
   if (!row || !acc || !row.fromAddress) return { ok: false, erro: 'E-mail do Inter não encontrado' };
   const zeev = zeevResponsavel();
+  const oa: 'a' | 'o' = /^f/i.test(String(cf.genero_1 || '')) ? 'a' : 'o';
   if (!zeev.cpf) {
     if (!q.erro?.startsWith('ZEEV')) {
       await salva(leadId, { erro: 'ZEEV: falta INTER_ZEEV_RESPONSAVEL' });
@@ -403,7 +451,13 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
     .filter((a) => a && a !== proprio && a !== row.fromAddress!.toLowerCase() && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/.test(a)))];
   const sub = String(row.subject || 'Home Equity').trim();
   const quitado = pede.quitado ? (await (require('./saldo-devedor.service') as typeof import('./saldo-devedor.service')).proposalFinancing(leadId).catch(() => null))?.quitado ?? null : null;
-  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco, zeev, pede, quitado });
+  const valores = await valoresDoEmail(acc, row, cf, leadId).catch(() => null);
+  const rev = valores ? revisaoDeValor(valores) : null;
+  const revisao = rev && valores ? textoRevisaoValor({ liberado: valores.liberado!, solicitado: valores.solicitado!, avaliacao: valores.avaliacao, alvo: rev.alvo, teto: rev.teto, oa }) : null;
+  // Liberou menos que o pedido mas já no teto de 60% da avaliação: não pede revisão, só avisa a equipe na nota.
+  const noTeto = !rev && valores?.liberado && valores.solicitado && valores.liberado < valores.solicitado - 1
+    ? `\n💰 Liberado ${brl(valores.liberado)} (pedido ${brl(valores.solicitado)}): ${valores.avaliacao ? `já é o teto de 60% da avaliação (${brl(valores.avaliacao)}, ${valores.fonte}) — não pedi revisão` : 'não pedi revisão'}.` : '';
+  const corpo = corpoEmailQuestionario({ consultor: PRIMEIRO_NOME(row.fromName), q, d, endereco, zeev, pede, quitado, revisao, oa });
   // Um envio por vez (a leitura das respostas e a nova tentativa do poller podem chegar juntas).
   if (!opts.forcar) {
     const pego = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_interQuest,enviandoAt}', to_jsonb(${new Date().toISOString()}::text), true)
@@ -447,7 +501,8 @@ export async function enviarEmailQuestionario(accountId: string, leadId: string,
     pede.quitado && `imóvel ${quitado === true ? 'quitado' : quitado === false ? 'com saldo em aberto (falta mandar a planilha de evolução do empréstimo)' : 'sem informação (confirmar com o banco)'}`,
   ].filter(Boolean).join(', ');
   const reservaTxt = via !== acc.address ? `\n📤 Saiu pelo ${via} (o ${acc.address} está com erro de login no envio), com cópia pra ${[...cc, ...copias].filter((a) => a !== via).join(', ') || 'ninguém'}.` : '';
-  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}${extrasTxt ? `, ${extrasTxt}` : ''}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}, endereço ${endereco}. Os documentos sobem pelo portal Zeev.${reservaTxt}`);
+  const revisaoTxt = rev && valores ? `\n💰 Pedi revisão do valor pra ${brl(rev.alvo)}: liberado ${brl(valores.liberado!)}, pedido ${brl(valores.solicitado!)}${valores.avaliacao ? `, avaliação ${brl(valores.avaliacao)} (${valores.fonte}) → teto de 60% ${brl(rev.teto!)}` : ' (avaliação não informada)'}.` : noTeto;
+  await note(leadId, `📨 Questionário do Inter respondido por e-mail a ${row.fromAddress}: vencimento dia ${q.vencimento}, despesas de registro ${q.despesas === 'SIM' ? 'financiadas' : 'não financiadas'}${extrasTxt ? `, ${extrasTxt}` : ''}, assinatura digital (sem ICP-Brasil), registro eletrônico, responsável na Zeev ${zeev.nome}, endereço ${endereco}. Os documentos sobem pelo portal Zeev.${reservaTxt}${revisaoTxt}`);
   push(accountId, '📨 Questionário do Inter respondido', `${lead.name}: vencimento dia ${q.vencimento}`, leadId);
   return { ok: true };
 }
