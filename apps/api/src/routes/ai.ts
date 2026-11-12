@@ -9,13 +9,28 @@ const router = Router();
 
 router.use(authMiddleware);
 
-type AIMode = 'grammar' | 'professional' | 'friendly' | 'fun';
+type AIMode = 'ajuste' | 'grammar'; // "Profissional", "Amigável" e "Divertido" saíram (Fabio 12/11)
+
+/** "Ajustar frase" (Fabio 12/11: "eu faço isso no ChatGPT, eu escrevo uma frase e ele ajusta para um tom"): o consultor escreve do jeito dele e a IA devolve
+ *  o MESMO recado num tom claro e profissional, em parágrafos, sem inventar nem tirar informação. O par de exemplo é o que ele mandou (antes → depois). */
+const AJUSTE_ANTES = 'Vou deixar claro na nossa conversa que esse processo depende de uma análise de conformidade da caixa, algo que foge da minha alçada, o custo dessa operação será de 750 reais do laudo e a certidão de matrícula que já emitimos, quero te deixar ciente de que se a operação não for concluída esses valores nao serão reembolsado.';
+const AJUSTE_DEPOIS = `Quero deixar claro em nossa conversa que esse processo está condicionado à análise de conformidade da Caixa Econômica Federal, uma etapa que foge da minha alçada e cuja aprovação depende exclusivamente dos critérios internos do banco.
+
+Os custos envolvidos nessa operação são de R$ 750,00 referentes ao laudo e à certidão de matrícula do imóvel, que já foi emitida.
+
+Quero deixá-lo ciente de que, caso a operação não seja concluída por qualquer motivo, esses valores não serão reembolsados, uma vez que correspondem a serviços e despesas já realizados.`;
 
 const SYSTEM_PROMPTS: Record<AIMode, string> = {
+  ajuste: `Você ajusta a mensagem que um consultor de crédito imobiliário vai mandar ao cliente pelo WhatsApp. Ele escreve do jeito dele, rápido; você devolve o MESMO recado em tom profissional, claro e cordial — firme e respeitoso, sem frieza e sem rebuscar.
+Regras:
+- Mantenha TODAS as informações do texto: valores, prazos, nomes, bancos, condições e avisos. Não invente fato, não acrescente promessa, não tire nem amenize um aviso.
+- Pode completar a frase pra ficar clara (dizer em poucas palavras o porquê do que o texto já afirma), sem criar informação nova.
+- Português do Brasil correto, com pontuação e concordância. Um assunto por parágrafo, parágrafos curtos, com uma linha em branco entre eles quando houver mais de um assunto. Texto de uma frase só continua uma frase só.
+- Valores em reais no formato R$ 750,00. Nome de banco por extenso na primeira vez quando ajudar (ex.: Caixa Econômica Federal).
+- Mantenha a pessoa do texto (eu / a gente) e o tratamento que ele usou com o cliente. Nunca escreva "A&F": se precisar falar da empresa, use "a gente".
+- Sem emojis, sem saudação nem despedida que o original não tenha, sem aspas em volta e sem explicação.
+Devolva SOMENTE o texto ajustado.`,
   grammar: 'Você é um assistente de escrita. Corrija APENAS erros gramaticais e ortográficos do texto a seguir, mantendo o tom e as palavras originais. Retorne somente o texto corrigido, sem explicações.',
-  professional: 'Você é um especialista em comunicação corporativa. Reescreva o texto a seguir com tom profissional, formal e objetivo, mantendo o mesmo significado. Retorne somente o texto reescrito, sem explicações.',
-  friendly: 'Você é um especialista em comunicação. Reescreva o texto a seguir com tom amigável, caloroso e próximo ao cliente, mantendo o mesmo significado. Retorne somente o texto reescrito, sem explicações.',
-  fun: 'Você é um especialista em comunicação criativa. Reescreva o texto a seguir com tom divertido, leve e descontraído, mantendo o mesmo significado. Use emojis adequados. Retorne somente o texto reescrito, sem explicações.',
 };
 
 // Uso da API da Anthropic por dia × função × modelo (só administrador) — ver lib/anthropic-usage.ts. `estUsd` usa preço de tabela SUPOSTO (confira no console da Anthropic).
@@ -32,7 +47,7 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
     return;
   }
   if (!mode || !SYSTEM_PROMPTS[mode]) {
-    res.status(400).json({ error: 'Modo inválido. Use: grammar | professional | friendly | fun' });
+    res.status(400).json({ error: 'Modo inválido. Use: ajuste | grammar' });
     return;
   }
 
@@ -51,10 +66,12 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-        model: 'claude-haiku-4-5',
-        max_tokens: 1024,
+        // "Ajustar frase" usa o modelo melhor (tom é o que importa) com folga de tokens; os outros modos seguem no rápido.
+        model: mode === 'ajuste' ? 'claude-sonnet-5' : 'claude-haiku-4-5',
+        max_tokens: mode === 'ajuste' ? 4096 : 1024,
         system: SYSTEM_PROMPTS[mode],
         messages: [
+          ...(mode === 'ajuste' ? [{ role: 'user', content: AJUSTE_ANTES }, { role: 'assistant', content: AJUSTE_DEPOIS }] : []),
           { role: 'user', content: text.trim() },
         ],
       }),
@@ -68,7 +85,7 @@ router.post('/rewrite', async (req: AuthRequest, res: Response) => {
     }
 
     const data = await response.json() as { content: { type: string; text: string }[] };
-    const result = data.content?.[0]?.text ?? text;
+    const result = (data.content?.find((b) => b.type === 'text')?.text ?? '').trim() || text;
     res.json({ result });
   } catch (err) {
     console.error('[AI] Erro:', err);
