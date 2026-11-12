@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
-import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment, getDrive, extractFolderId, findFolder } from './google.service';
+import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment, getDrive, extractFolderId, findFolder, listFolderContents } from './google.service';
 export { isStickerAttachment, isScreenshotAttachment };
 import { logActivity } from './activity.service';
 
@@ -347,9 +347,12 @@ async function organizeLead(lead: {
     select: { id: true, driveFileId: true, fileName: true, mimeType: true },
   })).filter((a) => SIMULATION_FILE_RE.test(a.fileName));
   const simulationDriveIds = new Set(sentSimulations.map((a) => a.driveFileId!));
-  const files = [...attachments, ...sentSimulations].map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
-  const docInfo = await getDocInfo(lead.accountId, lead.id, attachments);
-  const attIdByDriveId = new Map(attachments.map((a) => [a.driveFileId!, a.id]));
+  // Documentos que NÃO vieram pelo WhatsApp (Fabio 12/11, Windson: "a pasta não foi organizada e os documentos estão jogados na pasta geral"): os que a equipe
+  // anexou no card e os soltos na pasta do cadastro CAIXA (link do card, ainda crua). A IA lê como os anexos (id "drive:<arquivo>" no `_docInfo`).
+  const extras = await arquivosForaDoWhatsapp(lead.accountId, (lead.customFields || {}) as Record<string, any>, new Set([...attachments, ...sentSimulations].map((a) => a.driveFileId!)));
+  const files = [...attachments, ...sentSimulations, ...extras].map((a) => ({ driveFileId: a.driveFileId!, fileName: a.fileName, mimeType: a.mimeType }));
+  const docInfo = await getDocInfo(lead.accountId, lead.id, [...attachments, ...extras]);
+  const attIdByDriveId = new Map([...attachments, ...extras].map((a) => [a.driveFileId!, a.id]));
 
   // Financiamento Habitacional tem VENDEDOR: documento pessoal de quem não é
   // comprador do card (Fabio 30/09). Home Equity: só COMPRADOR + IMOVEL.
@@ -452,6 +455,22 @@ async function organizeLead(lead: {
   console.log(`[DocsRecebidos] ${lead.name} (${lead.id}): pasta organizada, ${result.named.length} documentos, ${result.ignored.length} ignorados`);
 }
 
+/** Arquivos do cliente fora do WhatsApp: `_documentosEquipe` (a equipe anexou no card) + os soltos na raiz da pasta do cadastro CAIXA ainda crua (PDF/imagem). */
+async function arquivosForaDoWhatsapp(accountId: string, cf: Record<string, any>, ja: Set<string>): Promise<{ id: string; driveFileId: string; fileName: string; mimeType: string }[]> {
+  const out = new Map<string, { id: string; driveFileId: string; fileName: string; mimeType: string }>();
+  const serve = (m: string) => /^(application\/pdf|image\/)/.test(m);
+  for (const d of Array.isArray(cf._documentosEquipe) ? cf._documentosEquipe : []) {
+    const id = String(d?.id || '');
+    if (id && !ja.has(id) && serve(String(d?.mimeType || ''))) out.set(id, { id: `drive:${id}`, driveFileId: id, fileName: String(d.nome || 'documento'), mimeType: String(d.mimeType) });
+  }
+  const { pastaDoCadastroCrua } = require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service');
+  if (pastaDoCadastroCrua(cf)) {
+    const itens = await listFolderContents(accountId, extractFolderId(String(cf.link_pasta_drive))).catch(() => []);
+    for (const f of itens) if (serve(f.mimeType) && !ja.has(f.id) && !out.has(f.id)) out.set(f.id, { id: `drive:${f.id}`, driveFileId: f.id, fileName: f.name, mimeType: f.mimeType });
+  }
+  return [...out.values()];
+}
+
 /** O link do card aponta pra pasta onde o auto-upload do WhatsApp jogou os
  *  anexos do cliente, e ela ainda não tem COMPRADOR/IMOVEL/VENDEDOR? Então é a
  *  pasta "crua" (só ganhou o link), não uma pasta montada à mão pela equipe. */
@@ -518,7 +537,10 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
         // tem subpasta COMPRADOR igual no Home Equity, precisa ser igual"). Pasta
         // montada antes (ex.: sob demanda, com documentação ainda incompleta):
         // reorganiza só se chegou documento novo depois.
-        if (!cf._driveOrganizedAt) {
+        // Pasta do cadastro CAIXA ainda crua (só ganhou o link pra conferência da ficha — documentos anexados pela equipe, sem WhatsApp): organiza na contratação
+        // (Fabio 12/11, Windson). Sem isso ela virava "link manual" porque não tem anexo do WhatsApp dentro, e ficava jogada pra sempre.
+        const crua = (require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).pastaDoCadastroCrua(cf as any) && /^em contratacao/.test(norm(lead.pipeline.name));
+        if (!cf._driveOrganizedAt && !crua) {
           if ((cf as any)._driveLinkManual === cf.link_pasta_drive) continue;
           const bruta = await linkIsRawAttachmentsFolder(lead.accountId, lead.id, cf.link_pasta_drive).catch(() => null);
           if (bruta === null) continue; // Drive fora do ar: tenta no próximo ciclo
@@ -526,7 +548,7 @@ export async function organizeReceivedDocsLeads(): Promise<void> {
             await gravarChaves(lead.id, { _driveLinkManual: cf.link_pasta_drive }).catch(() => {});
             continue;
           }
-        } else {
+        } else if (cf._driveOrganizedAt) {
           const novo = await prisma.messageAttachment.findFirst({
             where: { leadId: lead.id, driveFileId: { not: null }, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(cf._driveOrganizedAt) } },
             select: { id: true },
