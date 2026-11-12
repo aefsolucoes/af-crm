@@ -271,6 +271,58 @@ async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
   return chamarIA(SYSTEM_DOC, content, 8192);
 }
 
+const SYSTEM_NOMES = `Você confere a GRAFIA dos nomes impressos num documento de identidade brasileiro (RG, CIN ou CNH). As imagens são recortes ampliados do MESMO documento em quatro orientações (0°, 90°, 180° e 270°): o RG antigo aberto costuma vir deitado, com o texto de cada página virado pra um lado. Use SÓ os recortes em que o texto que você vai ler está DE PÉ e leia LETRA POR LETRA — letras parecidas enganam (m/n, rn/m, i/l, u/v, c/e, a/o, h/b). Copie o que está impresso, sem corrigir nem completar, mesmo que o nome pareça incomum.
+Responda SOMENTE com JSON, sem texto antes ou depois:
+{"soletrado":{"nome":"<letra por letra, com hífen entre as letras e espaço entre as palavras>","pai":"...","mae":"..."},"nome":"<nome do titular>","pai":"<nome do pai>","mae":"<nome da mãe>"}
+Nome que o documento não traz ou que você não consegue ler com segurança = null (nos dois lugares).`;
+
+/** Documento de identidade em foto/escaneado: relê os nomes (titular, pai e mãe) com o documento de pé e ampliado e fica a grafia mais votada entre a 1ª leitura,
+ *  a releitura e o que os outros documentos trazem (Fabio 12/11: o RG escaneado deitado foi lido "Rosa Belen" duas vezes; no documento, na certidão de casamento
+ *  e na CAIXA é "Rosa Belem" — a ficha ficava com o erro e o cadastro ia trocar o nome certo da CAIXA). Corrige a própria leitura, antes da junção; o que mudou
+ *  vai na observação dela. PDF de texto (CNH digital) não tem foto pra reler e fica como está. */
+export async function conferirNomesDasIdentidades(accountId: string, lidos: { f: Arquivo; leitura: any }[], nomesDoCard: string[]): Promise<void> {
+  const { recortesDePe, grafiaMaisVotada, mesmoNome, quaseOMesmoNome } = require('./identidade-de-pe') as typeof import('./identidade-de-pe');
+  const google = await import('./google.service');
+  const ids = lidos
+    .filter((x) => /^(RG|CNH)$/i.test(String(x.leitura?.tipo || '').trim()) && Array.isArray(x.leitura.pessoas) && x.leitura.pessoas.length === 1)
+    .filter((x) => (x.f.mimeType === 'application/pdf' ? x.f.size <= MAX_PDF : /^image\//.test(x.f.mimeType)))
+    .slice(0, 6);
+  await Promise.all(ids.map(async ({ f, leitura }) => {
+    try {
+      const pessoa = leitura.pessoas[0] || {};
+      if (!pessoa.nome && !pessoa.pai && !pessoa.mae) return;
+      const { buffer, mimeType } = f.mimeType === 'application/pdf'
+        ? { buffer: await google.downloadDriveFile(accountId, f.id, f.mimeType), mimeType: f.mimeType }
+        : await google.downloadDriveFileForVision(accountId, f.id, f.mimeType);
+      const recortes = await recortesDePe(buffer, mimeType);
+      if (!recortes.length) return;
+      const outras = lidos.filter((x) => x.leitura !== leitura).flatMap((x) => (Array.isArray(x.leitura?.pessoas) ? x.leitura.pessoas : []));
+      const vistos: Record<'nome' | 'pai' | 'mae', unknown[]> = {
+        nome: [...outras.flatMap((p: any) => [p?.nome, p?.conjuge?.nome]), ...nomesDoCard],
+        pai: outras.map((p: any) => p?.pai),
+        mae: outras.map((p: any) => p?.mae),
+      };
+      const rotulo = { nome: 'nome', pai: 'pai', mae: 'mãe' } as const;
+      const campos = ['nome', 'pai', 'mae'] as const;
+      // Grafia parecida que outro documento traz: a IA diz qual das duas está impressa NESTE (pode não ser nenhuma).
+      const parecidas = campos.flatMap((c) => [...new Set(vistos[c].filter((v) => quaseOMesmoNome(v, pessoa[c])).map((v) => String(v).trim()))].map((v) => `${rotulo[c]}: "${pessoa[c]}" ou "${v}"`));
+      const content: any[] = recortes.flatMap((r, i) => [{ type: 'text', text: `Recorte ${i + 1} (${r.rotulo}):` }, { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: r.jpeg.toString('base64') } }]);
+      content.push({ type: 'text', text: `A primeira leitura deste documento, feita com ele como foi enviado, trouxe — nome: ${JSON.stringify(pessoa.nome ?? null)}; pai: ${JSON.stringify(pessoa.pai ?? null)}; mãe: ${JSON.stringify(pessoa.mae ?? null)}.${parecidas.length ? `\nOutro documento do cliente traz grafia parecida — diga qual está impressa NESTE documento (pode não ser nenhuma das duas): ${parecidas.join('; ')}.` : ''}\nConfira cada nome no documento.` });
+      const r = await chamarIA(SYSTEM_NOMES, content, 4096);
+      if (!r) { console.error('[Ficha cadastral] releitura dos nomes da identidade não respondeu'); return; }
+      const mudou: string[] = [];
+      for (const c of campos) {
+        const antes = pessoa[c];
+        const fica = grafiaMaisVotada(antes, r[c], vistos[c]);
+        if (fica && antes && !mesmoNome(fica, antes)) { pessoa[c] = fica; mudou.push(`${rotulo[c]} "${antes}" → "${fica}"`); }
+      }
+      if (!mudou.length) return;
+      leitura.observacao = `${String(leitura.observacao || '').trim()} Nomes conferidos com o documento de pé e ampliado (a 1ª leitura, com o texto de lado, trocou letra): ${mudou.join('; ')}.`.trim();
+      console.log(`[Ficha cadastral] releitura da identidade corrigiu ${mudou.length} nome(s)`);
+    } catch (e: any) { console.error('[Ficha cadastral] releitura dos nomes', e?.message); }
+  }));
+}
+
 function linhaParticipante(p: any, card: { telefone?: string; email?: string }): string {
   const L: string[] = [];
   const add = (rot: string, v: unknown) => { if (v !== null && v !== undefined && String(v).trim()) L.push(`• ${rot}: ${v}`); };
@@ -401,12 +453,15 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
 
     // 1) Cada arquivo sozinho, 4 de cada vez.
     const leituras: { arquivo: string; leitura: any }[] = [];
+    const comArquivo: { f: Arquivo; leitura: any }[] = [];
     const naoLidos: string[] = [];
     for (let i = 0; i < arquivos.length; i += 4) {
       const lote = arquivos.slice(i, i + 4);
       const r = await Promise.all(lote.map((f) => lerArquivo(accountId, f).catch(() => null)));
-      r.forEach((leitura, k) => { if (leitura && Array.isArray(leitura.pessoas)) leituras.push({ arquivo: lote[k].name, leitura }); else naoLidos.push(lote[k].name); });
+      r.forEach((leitura, k) => { if (leitura && Array.isArray(leitura.pessoas)) { leituras.push({ arquivo: lote[k].name, leitura }); comArquivo.push({ f: lote[k], leitura }); } else naoLidos.push(lote[k].name); });
     }
+    // 1b) RG/CNH em foto: os nomes (titular, pai e mãe) relidos com o documento de pé e ampliado, antes de juntar (Fabio 12/11: "Belem" lido "Belen").
+    await conferirNomesDasIdentidades(accountId, comArquivo, [1, 2, 3].map((n) => String(cf[`participante_${n}`] || '')).filter(Boolean));
     const pessoais = leituras.filter((x) => !/DOCUMENTO DO IMOVEL/i.test(String(x.leitura.tipo || '')));
     if (!pessoais.length) return 'Não consegui ler nenhum documento pessoal da pasta';
 
