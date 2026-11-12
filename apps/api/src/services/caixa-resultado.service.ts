@@ -82,7 +82,7 @@ export async function proximaConsultaResultado(accountId: string) {
     const t = tomador(cf);
     if (!t || t.cpf.length !== 11) continue;
     await salvar(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String((r.foraDoCrm ? r.produto : cf._caixaCadastro?.avaliacao?.produto) || '') }; // produto: a extensão lê a linha dele (uma avaliação lista vários produtos)
+    return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String((r.foraDoCrm ? r.produto : cf._caixaCadastro?.avaliacao?.produto) || ''), ...(r.foraDoCrm ? { foraDoCrm: true } : {}) }; // foraDoCrm: a extensão abre o detalhe também na aprovada (condições); produto: a extensão lê a linha dele (uma avaliação lista vários produtos)
   }
   return null;
 }
