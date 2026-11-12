@@ -26,7 +26,7 @@ import api from '@/lib/api';
 const BANCOS = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'] as const;
 const SO_COM_DOCUMENTACAO = new Set<string>(['CAIXA', 'BRB']);
 // Banco → tipo do PDF de simulação que o CRM manda ao cliente
-const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER' };
+const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER', CAIXA: 'FH_CAIXA' }; // CAIXA: simulador da CAIXA pela extensão SIOPI (12/11)
 // Fila de cada extensão (checkbox "Rodar nos bancos"). `ext` = de onde vem o sinal da extensão; o Itaú tem extensão PRÓPRIA (chave ITAU_FH).
 type ExtFila = Bank | 'ITAU_FH';
 const FILAS: { key: string; label: string; short: string; ext: ExtFila }[] = [
