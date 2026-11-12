@@ -115,6 +115,7 @@ export async function processDocLoop(accountId: string, io?: Io): Promise<void> 
     const cf = (l.customFields || {}) as Record<string, any>;
     if (cf._autoPaused) continue;
     if (cf._saldoDevedor?.bloqueio) continue; // saldo devedor acima do limite: com este imóvel não dá pra seguir (Fabio 05/11)
+    if (cf._imovelSemGarantia) continue; // imóvel de cessão de direitos: não serve de garantia, não cobra documento (Fabio 12/11)
     const st: DocLoopState = cf._docLoop && typeof cf._docLoop.passo === 'number' ? cf._docLoop : { passo: 0 };
     const conversa = await ultimaConversa(l.id);
     const ultimo = st.ultimoAt ? new Date(st.ultimoAt) : null;
@@ -212,7 +213,7 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
   const { isWaitingApprovalReply, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   for (const l of leads) {
     const cf = (l.customFields || {}) as Record<string, any>;
-    if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater) continue; // _docsLater: já tem a cobrança combinada com ele
+    if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater || cf._imovelSemGarantia) continue; // _docsLater: já tem a cobrança combinada com ele
     if (cf._docsPrazo && agora < Date.parse(cf._docsPrazo)) continue; // ele já disse quando manda
     const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     if (!ultimaIn) continue;

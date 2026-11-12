@@ -76,6 +76,14 @@ export function categoriasDoErro(textos: string[]): string[] {
 /** Chave de um problema já dito ao cliente (`_docProblemsTold`): "DOC:texto1/texto2" sem acento, em maiúsculas. */
 export const chaveProblema = (p: { doc: string; texto: string[] }) => semAcento(`${p.doc}:${p.texto.join('/')}`).toUpperCase().replace(/\s+/g, ' ');
 
+/** Achado que ENCERRA a conferência: o imóvel não serve de garantia em nenhum banco (hoje: cessão de direitos — Fabio 28/10 e 12/11). Pura. */
+export function problemaSemGarantia(problemas: { doc: string; texto: string[] }[]): { doc: string; texto: string[] } | null {
+  return problemas.find((p) => /^cessao de direito/i.test(semAcento(p.doc).trim()) || p.texto.some((t) => /nao serve de garantia em nenhum banco/i.test(semAcento(t)))) || null;
+}
+/** Algum dos rótulos é matrícula/certidão de ônus do imóvel? Pura. */
+export const temMatricula = (docs: string[]) => docs.some((d) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(semAcento(d).toUpperCase().trim()));
+const TEXTO_CESSAO = 'Obrigado pelos documentos! 😊 Pelo que vi, esse imóvel é de cessão de direitos, sem matrícula registrada em cartório, e assim ele não serve de garantia em nenhum banco. Você tem outro imóvel com certidão de matrícula pra colocar em garantia?';
+
 export type DocRessalva = { doc: string; fam: string; cats: string[]; texto: string; at: string };
 
 /** Problemas atuais que são o MESMO erro de um já dito e que o cliente REENVIOU (arquivo da mesma família lido nesta rodada, depois do aviso). Pura.
@@ -301,7 +309,7 @@ export async function processDocsFollowUps(accountId: string, io: Io): Promise<v
     const st = cf._docsLater as { at: string; said: string; setAt: string; beyond?: boolean } | undefined;
     if (!st) continue;
     const limpa = async () => { const f = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } }); const c = { ...((f?.customFields || {}) as Record<string, any>) }; delete c._docsLater; await prisma.lead.update({ where: { id }, data: { customFields: c as any } }); };
-    if (!norm(lead.stage.name).includes('aguardando documentacao') || cf._autoPaused) { await limpa(); continue; }
+    if (!norm(lead.stage.name).includes('aguardando documentacao') || cf._autoPaused || cf._imovelSemGarantia) { await limpa(); continue; } // imóvel que não serve de garantia: não cobra documento (Fabio 12/11)
     const docs = await prisma.messageAttachment.count({ where: { leadId: id, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(st.setAt) } } });
     if (docs) { await limpa(); continue; } // já mandou
     const hh = new Date(Date.now() + BRT).getUTCHours();
@@ -571,6 +579,51 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   await perguntarProtegidos(accountId, leadId, io).catch((e: any) => console.error('[Docs] arquivos protegidos:', e?.message || e));
   // Proprietário MENOR de idade no documento do imóvel (Fabio 12/11): a leitura já levou a dúvida pro balão; o card ganha a anotação e o push, uma vez por nome.
   await avisarDonoMenor(accountId, leadId, lead.name).catch((e: any) => console.error('[Docs] dono menor:', e?.message || e));
+
+  // IMÓVEL QUE NÃO SERVE DE GARANTIA (cessão de direitos; Fabio 12/11: "a IA estava indo bem, aí do nada ela mandou um retorno da documentação nada a ver"): a conversa já tinha dito
+  // que o imóvel não serve e perguntado por outro com matrícula; minutos depois a conferência mandou o retorno padrão — ajuste em outro documento, oferta de emitir certidão de imóvel sem
+  // matrícula e "ainda falta mandar RG, comprovante…". Esse achado ENCERRA a conferência: nenhum outro documento é pedido; sai só a constatação com a pergunta do outro imóvel, e NADA
+  // se a conversa já disse. O lembrete de documentação também para (`_imovelSemGarantia`), até a leitura deixar de apontar o problema.
+  let semGarantia = review ? problemaSemGarantia(review.problemas) : null;
+  // Chegou MATRÍCULA/certidão de ônus (o cliente respondeu com outro imóvel): o papel da cessão continua na pasta, mas deixa de ser a garantia — não segura mais a documentação
+  // (sem isto a leitura da cessão ficaria como problema pra sempre e o card nunca concluiria). A equipe é avisada uma vez pra conferir se é mesmo outro imóvel.
+  if (review && semGarantia && temMatricula([...review.ok, ...review.problemas.filter((p) => p !== semGarantia).map((p) => p.doc)])) {
+    const cessao = semGarantia;
+    review.problemas = review.problemas.filter((p) => p !== cessao);
+    semGarantia = null;
+    if (!cfLead._cessaoComMatriculaAt) {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_cessaoComMatriculaAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '📎 Há um documento de CESSÃO DE DIREITOS na pasta, mas também chegou matrícula/certidão de ônus: a conferência segue pela matrícula. Confira se é mesmo outro imóvel (o de cessão não serve de garantia).' } }).catch(() => {});
+    }
+  }
+  if (review && !semGarantia && cfLead._imovelSemGarantia) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_imovelSemGarantia' WHERE id = ${leadId}`;
+  if (semGarantia) {
+    const freshS = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cfS = (freshS?.customFields || {}) as Record<string, any>;
+    const chaveS = chaveProblema(semGarantia);
+    const ditosS: string[] = Array.isArray(cfS._docProblemsTold) ? cfS._docProblemsTold : [];
+    if (cfS._imovelSemGarantia && ditosS.includes(chaveS)) return false; // já tratado: quem conversa daqui em diante é a IA, com o contexto da cessão
+    const jaDito = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', status: { not: 'FAILED' }, createdAt: { gt: new Date(Date.now() - 30 * 86_400_000) }, OR: [{ content: { contains: 'cessão de direito', mode: 'insensitive' } }, { content: { contains: 'cessao de direito', mode: 'insensitive' } }] },
+      select: { id: true },
+    });
+    const sentS = jaDito ? { success: false } : lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: TEXTO_CESSAO, io: io || undefined }) : { success: false };
+    const agoraS = new Date().toISOString();
+    const marca = JSON.stringify({ motivo: 'cessão de direitos', at: cfS._imovelSemGarantia?.at || agoraS });
+    // Só as chaves (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
+    if (jaDito || sentS.success) {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_imovelSemGarantia}', ${marca}::jsonb, true), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditosS, chaveS])))}::jsonb, true), '{_docProblemsToldAt}', COALESCE("customFields"->'_docProblemsToldAt', '{}'::jsonb) || ${JSON.stringify({ [chaveS]: agoraS })}::jsonb, true) WHERE id = ${leadId}`;
+    } else {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_imovelSemGarantia}', ${marca}::jsonb, true) WHERE id = ${leadId}`;
+    }
+    if (!cfS._imovelSemGarantia || sentS.success) {
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 Conferência de documentos: imóvel de CESSÃO DE DIREITOS (sem matrícula registrada) — não serve de garantia em nenhum banco. ${jaDito ? 'A conversa já tinha dito isso ao cliente: não mandei o retorno da conferência.' : sentS.success ? 'Avisei o cliente e perguntei se ele tem outro imóvel com matrícula.' : 'IA desligada: avise o cliente.'} Não pedi ajuste em documento nem os documentos que faltam, e o lembrete de documentação fica parado neste card.` } }).catch(() => {});
+    }
+    if (!cfS._imovelSemGarantia) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🚫 ${lead.name}: imóvel de cessão de direitos`, body: 'Não serve de garantia em nenhum banco. Veja se o cliente tem outro imóvel com matrícula.', leadId }).catch(() => {});
+    console.log(`[Docs] ${lead.name} (${leadId}): imóvel de cessão de direitos — conferência encerrada (${jaDito ? 'conversa já disse' : sentS.success ? 'cliente avisado' : 'IA desligada'})`);
+    return !!sentS.success;
+  }
+
   // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
