@@ -135,6 +135,16 @@ async function iniciar(accountId: string, opts: { doBanco?: boolean } = {}): Pro
         // Diagnóstico mínimo (sem conteúdo, sem número): ver se a mensagem da CAIXA chega e se dá pra ler.
         console.log(`[QR código CAIXA] mensagem (${type}) fromMe=${!!m?.key?.fromMe} stub=${m?.messageStubType ?? '-'} tipos=${Object.keys(m?.message || {}).join(',') || 'nenhum'}`);
         if (m?.key?.fromMe || !m?.message) continue;
+        // A mensagem da CAIXA chega como "placeholderMessage" (o WhatsApp esconde o conteúdo dos aparelhos conectados — 12/11 16:31): pede ao celular
+        // que reenvie o conteúdo (PDO placeholder resend); a resposta volta por este mesmo evento já com o texto.
+        if (m.message.placeholderMessage) {
+          console.log(`[QR código CAIXA] mensagem oculta (placeholder tipo ${m.message.placeholderMessage.type ?? '-'}) — pedindo ao celular`);
+          const key = { remoteJid: m.key.remoteJid, fromMe: m.key.fromMe, id: m.key.id, participant: m.key.participant };
+          Promise.resolve(sock.requestPlaceholderResend?.(key, { key: m.key, messageTimestamp: m.messageTimestamp, pushName: m.pushName, participant: m.participant }))
+            .then((r: any) => console.log(`[QR código CAIXA] reenvio pedido ao celular (${r ? String(r).slice(0, 12) : 'sem id'})`))
+            .catch((e: any) => console.error('[QR código CAIXA] reenvio:', e?.message));
+          continue;
+        }
         const codigo = codigoDoTexto(textos(m.message).join(' \n '));
         if (!codigo) continue;
         codigos.push({ accountId, codigo, em: Date.now() });
