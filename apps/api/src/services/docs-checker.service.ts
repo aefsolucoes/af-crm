@@ -121,6 +121,22 @@ export function etapaConfere(stageName: string, cf: Record<string, any>): boolea
 
 type Io = Parameters<typeof moveLeadToContracting>[2];
 
+/** "Se o menor estiver na certidão de ônus, o banco não aceita prosseguir — isso é uma regra para todos os bancos" (Fabio 12/11). A leitura do documento do imóvel
+ *  marca `donoMenor` e devolve DÚVIDA (a pergunta vai pro balão da equipe e a conferência para); aqui a equipe ganha a anotação e o push, uma vez por nome.
+ *  Nada é dito ao cliente. */
+async function avisarDonoMenor(accountId: string, leadId: string, leadName: string): Promise<void> {
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (fresh?.customFields || {}) as Record<string, any>;
+  const nomes = [...new Set(Object.values((cf._docReview || {}) as Record<string, any>).map((r: any) => String(r?.donoMenor || '').trim()).filter(Boolean))];
+  const ja: string[] = Array.isArray(cf._donoMenorAvisado) ? cf._donoMenorAvisado : [];
+  const novos = nomes.filter((n) => !ja.includes(n));
+  if (!novos.length) return;
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify({ _donoMenorAvisado: [...ja, ...novos] })}::jsonb WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 Proprietário MENOR de idade no documento do imóvel: ${novos.join('; ')}. Nenhum banco segue com menor entre os donos do imóvel (regra do Fabio, 12/11). A conferência parou e a dúvida está com a equipe; nada foi dito ao cliente.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🚫 ${leadName}: dono do imóvel menor de idade`, body: `${novos.join('; ')} — nenhum banco segue com menor entre os donos.`.slice(0, 160), leadId }).catch(() => {});
+}
+
 /** Só a documentação do COMPRADOR (lista enxuta da CAIXA): pediu a CAIXA (Fabio 01/11, HE e FH) ou Financiamento Habitacional que optou pela CAIXA/BRB ou ainda sem banco escolhido (Fabio 29/10). */
 export function soDocsDoComprador(cf: Record<string, any>, departmentName: string | null | undefined, stageName?: string | null): boolean {
   return naRotaCaixa(cf, stageName) || (/habitacional/i.test(departmentName || '') && (!!cf?._optouCaixa?.banco || !cf?._fhChosen));
@@ -549,6 +565,8 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Conferindo a documentação inteira, NÃO pedi de novo:\n${review.atendidos.map((a) => `• ${a.doc}: "${a.texto}" — já atendido por ${a.por}`).join('\n')}` } }).catch(() => {});
   }
   await perguntarProtegidos(accountId, leadId, io).catch((e: any) => console.error('[Docs] arquivos protegidos:', e?.message || e));
+  // Proprietário MENOR de idade no documento do imóvel (Fabio 12/11): a leitura já levou a dúvida pro balão; o card ganha a anotação e o push, uma vez por nome.
+  await avisarDonoMenor(accountId, leadId, lead.name).catch((e: any) => console.error('[Docs] dono menor:', e?.message || e));
   // Documento em DÚVIDA (a pergunta está com a equipe no balão): não avança o card nem cobra nada até a equipe responder.
   if (review?.duvidas.length && !review.problemas.length) {
     console.log(`[Docs] ${lead.name} (${leadId}): ${review.duvidas.length} documento(s) em dúvida com a equipe — conferência pausada`);
@@ -809,7 +827,8 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
       },
     }).catch(() => {});
     // Pasta do Drive já montada: reorganiza com o que foi lido agora (folhas da matrícula PAG 1, 2…; repetidos e sem uso em DESNECESSARIO — Fabio 05/11).
-    if (cf._driveOrganizedAt || cf.link_pasta_drive) {
+    // A pasta dos anexos só LIGADA ao card pro cadastro da CAIXA não é pasta montada: não vai pra LEADS ATIVOS por causa do botão (Fabio 12/11).
+    if (cf._driveOrganizedAt || (cf.link_pasta_drive && !(require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).pastaDoCadastroCrua(cf))) {
       const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service');
       await organizeLeadDocsNow(leadId).catch((e: any) => console.error(`[Docs] botão — não reorganizei a pasta (${leadId}):`, e?.message || e));
     }
