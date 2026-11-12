@@ -90,7 +90,14 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
     const ult = (leituras[leituras.length - 1]?.detail || ultimaRodada.detail || '');
     const idadeMin = (now - ultimaRodada.createdAt.getTime()) / 60_000;
     if (NAO_ACHEI.test(ult)) {
-      const semAparecer = mine.filter((r) => r.kind === 'RUN' && r.status === 'SENT' && !r.proposalNumber && now - r.createdAt.getTime() < SEM_APARECER_DIAS * 86400_000).length;
+      // Creditas (Fabio 12/11): a proposta que a gente ENVIOU existe no portal mesmo sem aparecer na busca da lista. Rodar de novo não cria outra (o portal recusa:
+      // "CPF já possui uma proposta ativa"), e essa recusa era lida como proposta de OUTRO parceiro → "Desqualificado" e negativa ao cliente já aprovado (02/11 e 08/11).
+      // Só confere a nossa.
+      if (bank === 'CREDITAS') {
+        if (!conferenciaNaFila) out.push({ bank, mode: 'CHECK', why: 'a proposta que a gente enviou ainda não aparece na lista do portal: conferir de novo (rodar outra vez não adianta, a Creditas não aceita duas propostas pro mesmo CPF)' });
+        continue;
+      }
+      const semAparecer =mine.filter((r) => r.kind === 'RUN' && r.status === 'SENT' && !r.proposalNumber && now - r.createdAt.getTime() < SEM_APARECER_DIAS * 86400_000).length;
       if (idadeMin >= NAO_ACHEI_MIN && semAparecer >= RODADAS_SEM_APARECER) {
         out.push({ bank, mode: 'STOP', why: `rodei ${semAparecer} vezes e a proposta nunca apareceu na lista do portal — rodar de novo só cria outra proposta igual` });
         continue;

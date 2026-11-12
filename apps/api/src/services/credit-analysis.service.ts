@@ -713,7 +713,7 @@ async function marcarNovaPropostaRecusada(db: Db, row: { id: string; leadId: str
 /** Card que a própria análise FECHOU como reprovado/desqualificado (Perdidos) e depois um banco APROVOU (rodada refeita — prazo máximo, novo valor, troco…): reabre sozinho (Fabio 21/10, Paulino:
  *  "se o cliente aprovar, o CRM precisa alterar o card pra Aguardando Documentação e encaminhar a proposta de aprovação"). Volta pra Pré-Análise do funil de vendas do setor e deixa o fluxo normal fazer o resto:
  *  o aviso de aprovação (com IA do card ligada) manda a proposta e MOVE pra Aguardando Documentação. Só mexe em card perdido por reprovação/desqualificação — nunca no que a equipe marcou Perdido por outro motivo. */
-async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean }): Promise<void> {
+export async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean }): Promise<void> {
   if (row.dryRun) return;
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, status: true, lostReason: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'LOST') return;
@@ -859,6 +859,32 @@ async function flagCertidaoRecusada(db: Db, row: { id: string; leadId: string; b
   } catch (e: any) { console.error('[Certidão recusada] aviso ao cliente:', e?.message || e); }
 }
 
+/** O aviso da extensão Creditas quando o portal recusa outra proposta e a busca da lista de Propostas não acha a do CPF. */
+const RX_CREDITAS_ATIVA_FORA_DA_LISTA = /CPF j[aá] possui uma proposta ativa na Creditas e ela N[ÃA]O est[aá] na lista de Propostas da nossa conta/i;
+type HolderRef = { holderCpf?: string | null; holderName?: string | null };
+const soDigitos = (s?: string | null) => String(s || '').replace(/\D/g, '');
+const nomeNorm = (s?: string | null) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+/** A rodada anterior é do MESMO titular? CPF quando os dois têm; senão o nome completo. Sem titular nenhum na rodada atual, vale (o card só tem a nossa). Pura (testável). */
+export function mesmoTitular(atual: HolderRef, anterior: HolderRef): boolean {
+  const a = soDigitos(atual.holderCpf), b = soDigitos(anterior.holderCpf);
+  if (a.length === 11 && b.length === 11) return a === b;
+  const na = nomeNorm(atual.holderName), nb = nomeNorm(anterior.holderName);
+  if (!na) return true;
+  return !!nb && na === nb;
+}
+
+/** Rodada NOSSA da Creditas (últimos 30 dias, mesmo titular) que criou a proposta no portal e ainda está sem resultado: enviada, ou "verificar" depois de enviar. null = não há. */
+async function propostaCreditasNossa(db: Db, rowId: string, leadId: string, holderName: string | null): Promise<{ createdAt: Date } | null> {
+  const atual = await db.creditAnalysis.findUnique({ where: { id: rowId }, select: { createdAt: true, kind: true, holderCpf: true, holderName: true } });
+  if (!atual || atual.kind !== 'RUN') return null;
+  const cands = await db.creditAnalysis.findMany({
+    where: { leadId, bank: 'CREDITAS', kind: 'RUN', dryRun: false, id: { not: rowId }, source: { not: 'AI_SIM' }, status: { in: ['SENT', 'CHECK'] }, createdAt: { lt: atual.createdAt, gte: new Date(Date.now() - 30 * 86_400_000) } },
+    orderBy: { createdAt: 'desc' }, select: { createdAt: true, status: true, detail: true, holderCpf: true, holderName: true },
+  });
+  const ref = { holderCpf: atual.holderCpf, holderName: holderName || atual.holderName };
+  return cands.find((c) => (c.status === 'SENT' || /enviad|pr[eé]-qualifica/i.test(c.detail || '')) && mesmoTitular(ref, c)) || null;
+}
+
 async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "A proposta foi negada — Cliente com proposta em andamento na Creditas" é o MESMO caso do "CPF já possui proposta ativa" (não é reprovação de crédito): vira falha por regra (Desqualificado).
@@ -881,6 +907,20 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
         for (const k of RESULT_KEYS) { if (!(k in data) || (data as any)[k] == null) (herdados as any)[k] = (ant as any)[k]; }
         data = { ...data, ...(herdados as any) };
       }
+    }
+  }
+  // …MAS se a proposta ativa é a NOSSA (Fabio 12/11): rodada nossa do mesmo titular que criou a proposta no portal e ainda está sem resultado. A busca da lista é que não a achou —
+  // a retomada das 7h rodou de novo, o portal recusou e o CRM mandou a negativa a um cliente que a Creditas pré-aprovou no dia seguinte. Segue como ENVIADA e a conferência lê a nossa.
+  if (row.bank === 'CREDITAS' && !row.dryRun && (next === 'CHECK' || next === 'FAILED') && RX_CREDITAS_ATIVA_FORA_DA_LISTA.test(String(data.detail || ''))) {
+    const nossa = await propostaCreditasNossa(db, row.id, row.leadId, data.holderName ?? null).catch(() => null);
+    if (nossa) {
+      const quando = nossa.createdAt.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+      const titular = /^Titular na an[aá]lise:[^.]*\.\s*/i.exec(String(data.detail || ''))?.[0] || '';
+      data = { ...data, status: 'SENT', detail: `${titular}A Creditas não deixou criar outra proposta porque este CPF já tem a que a gente enviou em ${quando}, ainda sem resultado — é a nossa, não de outro parceiro. Sigo conferindo ela.` };
+      next = 'SENT';
+      const conteudo = `ℹ️ Creditas: o portal não deixou criar outra proposta porque este CPF já tem a que a gente enviou em ${quando}. Não é de outro parceiro (a lista do portal é que não mostrou): sigo conferindo a nossa e não conta como desqualificado.`;
+      const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo }, select: { id: true } });
+      if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } }).catch(() => {});
     }
   }
   // Creditas: "Este CPF já possui uma proposta ativa … NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar → vira FALHA POR REGRA ("Desqualificado"), não "Conferir".
