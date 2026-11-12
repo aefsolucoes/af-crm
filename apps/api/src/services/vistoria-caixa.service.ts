@@ -370,7 +370,8 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
   }
 }
 
-/** Fila da extensão: o próximo card em FILA (cadastra + prepara a OS, sem enviar) ou ENVIAR (cria a OS). */
+/** Fila da extensão: o próximo card em FILA/ENVIAR — cadastra o imóvel, CRIA a OS, anexa a certidão, emite a taxa e manda o boleto ao cliente.
+ *  Fabio 12/11: "sempre que a extensão é acionada ela vai até o final e encaminha o boleto ao cliente" (antes FILA parava na OS pronta, sem enviar). */
 export async function proximaVistoriaCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','TAXA','BOLETO')
@@ -380,7 +381,7 @@ export async function proximaVistoriaCaixa(accountId: string): Promise<any | nul
   if (!lead) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
-  const enviar = vc.status === 'ENVIAR';
+  const enviar = vc.status === 'ENVIAR' || vc.status === 'FILA';
   const modo = vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : vc.status === 'TAXA' ? 'TAXA' : enviar ? 'ENVIAR' : 'PREPARAR';
   await gravar(lead.id, { status: modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : modo === 'TAXA' ? 'EMITINDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
   return {
@@ -415,9 +416,9 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     return;
   }
   if (etapa === 'OS_PRONTA') {
-    await gravar(leadId, { status: 'OS_PRONTA', leaseAt: null, erro: null, osPronta: { em: new Date().toISOString(), campos: body.campos || [] } });
-    await nota(leadId, `🏠 Vistoria CAIXA PRONTA pra enviar (OS de engenharia preenchida no SIOPI, ainda NÃO criada). Confira e clique em "Enviar OS" no bloco CAIXA do card:\n${campos}`);
-    await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA pronta`, 'Confira os dados e clique em "Enviar OS" no card.');
+    // Vai até o final (Fabio 12/11): OS preenchida sem criar (rodada antiga/sem "enviar") → volta pra fila já pra CRIAR, anexar, emitir a taxa e mandar o boleto.
+    await gravar(leadId, { status: 'ENVIAR', leaseAt: null, erro: null, tentativas: 0, osPronta: { em: new Date().toISOString(), campos: body.campos || [] }, enviarPor: 'automático', enviarEm: new Date().toISOString() });
+    await nota(leadId, `🏠 Vistoria CAIXA: OS de engenharia preenchida no SIOPI — a extensão cria a OS, anexa a certidão, emite a taxa e manda o boleto ao cliente:\n${campos}`);
     return;
   }
   if (etapa === 'JA_TEM_OS') {
