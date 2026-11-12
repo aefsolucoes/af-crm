@@ -18,7 +18,8 @@ router.get('/fila', async (req: AuthRequest, res: Response) => {
 // Resultado da Avaliação de Risco (Fabio 01/11: "PARA CONSULTAR O RESULTADO, PRECISA VOLTAR NO MENU E IR EM FORMULÁRIOS ENVIADOS").
 router.post('/:leadId/consultar-resultado', async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
-  const erro = await pedirConsultaResultado(req.user!.accountId, req.params.leadId, quem).catch((e) => e?.message || 'erro');
+  // foraDoCrm: avaliação rodada direto no Caixa Aqui (Fabio 12/11) — consulta e só registra.
+  const erro = await pedirConsultaResultado(req.user!.accountId, req.params.leadId, quem, { foraDoCrm: req.body?.foraDoCrm === true }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });

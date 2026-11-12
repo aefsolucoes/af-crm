@@ -30,14 +30,22 @@ function tomador(cf: Cf): { nome: string; cpf: string } | null {
   return p ? { nome: String(p.nome || ''), cpf: String(p.cpf || '').replace(/\D/g, '') } : null;
 }
 
-/** Botão/pedido "consultar o resultado": só pra avaliação já ENVIADA à CAIXA. Erro em texto quando não dá. */
-export async function pedirConsultaResultado(accountId: string, leadId: string, por: string): Promise<string | null> {
-  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+/** Botão/pedido "consultar o resultado": só pra avaliação já ENVIADA à CAIXA pelo CRM. Erro em texto quando não dá.
+ *  `foraDoCrm` (Fabio 12/11, Marcos: "já rodei o crédito na CAIXA, pede pra extensão fazer a consulta pra registrar as condições"): a avaliação foi rodada
+ *  direto no Caixa Aqui, o card não sabe dela — consulta do mesmo jeito (Formulários Enviados pelo CPF) e o resultado SÓ é registrado (nota + card + push):
+ *  nada de refazer na PRICE, aviso ao cliente ou Perdidos sozinho, porque o CRM não sabe com que dados ela foi rodada. */
+export async function pedirConsultaResultado(accountId: string, leadId: string, por: string, opts: { foraDoCrm?: boolean } = {}): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
-  if (!/^ENVIADA/i.test(String(cf._caixaCadastro?.avaliacao?.status || ''))) return 'A Avaliação de Risco deste card ainda não foi enviada à CAIXA';
+  if (!opts.foraDoCrm && !/^ENVIADA/i.test(String(cf._caixaCadastro?.avaliacao?.status || ''))) return 'A Avaliação de Risco deste card ainda não foi enviada à CAIXA';
   if (tomador(cf)?.cpf.length !== 11) return 'Sem o CPF do tomador na ficha de cadastro';
-  await salvar(leadId, (r) => { r.status = 'FILA'; r.pedidoEm = new Date().toISOString(); r.por = por; r.tentativas = 0; delete r.inicio; });
+  // A extensão escolhe a linha pelo produto (garantia → Home Equity; vazio → habitação): sem avaliação no card, vai o do setor.
+  const produtoSetor = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - EGI (garantia)' : '';
+  await salvar(leadId, (r) => {
+    r.status = 'FILA'; r.pedidoEm = new Date().toISOString(); r.por = por; r.tentativas = 0; delete r.inicio;
+    if (opts.foraDoCrm) { r.foraDoCrm = true; r.produto = produtoSetor; } else { delete r.foraDoCrm; delete r.produto; }
+  });
   return null;
 }
 
@@ -74,7 +82,7 @@ export async function proximaConsultaResultado(accountId: string) {
     const t = tomador(cf);
     if (!t || t.cpf.length !== 11) continue;
     await salvar(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String(cf._caixaCadastro?.avaliacao?.produto || '') }; // produto: a extensão lê a linha dele (uma avaliação lista vários produtos)
+    return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String((r.foraDoCrm ? r.produto : cf._caixaCadastro?.avaliacao?.produto) || '') }; // produto: a extensão lê a linha dele (uma avaliação lista vários produtos)
   }
   return null;
 }
@@ -88,8 +96,14 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   if (!l) return;
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   if (PROCESSANDO_RE.test(r.status)) { await gravarProcessando(accountId, leadId, l.name, (l.customFields || {}) as Cf, r); return; }
+  const foraDoCrm = ((l.customFields || {}) as Cf)._caixaResultado?.foraDoCrm === true;
   await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); delete x.processando; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}${foraDoCrm ? '\n(avaliação rodada direto no Caixa Aqui, fora do CRM: só registrei aqui — o cliente NÃO foi avisado e nada foi refeito sozinho)' : ''}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
+  if (foraDoCrm) {
+    const { userId } = (await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } })) || {};
+    sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }, userId ? [userId] : undefined).catch(() => {});
+    return;
+  }
   if (CONDICIONADA_RE.test(r.status)) await tratarCondicionada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA condicionada]', e?.message));
   else if (APROVADA_RE.test(r.status) && !/n[aã]o aprovad/i.test(r.status)) await tratarAprovadaNaPrice(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada na PRICE]', e?.message));
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
