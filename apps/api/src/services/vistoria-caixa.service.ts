@@ -148,6 +148,15 @@ async function cepDoImovel(ficha: any, cf: Record<string, any>): Promise<string 
   } catch { return null; }
 }
 
+/** CPF do tomador: card (cpf_1) → 1º participante da ficha de cadastro (12/11, Windson: o CPF só estava na ficha e a OS parou em "não achou o cliente pelo CPF"). */
+function cpfTomador(cf: Record<string, any>): string {
+  const doCard = String(cf.cpf_1 || '').replace(/\D/g, '');
+  if (doCard.length === 11) return doCard;
+  const ps: any[] = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
+  const p1 = ps.find((x, i) => (Number(x?.ordem) || i + 1) === 1) || {};
+  return String(p1.cpf || '').replace(/\D/g, '');
+}
+
 /** "Contato vistoria" do card → { nome, telefone }. Sem telefone = incompleto. */
 function partirContato(texto: string): { nome: string; telefone: string } | null {
   const t = String(texto || '').trim();
@@ -383,7 +392,7 @@ export async function proximaVistoriaCaixa(accountId: string): Promise<any | nul
     valorTaxa: vc.boleto?.valor || null,
     codigoImovel: vc.codigoImovel || null,
     imovel: vc.dados?.imovel,
-    os: { ...(vc.dados?.os || {}), contatoNome: vc.contato?.nome || '', contatoTelefone: vc.contato?.telefone || '', cpf: String(cf.cpf_1 || '').replace(/\D/g, '') },
+    os: { ...(vc.dados?.os || {}), contatoNome: vc.contato?.nome || '', contatoTelefone: vc.contato?.telefone || '', cpf: cpfTomador(cf) },
   };
 }
 
