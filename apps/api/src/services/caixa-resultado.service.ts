@@ -120,7 +120,10 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
     }
   }
   if (CONDICIONADA_RE.test(r.status)) await tratarCondicionada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA condicionada]', e?.message));
-  else if (APROVADA_RE.test(r.status) && !/n[aã]o aprovad/i.test(r.status)) await tratarAprovadaNaPrice(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada na PRICE]', e?.message));
+  else if (APROVADA_RE.test(r.status) && !/n[aã]o aprovad/i.test(r.status)) {
+    await tratarAprovadaNaPrice(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada na PRICE]', e?.message));
+    await marcarAvisoAprovada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada → simulação]', e?.message));
+  }
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
     // 1ª ou 2ª autorização, com o motivo da CAIXA ("Grupo Fam. Alt.", "Renda Alterada" — Fabio 02/11: a renda/o grupo familiar mudou desde a avaliação em outro correspondente).
@@ -436,11 +439,75 @@ export async function processPvAvisos(accountId: string, io?: any): Promise<void
   const ids = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false
       AND ((status = 'OPEN' AND "customFields"->'_caixaResultado'->'pvAviso'->>'status' IN ('PENDING', 'TEMPLATE'))
-        OR (status IN ('OPEN', 'LOST') AND "customFields"->'_caixaResultado'->'condicionada'->>'status' IN ('PENDING', 'TEMPLATE'))) LIMIT 20`; // condicionada que não dá o mínimo vai pra Perdidos: o aviso ainda sai
+        OR (status IN ('OPEN', 'LOST') AND "customFields"->'_caixaResultado'->'condicionada'->>'status' IN ('PENDING', 'TEMPLATE'))
+        OR (status = 'OPEN' AND "customFields"->'_caixaResultado'->'aprovadaAviso'->>'status' IN ('PENDING', 'TEMPLATE'))) LIMIT 20`; // condicionada que não dá o mínimo vai pra Perdidos: o aviso ainda sai
   for (const { id } of ids) {
     await avisarPvCliente(accountId, id, io).catch((e) => console.error('[CAIXA PV]', e?.message));
     await avisarCondicionadaCliente(accountId, id, io).catch((e) => console.error('[CAIXA condicionada]', e?.message));
+    await avisarAprovadaCaixa(accountId, id, io).catch((e) => console.error('[CAIXA aprovada → simulação]', e?.message));
   }
+}
+
+// ─── Aprovada (Fabio 12/11): "sempre que aprovar o crédito, encaminha a simulação na SAC para o cliente" ───
+// Financiamento de imóvel (não construção, não Home Equity — esses simuladores ainda não estão mapeados): o aviso de aprovação padrão (renderApprovalText com os
+// números do simulador oficial da CAIXA) vai junto com o PDF da simulação no nosso modelo. Mesmas travas do aviso de sempre: IA do card ligada, 07h–21h, conversa
+// fechada → template de atualização e o aviso sai quando o cliente responder. A condicionada (PRICE com a parcela possível) segue pelo caminho dela.
+async function marcarAvisoAprovada(accountId: string, leadId: string, nome: string, texto: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  const cf = (lead?.customFields || {}) as Cf;
+  if (cf._caixaCadastro?.avaliacao?.ajuste?.prestacao) return; // condicionada refeita na PRICE: tratarAprovadaNaPrice cuida
+  const proposta = propostaDa(texto) || '?';
+  if (cf._caixaResultado?.aprovadaAviso?.proposta === proposta) return;
+  const he = /home|garantia/i.test(lead?.pipeline?.department?.name || '') || /garantia|EGI/i.test(String(cf._caixaCadastro?.avaliacao?.produto || ''));
+  const construcao = !he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf);
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  if (he || construcao) {
+    await salvar(leadId, (x) => { x.aprovadaAviso = { status: 'EQUIPE', proposta, motivo: he ? 'home equity' : 'construção', at: new Date().toISOString() }; });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA aprovou (proposta ${proposta}). A simulação automática da CAIXA ainda não faz ${he ? 'Home Equity' : 'construção'} — o aviso ao cliente fica com a equipe.` } }).catch(() => {});
+    sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou`, body: `Avisar o cliente (${he ? 'Home Equity' : 'construção'}: simulação ainda manual).`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
+    return;
+  }
+  await salvar(leadId, (x) => { x.aprovadaAviso = { status: 'PENDING', proposta, at: new Date().toISOString() }; });
+}
+
+export async function avisarAprovadaCaixa(accountId: string, leadId: string, io?: any): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const a = cf._caixaResultado?.aprovadaAviso as Cf | undefined;
+  if (!lead || !a || (a.status !== 'PENDING' && a.status !== 'TEMPLATE')) return;
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  const segura = async (status: string, porque: string) => {
+    await salvar(leadId, (x) => { x.aprovadaAviso = { ...(x.aprovadaAviso || {}), status }; });
+    await nota(`✋ CAIXA aprovada (proposta ${a.proposta}), mas o aviso com a simulação NÃO saiu sozinho: ${porque}. Use o botão "PDF" da CAIXA na aba Financiamento do card.`);
+    sendPushToAccount(accountId, { title: `✅ ${lead.name}: CAIXA aprovou`, body: `Aviso não saiu sozinho: ${porque}`.slice(0, 120), leadId }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+  };
+  if (cf._autoPaused) return segura('SEGURADO', 'o card está em STOP TOTAL');
+  if (cf._caixaTeste) return segura('TESTE', 'o card está em MODO TESTE da CAIXA');
+  if (!lead.aiAutoReplyActive) return segura('SEGURADO', 'a IA do card está desligada (alguém da equipe assumiu a conversa)');
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  if (!(await whatsappWindowOpen(leadId))) {
+    if (a.status === 'TEMPLATE') {
+      if (a.templateAt && Date.now() - Date.parse(a.templateAt) > 48 * 3600_000) return segura('SEGURADO', 'o cliente não respondeu ao template em 48 h');
+      return;
+    }
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || 'cliente';
+    const msg = require('./message.service') as typeof import('./message.service');
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao], previewText: `Oi ${saudacao}, tudo bem? Temos uma atualização sobre o seu processo de crédito.`, io });
+    if (!t.success) return segura('SEGURADO', `a conversa está fechada e o template de atualização não saiu (${t.error})`);
+    await salvar(leadId, (x) => { x.aprovadaAviso = { ...(x.aprovadaAviso || {}), status: 'TEMPLATE', templateAt: new Date().toISOString() }; });
+    await nota(`📨 CAIXA aprovada: conversa fechada, mandei o template de atualização. A aprovação com a simulação em SAC sai quando o cliente responder.`);
+    return;
+  }
+  // Conversa aberta: pede a simulação (SAC) pelo mesmo caminho do botão "PDF" — o PDF sai com a mensagem de aprovação na legenda.
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  await salvar(leadId, (x) => { x.aprovadaAviso = { ...(x.aprovadaAviso || {}), status: 'SIMULANDO', simuladoEm: new Date().toISOString() }; });
+  const out = await sd.requestSimulationDocs(prisma as any, { accountId, leadId, institutions: ['FH_CAIXA'], source: 'AI', caption: undefined });
+  const cfNovo = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+  if (out.created.length) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfNovo, _caixaSimulacao: { ...(cfNovo._caixaSimulacao || {}), avisoAprovacao: a.proposta } } as any } });
+  await nota(`✅ CAIXA aprovada (proposta ${a.proposta}): pedi a simulação em SAC no simulador da CAIXA — a mensagem de aprovação vai ao cliente junto com o PDF.`);
 }
 
 /** A equipe põe o aviso do PV no fluxo automático (Fabio 01/11, Jézer: a mensagem manual falhou com a conversa fechada) — template agora, texto quando

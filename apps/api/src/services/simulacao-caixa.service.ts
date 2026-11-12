@@ -257,7 +257,24 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   // Pedido do botão "PDF" (cliente): manda o mesmo PDF pelo caminho dos outros bancos.
   if (docId) {
     const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
-    if (pdfPronto && !erroPdf) await sd.finishCaixaDoc(prisma as any, { accountId, id: docId, pdf: pdfPronto }).catch((e: any) => console.error('[Simulação CAIXA] PDF ao cliente:', e?.message));
+    // Aviso da aprovação (Fabio 12/11: "sempre que aprovar o crédito, encaminha a simulação na SAC"): a legenda do PDF é a mensagem de aprovação padrão com os números da CAIXA.
+    const cfA = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any);
+    const avisoProposta = cfA._caixaSimulacao?.avisoAprovacao;
+    if (avisoProposta && pdfPronto && !erroPdf && rows.length) {
+      const { renderApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      const taxaNom = pct(r.jurosNominais);
+      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: false, prazo: `${rows.length} meses`, taxa: taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—', primeiraParcela: `R$ ${brl(rows[0].parcela)}` } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
+      await prisma.simulationDocRequest.update({ where: { id: docId }, data: { caption: legenda.slice(0, 1000) } }).catch(() => {});
+    }
+    if (pdfPronto && !erroPdf) {
+      const ent = await sd.finishCaixaDoc(prisma as any, { accountId, id: docId, pdf: pdfPronto }).catch((e: any) => { console.error('[Simulação CAIXA] PDF ao cliente:', e?.message); return null; });
+      if (avisoProposta) {
+        const ok = !!(ent && (ent as any).ok);
+        const fresh = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any);
+        const res = { ...(fresh._caixaResultado || {}), aprovadaAviso: { ...((fresh._caixaResultado || {}).aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? new Date().toISOString() : undefined } };
+        await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaResultado: res, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), avisoAprovacao: null } } } });
+      }
+    }
     else await sd.failSimulationDoc(prisma as any, { accountId, id: docId, reason: erroPdf || 'a simulação da CAIXA não gerou o PDF' }).catch(() => {});
   }
   const linhasNota = [
