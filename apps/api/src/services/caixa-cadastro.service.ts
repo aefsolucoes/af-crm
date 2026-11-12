@@ -589,7 +589,10 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
   const lista = [quem.tomador && `${quem.tomador.nome} (tomador)`, ...quem.incluir.map((x) => x.nome)].filter(Boolean).join(', ');
   const trocaAmort = refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.amortizacao ? String(opts.ajuste.amortizacao).toUpperCase() : null;
-  const comoRefaz = trocaAmort
+  const trocaPrazo = refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.prazo ? Number(opts.ajuste.prazo) : null;
+  const comoRefaz = trocaPrazo
+    ? ` A CAIXA recusou o prazo: a extensão reabre a proposta ${refazer!.proposta || '(a mais recente)'} em Formulários Enviados, troca SÓ o prazo pra ${trocaPrazo} meses${trocaAmort ? ` (amortização ${trocaAmort})` : ''} e envia de novo (Fabio 12/11). O resultado sai na consulta.`
+    : trocaAmort
     ? ` A extensão reabre a proposta ${refazer!.proposta || '(a mais recente)'} em Formulários Enviados, troca SÓ a amortização pra ${trocaAmort}${trocaAmort === 'PRICE' ? ' (prazo acima de 360 vira 360)' : ''} e envia de novo (Fabio 12/11: "pode aprovar na SAC"). O resultado sai na consulta.`
     : refazer && opts.ajuste
     ? ` CONDICIONADA (Fabio 03/11): a extensão reabre a proposta ${refazer.proposta || '(a mais recente)'} em Formulários Enviados, troca só a prestação pela possível (R$ ${Number(opts.ajuste.prestacao).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}) e a amortização pra PRICE, e envia de novo. O resultado sai na consulta.`
@@ -834,8 +837,8 @@ function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number;
   // aprovar, o cliente recebe a simulação na SAC e na PRICE e escolhe — se quiser a outra, cancela e refaz nela. (Antes: PRICE quando a SAC passava de 30% da renda.)
   const amortizacao = v.pediuPrice ? 'PRICE' : 'SAC';
   const porque = v.pediuPrice ? 'o cliente pediu PRICE' : 'SAC é o padrão da CAIXA (Fabio 12/11)';
-  const prazoFinal = amortizacao === 'PRICE' && faixa === 'SBPE' ? Math.min(prazo, 360) : prazo; // SBPE na PRICE: no máximo 360 meses (SIRIC recusou 420 no Isidro, 12/11)
-  const base = { fh: true, portabilidade: 'NAO', prazo: prazoFinal, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
+  // Prazo: SAC e PRICE vão com o máximo (420); se a CAIXA devolver "Prazo superior ao máximo permitido", o CRM refaz em 360 (Fabio 12/11, Isidro) — caixa-resultado.
+  const base = { fh: true, portabilidade: 'NAO', prazo, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
   // Construção em terreno próprio (Fabio 12/11, Isidro): mesma faixa/prazo/SAC-PRICE; muda a modalidade e o produto. Os nomes exatos das listas da CAIXA ainda não
   // foram vistos — a extensão escolhe o mais parecido e a 1ª rodada PARA na tela pra conferência (nada é enviado sem o OK).
   if (v.construcao) {

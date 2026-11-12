@@ -104,6 +104,21 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
     sendPushToAccount(accountId, { title: `🏦 ${l.name}: resultado da avaliação CAIXA`, body: r.status.slice(0, 120), leadId }, userId ? [userId] : undefined).catch(() => {});
     return;
   }
+  // "TR/PRICE - Prazo superior ao máximo permitido" (Fabio 12/11, Isidro: "SAC e PRICE 420, se retornar com o erro, faz em 360"): refaz a mesma proposta só com o
+  // prazo em 360, uma vez por proposta, com envio.
+  if (/prazo superior ao m[aá]ximo permitido/i.test(`${r.status}\n${r.texto}`)) {
+    const cfp = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+    const proposta = propostaDa(String(r.texto || '')) || '?';
+    const av = cfp._caixaCadastro?.avaliacao as Cf | undefined;
+    if (cfp._caixaResultado?.prazo360 !== proposta && !(av?.ajuste?.prazo && Number(av.ajuste.prazo) <= 360)) {
+      await salvar(leadId, (x) => { x.prazo360 = proposta; });
+      const { pedirAvaliacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+      const amort = String(av?.amortizacao || '').toUpperCase();
+      const erro = await pedirAvaliacao(accountId, leadId, 'automático (prazo recusado → 360)', { enviar: true, denovo: true, construcaoConferida: true, ajuste: { prazo: 360, ...(amort === 'SAC' || amort === 'PRICE' ? { amortizacao: amort } : {}) } }).catch((e: any) => e?.message || 'erro');
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: erro ? `⚠️ A CAIXA recusou o prazo (proposta ${proposta}) e não consegui pedir de novo em 360 meses: ${erro}` : `🔁 A CAIXA recusou o prazo da proposta ${proposta} ("Prazo superior ao máximo permitido"): o CRM refaz a mesma proposta em 360 meses.` } }).catch(() => {});
+      if (!erro) return;
+    }
+  }
   if (CONDICIONADA_RE.test(r.status)) await tratarCondicionada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA condicionada]', e?.message));
   else if (APROVADA_RE.test(r.status) && !/n[aã]o aprovad/i.test(r.status)) await tratarAprovadaNaPrice(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada na PRICE]', e?.message));
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
