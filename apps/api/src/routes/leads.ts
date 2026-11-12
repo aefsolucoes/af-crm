@@ -1152,7 +1152,10 @@ router.post('/:id/docs-check', async (req: AuthRequest, res: Response) => {
   try {
     const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
     if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
-    const { conferirDocumentosAgora, conferenciaEmAndamento } = require('../services/docs-checker.service') as typeof import('../services/docs-checker.service');
+    const { conferirDocumentosAgora, conferenciaEmAndamento, scheduleDocsCheck } = require('../services/docs-checker.service') as typeof import('../services/docs-checker.service');
+    // `automatica: true` (Fabio 12/11): agenda a conferência AUTOMÁTICA — a mesma da chegada de documento, que fala com o cliente e move o card (só na etapa em que
+    // ela vale). Pra quando a automática foi cortada (reinício do servidor antes da marca de retomada existir) e a do botão não basta.
+    if (req.body?.automatica === true) { await scheduleDocsCheck(req.user!.accountId, lead.id, (req as any).app.get('io')); res.json({ ok: true, agendada: true }); return; }
     if (conferenciaEmAndamento(lead.id)) { res.json({ ok: true, jaRodando: true }); return; }
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
     conferirDocumentosAgora(req.user!.accountId, lead.id, userName, (req as any).app.get('io')).catch((e) => console.error('[Docs] botão Conferir documentos:', e?.message || e));

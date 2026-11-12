@@ -34,10 +34,12 @@ async function nota(leadId: string, content: string, userId?: string | null) {
 }
 
 /** Pede a simulação oficial (botão/teste agora; depois, sozinho quando a CAIXA aprovar). */
-export async function pedirSimulacaoCaixa(accountId: string, leadId: string, por: { id?: string; nome: string }): Promise<{ erro: string } | { mensagem: string }> {
+export async function pedirSimulacaoCaixa(accountId: string, leadId: string, por: { id?: string; nome: string }, opts: { docRequestId?: string } = {}): Promise<{ erro: string } | { mensagem: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!lead) return { erro: 'Card não encontrado' };
   const st = ((lead.customFields || {}) as any)._caixaSimulacao?.status;
+  // Pedido do PDF pro cliente (botão "PDF" da CAIXA): quando a simulação terminar, o PDF vai por ele.
+  if (opts.docRequestId) await gravar(leadId, { docRequestId: opts.docRequestId });
   if (['FILA', 'RODANDO'].includes(st)) return { erro: 'A simulação da CAIXA deste cliente já está em andamento.' };
   // Sem o WhatsApp do código conectado (QR), o código da CAIXA se perde — não roda (Fabio 12/11).
   if (!(require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId)) return { erro: 'O WhatsApp do código da CAIXA (QR) está desconectado — escaneie em /caixa-codigo e peça de novo.' };
@@ -169,6 +171,13 @@ export async function gravarSimulacaoCaixa(accountId: string, leadId: string, bo
   await gravar(leadId, { status, leaseAt: null, erro: body.erro || null, resultado: etapa === 'PRONTA' ? { texto: (body.texto || '').slice(0, 4000), campos: body.campos || [] } : undefined });
   await nota(leadId, etapa === 'PRONTA' ? `🧮 Simulação da CAIXA pronta:\n${(body.texto || '').slice(0, 2000)}` : `⚠️ Simulação da CAIXA parou: ${String(body.erro || etapa).slice(0, 400)}${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}`);
   if (etapa !== 'PRONTA') await sendPushToAccount(accountId, { title: `🧮 ${lead.name}: simulação CAIXA parou`, body: String(body.erro || etapa).slice(0, 120), leadId }).catch(() => {});
+  if (etapa === 'ERRO') {
+    const docId = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._caixaSimulacao?.docRequestId;
+    if (docId) {
+      await gravar(leadId, { docRequestId: null });
+      await (require('./simulation-doc.service') as typeof import('./simulation-doc.service')).failSimulationDoc(prisma as any, { accountId, id: docId, reason: `Simulação da CAIXA parou: ${String(body.erro || '').slice(0, 200)}` }).catch(() => {});
+    }
+  }
 }
 
 /** Resultado do simulador da CAIXA (etapa 4 + "Ver parcelas"): linhas = [nº, vencimento, prestação, MIP, DFI/DFC, seguros, taxa adm., encargo, saldo devedor]. */
@@ -181,7 +190,8 @@ export interface ResultadoCaixa {
 /** Monta o NOSSO PDF ("Evolução das parcelas", padrão das outras simulações, banco CAIXA) com os números do simulador e salva na pasta do cliente (raiz).
  *  Fabio 12/11: "coleta os dados da CAIXA e joga na nossa simulação" + "coloca a simulação na pasta do cliente". Nada vai ao cliente aqui. */
 async function prontaComPdf(accountId: string, leadId: string, nome: string, r: ResultadoCaixa): Promise<void> {
-  const pct = (v?: string) => Number(String(v || '').replace(/[^\d.,]/g, '').replace(',', '.')) || null;
+  // "8.16% a.a." / "8,16%": só o 1º número (os pontos de "a.a." quebravam a conta e o PDF saía sem taxa e com 10 parcelas — 12/11).
+  const pct = (v?: string) => Number(((/(\d+(?:[.,]\d+)?)/.exec(String(v || '')) || [])[1] || '').replace(',', '.')) || null;
   const linhas = (r.linhas || []).filter((l) => Array.isArray(l) && l.length >= 9);
   const fin = num(r.financiamento);
   const rows = linhas.map((l, i) => {
@@ -218,6 +228,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   const taxas = taxasDe({ nominalAA: pct(r.jurosNominais), efetivaAA: pct(r.jurosEfetivos), indexador });
   const bonif = r.bonificada ? ' (bonificada)' : '';
   let link: string | null = null, driveId: string | null = null, erroPdf = '';
+  let pdfPronto: Buffer | null = null;
   try {
     if (!rows.length) throw new Error('a tabela de parcelas veio vazia');
     const pdf = await renderSimulationSheet({
@@ -228,6 +239,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
       },
       rows,
     });
+    pdfPronto = pdf;
     const cf = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
     const pasta = String(cf.link_pasta_drive || '').trim();
     if (!pasta) throw new Error('o card não tem "Pasta no Drive"');
@@ -239,7 +251,14 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     link = up.webViewLink; driveId = up.id;
   } catch (e: any) { erroPdf = e?.message || String(e); }
   const { linhas: _l, ...resumo } = r;
-  await gravar(leadId, { status: erroPdf ? 'ERRO' : 'PRONTA', leaseAt: null, erro: erroPdf || null, resultado: { ...resumo, parcelas: rows.length }, pdf: driveId ? { driveId, link, em: new Date().toISOString() } : undefined });
+  const docId = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._caixaSimulacao?.docRequestId || null;
+  await gravar(leadId, { status: erroPdf ? 'ERRO' : 'PRONTA', leaseAt: null, erro: erroPdf || null, resultado: { ...resumo, parcelas: rows.length }, pdf: driveId ? { driveId, link, em: new Date().toISOString() } : undefined, docRequestId: null });
+  // Pedido do botão "PDF" (cliente): manda o mesmo PDF pelo caminho dos outros bancos.
+  if (docId) {
+    const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+    if (pdfPronto && !erroPdf) await sd.finishCaixaDoc(prisma as any, { accountId, id: docId, pdf: pdfPronto }).catch((e: any) => console.error('[Simulação CAIXA] PDF ao cliente:', e?.message));
+    else await sd.failSimulationDoc(prisma as any, { accountId, id: docId, reason: erroPdf || 'a simulação da CAIXA não gerou o PDF' }).catch(() => {});
+  }
   const linhasNota = [
     `🧮 Simulação da CAIXA${erroPdf ? ' feita, mas o PDF NÃO saiu' : ' pronta'} — ${r.modalidade || '—'}${bonif}`,
     `Imóvel ${r.valorImovel || '—'} • entrada ${r.entrada || '—'} • financiamento ${r.financiamento || '—'}`,

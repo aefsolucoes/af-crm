@@ -19,7 +19,7 @@ type FhLead = {
   valores: { imovel: number | null; financia: number | null; entrada: number | null; renda: number | null };
 };
 const ORDEM = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'];
-const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER' };
+const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER', CAIXA: 'FH_CAIXA' }; // CAIXA: simulador da CAIXA pela extensão SIOPI (12/11)
 
 function tom(status: string) {
   const s = status.toLowerCase();

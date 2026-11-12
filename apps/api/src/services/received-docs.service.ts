@@ -280,6 +280,8 @@ export async function getDocInfo(accountId: string, leadId: string, atts: Attach
     if (relerFolha && (!info || !ehMatriculaTipo(info.type))) { cache[att.id] = `${String(cache[att.id]).split('|').slice(0, 2).join('|')}|FICHA ?`; changed = true; continue; } // releitura deu outro tipo: mantém a classificação de antes
     cache[att.id] = info === null ? 'IGNORAR' : `${info.type}|${info.holder || ''}${info.folha ? `|${info.folha}` : ''}`;
     changed = true;
+    // Gravada já (Fabio 12/11): o reinício do servidor no meio de 33 arquivos jogava fora a classificação inteira — a gravação abaixo é só no fim. Só a chave do arquivo.
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docInfo}', COALESCE("customFields"->'_docInfo', '{}'::jsonb) || ${JSON.stringify({ [att.id]: cache[att.id] })}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});
     if (info && info.protegido) {
       // Arquivo que não abre (senha): vai pro card pra a IA PERGUNTAR ao cliente o que é e pra pasta do Drive sair como "VERIFICAR - …" (Fabio 21/10: "a IA pergunta ao cliente e anota o nome do documento na pasta, depois eu verifico").
       const fr = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });

@@ -14,7 +14,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
  * (sendOutboundMedia, grátis dentro da janela de 24h). Nunca vai PDF cru de portal: se não der pra montar, o pedido falha com o motivo.
  */
 
-export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH' | 'INTER_FH' | 'ITAU_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
+export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMORAR' | 'INTER' | 'CREDITAS' | 'CREDIMORAR_FH' | 'INTER_FH' | 'ITAU_FH' | 'CAIXA_FH'; mode: 'pdf' | 'data'; credimorarId?: number }> = {
   SANTANDER: { label: 'Santander', extBank: 'CREDIMORAR', mode: 'pdf', credimorarId: 2 }, // coluna Santander do Credimorar
   INTER: { label: 'Inter', extBank: 'INTER', mode: 'data' },
   CREDITAS: { label: 'Creditas', extBank: 'CREDITAS', mode: 'data' },
@@ -28,7 +28,10 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
   FH_ITAU_CM: { label: 'Itaú', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 3 },
   FH_INTER: { label: 'Inter', extBank: 'INTER_FH', mode: 'data' },
   // Inter aprovado PELO CREDIMORAR (antes de 29/10) com valor MAIOR que o do nosso portal: o PDF sai do Credimorar (Evolução Teórica do Inter, id 6).
-  FH_INTER_CM: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
+  FH_INTER_CM: { label: 'Inter', extBank: 'CREDIMORAR_FH', mode: 'pdf', credimorarId: 6 },
+  // CAIXA (Fabio 12/11: "precisa colocar a opção de simulação em PDF para o cliente para a CAIXA"): a extensão SIOPI (A&F) roda o simulador da CAIXA (fila própria,
+  // simulacao-caixa.service) e o CRM desenha no modelo A&F — o pedido já nasce RUNNING e termina em `finishCaixaDoc`.
+  FH_CAIXA: { label: 'CAIXA', extBank: 'CAIXA_FH', mode: 'data' }, // 29/10: Inter do Financiamento é no nosso portal → a extensão do Inter lê a proposta e o Evolução Teórica
 };
 
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)
@@ -101,6 +104,13 @@ export async function requestSimulationDocs(db: Db, p: { accountId: string; lead
     }
     const row = await db.simulationDocRequest.create({ data: { accountId: p.accountId, leadId: p.leadId, institution: inst, source: p.source || 'USER', requestedById: p.userId || null, caption: p.caption?.trim() || null, hold: !!p.hold } });
     created.push({ id: row.id, institution: inst });
+    if (inst === 'FH_CAIXA') {
+      await db.simulationDocRequest.update({ where: { id: row.id }, data: { status: 'RUNNING', startedAt: new Date() } });
+      const nome = p.userId ? (await db.user.findUnique({ where: { id: p.userId }, select: { name: true } }))?.name || 'equipe' : p.source === 'AI' ? 'IA' : 'equipe';
+      const sc = require('./simulacao-caixa.service') as typeof import('./simulacao-caixa.service');
+      const r = await sc.pedirSimulacaoCaixa(p.accountId, p.leadId, { id: p.userId, nome }, { docRequestId: row.id });
+      if ('erro' in r && !/em andamento/.test(r.erro)) await failSimulationDoc(db, { accountId: p.accountId, id: row.id, reason: r.erro });
+    }
   }
   return { created, skipped };
 }
@@ -454,3 +464,10 @@ export async function listSimulationDocs(db: Db, p: { accountId: string; leadId:
 }
 
 export { brl };
+
+/** PDF da CAIXA pronto (simulador da CAIXA → modelo A&F): entrega como os outros bancos (WhatsApp, ou guarda pro aviso/assistente). */
+export async function finishCaixaDoc(db: Db, p: { accountId: string; id: string; pdf: Buffer; io?: Io }) {
+  const r = await loadOpen(db, p.accountId, p.id);
+  if (r.status === 'DONE' || r.status === 'FAILED') return { ok: r.status === 'DONE' };
+  return deliver(db, r, p.pdf, p.io);
+}

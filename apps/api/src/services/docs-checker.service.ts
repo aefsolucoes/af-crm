@@ -9,6 +9,7 @@ import { sendOutboundWhatsApp } from './message.service';
 import { logActivity } from './activity.service';
 import { todayContextLine } from './ai-shared.service';
 import { reviewReceivedDocs, buildDocProblemsMessage } from './doc-review.service';
+import { marcarConferencia, desmarcarConferencia } from './docs-check-resume.service';
 
 
 /* A IA confere se a documentação chegou completa (pedido do Fabio: a skill só
@@ -187,7 +188,10 @@ export async function processDocsChecks(accountId: string, io: Io): Promise<void
     const cf = { ...((fresh?.customFields || {}) as Record<string, unknown>) };
     delete cf._docsCheckDue;
     await prisma.lead.update({ where: { id }, data: { customFields: cf as any } });
+    // Marca de "conferindo" (Fabio 12/11): reinício do servidor no meio → a conferência roda de novo ao subir (docs-check-resume.service).
+    const marca = await marcarConferencia(id, 'auto');
     await checkDocsComplete(accountId, id, io).catch((err) => console.error(`[Docs] Falha ao conferir documentação do lead ${id}:`, err?.message || err));
+    await desmarcarConferencia(id, 'auto', marca);
   }
   // Documento novo depois da Aguardando Documentação com pendência anotada (05/11): conferência silenciosa, igual à do botão.
   const reler = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->>'_docsRelerDue') IS NOT NULL AND ("customFields"->>'_docsRelerDue')::timestamptz <= now() LIMIT 5`;
@@ -784,9 +788,10 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
 const conferindoAgora = new Set<string>();
 export const conferenciaEmAndamento = (leadId: string) => conferindoAgora.has(leadId);
 
-export async function conferirDocumentosAgora(accountId: string, leadId: string, userName: string, io?: Io): Promise<{ completo: boolean; faltando: string[] } | null> {
+export async function conferirDocumentosAgora(accountId: string, leadId: string, userName: string, io?: Io, opts: { tentativa?: number } = {}): Promise<{ completo: boolean; faltando: string[] } | null> {
   if (conferindoAgora.has(leadId)) return null;
   conferindoAgora.add(leadId);
+  const marca = await marcarConferencia(leadId, 'botao', { n: opts.tentativa, por: userName }); // reinício no meio → roda de novo ao subir (docs-check-resume)
   try {
     const review = await reviewReceivedDocs(accountId, leadId, { releCertidao: true }).catch((e) => { console.error(`[Docs] botão — leitura falhou (${leadId}):`, e?.message || e); return null; });
     // Habite-se (Fabio 06/11): lê a certidão e anota pra equipe — pelo botão nada vai pro cliente.
@@ -836,5 +841,6 @@ export async function conferirDocumentosAgora(accountId: string, leadId: string,
     return { completo: verdict.complete, faltando: verdict.faltando };
   } finally {
     conferindoAgora.delete(leadId);
+    await desmarcarConferencia(leadId, 'botao', marca);
   }
 }

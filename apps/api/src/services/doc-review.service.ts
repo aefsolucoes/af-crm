@@ -522,9 +522,20 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
   // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
+  // Leitura guardada ARQUIVO POR ARQUIVO (Fabio 12/11): a gravação em `_docReview` é só no fim, e o reinício do servidor no meio de 24 documentos (~6 min)
+  // jogava fora tudo que já tinha sido lido. `_docReviewParcial` guarda cada leitura assim que sai; a rodada seguinte (retomada no boot ou a próxima
+  // conferência) usa a leitura sem pagar de novo e trata como lida AGORA (anotação "A IA leu", número da matrícula, renda, gênero…); a gravação do fim apaga a chave.
+  const parcial = (cf0._docReviewParcial || {}) as Record<string, { r: DocReview; info?: string }>;
   for (const a of atts) {
     // Leitura CORRIGIDA pela equipe no painel de documentos (Fabio 03/11): nunca relê — nem pelo dono dito na conversa, nem pelas metragens.
     const corrigida = !!cache[a.id]?.corrigidoPor;
+    const guardada = parcial[a.id];
+    if (guardada?.r && !corrigida && info[a.id]) {
+      cache[a.id] = guardada.r;
+      novas.push({ arquivo: a.fileName || a.id, r: guardada.r, attId: a.id });
+      if (guardada.info) infoFix[a.id] = guardada.info;
+      continue;
+    }
     const reler = !corrigida && (releDono || (!!donoDito && !cache[a.id]?.leuDonoDito)) && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
     // Leitura antiga de documento da PREFEITURA (IPTU/cadastro) sem o campo "metragens": relê uma vez pra saber se ele mostra as metragens (Fabio 20/10).
     const semMetragens = !corrigida && !!cache[a.id] && /IPTU|CADASTRO IMOBILIARIO/.test(String(cache[a.id].tipo || '')) && cache[a.id].metragens === undefined;
@@ -551,6 +562,10 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
       const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
       await createDocQuestion({ accountId, leadId, attachmentId: a.id, fileName: a.fileName || 'documento', docType: r.tipo, question: r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
     }
+    // Depois da pergunta à equipe (a retomada não abre a dúvida de novo). Só a chave, por SQL — ver customfields-write-race.
+    const guardar = { [a.id]: { r, ...(infoFix[a.id] ? { info: infoFix[a.id] } : {}) } };
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docReviewParcial}', COALESCE("customFields"->'_docReviewParcial', '{}'::jsonb) || ${JSON.stringify(guardar)}::jsonb, true) WHERE id = ${leadId}`
+      .catch((e: any) => console.warn('[DocReview] leitura parcial:', e?.message || e));
   }
   if (leituraFalhou.length) {
     try {
@@ -603,13 +618,17 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
         await createDocQuestion({ accountId, leadId, attachmentId: lida.attId || '', fileName: lida.arquivo || 'matrícula', docType: 'MATRÍCULA', question: `O número desta matrícula (${lida.r.matricula}${(lida.r.anteriores || []).length ? `, antiga ${(lida.r.anteriores || []).join('/')}` : ''}) NÃO bate com o que o cliente mandou (${freshCf.numero_matricula}). Pode ter sido erro nosso ao pedir a certidão: confira qual é o número certo. Não avisei o cliente.` }).catch(() => {});
       }
     }
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshCf, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
+    const { _docReviewParcial: _gravadaAgora, ...freshSemParcial } = freshCf; // a leitura parcial entra em `_docReview` agora
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...freshSemParcial, ...matCampos, ...marcador, _docReview: cache, ...(Object.keys(infoFix).length ? { _docInfo: { ...(freshCf._docInfo || {}), ...infoFix } } : {}) } } });
     // Documento de identidade com o sexo impresso → o Gênero do card segue o documento (Fabio 07/11).
     if (novas.some((n) => n.r.sexo)) await (require('./genero.service') as typeof import('./genero.service')).atualizarGeneroPeloDocumento(leadId).catch((e: any) => console.error('[Gênero documento]', e?.message || e));
     // Comprovante de renda lido → a renda do card se preenche sozinha (Fabio 05/11).
     if (novas.some((n) => n.r.renda)) await (require('./renda-comprovante.service') as typeof import('./renda-comprovante.service')).atualizarRendaPeloComprovante(leadId).catch((e: any) => console.error('[Renda comprovante]', e?.message || e));
     // Matrícula no nome de quem não participa da proposta: o Santander sai (Fabio 03/11).
     await (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).avisarSantanderTerceiro(accountId, leadId).catch((e: any) => console.error('[Santander terceiro]', e?.message || e));
+  } else if (Object.keys(parcial).length) {
+    // Leitura guardada que não entrou (corrigida pela equipe, arquivo apagado): sai pra não voltar depois.
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_docReviewParcial' WHERE id = ${leadId}`.catch(() => {});
   }
 
   // Situação atual: a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some); RG/CNH somam os lados.
