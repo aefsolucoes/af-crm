@@ -810,6 +810,8 @@ export async function applyAiExtractedActions(
         const cfv: Record<string, any> = { ...((atual?.customFields || {}) as Record<string, any>), _vendaFuturaAt: action.resumeOn };
         delete cfv._vendaFuturaHora; // data nova combinada na conversa: o horário marcado à mão era da data antiga
         delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
+        // De onde o card veio (Fabio 12/11): quem adiou de Aguardando Documentação volta pra lá ao retomar, não pra Prospecção.
+        if (!/venda futura/i.test(atual?.stage?.name || '')) cfv._vendaFuturaDe = atual?.stage?.name || null;
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
         // Sem aprovação (Fabio 03/11): a retomada fica em "Lead Sem Retorno" (o template sai no dia marcado) — não vai pra Venda Futura.
         const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');

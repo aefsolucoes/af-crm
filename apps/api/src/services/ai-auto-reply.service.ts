@@ -279,19 +279,34 @@ const MARK_LOST_RULES = `MARCAR COMO PERDIDO ("markLost") — preencha com um mo
 
 /** VENDA FUTURA COM DATA (Fabio 16/10): o cliente que NÃO pode fazer agora fica com uma data de retomada; o CRM agenda o disparo pra ela. A IA pergunta a data; resposta vaga → ela sugere
  *  um mês/dia dentro do que ele falou e agenda; silêncio → o CRM manda pra Venda Futura com retomada em 15 dias (Fabio 03/11, processVfSilencio). */
-function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa: boolean, aprovado = true): string {
+const DIAS_SEMANA = ['domingo', 'segunda-feira', 'terça-feira', 'quarta-feira', 'quinta-feira', 'sexta-feira', 'sábado'];
+/** Dia da semana de AAAA-MM-DD e a próxima segunda-feira (a IA erra conta de calendário: vai pronto no prompt). Pura. */
+export function calendarioVf(hoje: string): { diaSemana: string; proximaSegunda: string } {
+  const d = new Date(`${hoje}T12:00:00Z`);
+  const dow = d.getUTCDay();
+  const seg = new Date(d.getTime() + (((8 - dow) % 7) || 7) * 86_400_000);
+  return { diaSemana: DIAS_SEMANA[dow], proximaSegunda: seg.toISOString().slice(0, 10) };
+}
+
+function ventaFuturaRules(hoje: string, retomadaAgendada: string | null, naEtapa: boolean, aprovado = true, veioDe: string | null = null): string {
+  const cal = calendarioVf(hoje);
   // Sem aprovação (Fabio 03/11): quem quer deixar pra depois e ainda não tem crédito aprovado NÃO vai pra Venda Futura — vai pra "Lead Sem Retorno" com o template de retomada em 15 dias.
   if (!aprovado && !naEtapa) return `RETOMADA DE QUEM NÃO TEM APROVAÇÃO — Hoje é ${hoje}. ${retomadaAgendada ? `Este card JÁ tem retomada marcada para ${retomadaAgendada}.` : ''}
 - Este cliente AINDA NÃO TEM crédito aprovado. Se ele quer o crédito mas não agora (ou diz "mais pra frente", "ano que vem", "sem previsão"), NÃO use "Venda Futura" e NÃO pergunte a data (Fabio 03/11): use "moveToStage": "Lead Sem Retorno" + "moveReason" + "resumeOn" = 15 dias a partir de hoje (AAAA-MM-DD), e na "reply" responda curto que fica à disposição e que você volta a falar com ele mais pra frente (ex.: "Sem problema! Daqui uns dias eu te chamo pra ver como estão os planos. 😊"). O CRM manda o template de retomada nesse dia e o card segue o fluxo do Follow Up.
 - Se ele mesmo der uma data ou mês, use essa data no "resumeOn" (só o mês → dia 10) em vez dos 15 dias.
 - Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).
 - "resumeOn" é null em todos os outros casos.`;
-  return `VENDA FUTURA COM DATA — Hoje é ${hoje}. ${retomadaAgendada ? `Este card JÁ tem retomada combinada para ${retomadaAgendada}.` : naEtapa ? 'Este card está em "Venda Futura" mas SEM data de retomada combinada.' : ''}
+  // Card que entrou em Venda Futura vindo de uma etapa adiante (Aguardando Documentação…, Fabio 12/11): ao retomar, volta pra ela — não pra Prospecção.
+  const voltaPra = veioDe && /aguardando doc/i.test(veioDe.normalize('NFD').replace(/[\u0300-\u036f]/g, '')) ? veioDe : null; // a IA só pode mover pra algumas etapas: Aguardando Documentação é a que vale aqui
+  return `VENDA FUTURA COM DATA — Hoje é ${hoje} (${cal.diaSemana}); a próxima segunda-feira é ${cal.proximaSegunda}. ${retomadaAgendada ? `Este card JÁ tem retomada combinada para ${retomadaAgendada}.` : naEtapa ? 'Este card está em "Venda Futura" mas SEM data de retomada combinada.' : ''}${naEtapa && voltaPra ? ` O card veio de "${voltaPra}".` : ''}
 - Venda Futura é pra cliente QUALIFICADO que por algum motivo NÃO consegue fazer o crédito agora (ex.: precisa quitar o saldo devedor do imóvel, regularizar documentação, esperar um evento ou data, o valor/condição do imóvel ainda não permite) — NÃO é pra quem não quer ou desistiu (esse é "markLost"). Quando for o caso: se ele JÁ disse quando, use "moveToStage": "Venda Futura" e preencha "resumeOn" com a data (AAAA-MM-DD) em que devemos voltar a falar com ele: dia exato se ele deu; só o mês → dia 10 desse mês; "daqui N meses/semanas" → some a partir de hoje. A data tem que ser futura (e no máximo 3 anos).
 - Se ele NÃO falou nada de quando: NÃO mova ainda (moveToStage null) e na "reply" pergunte, curto e simpático, qual seria a melhor data pra gente retomar ("Sem problema! Qual seria a melhor data pra gente retomar o seu crédito? Pode ser um mês ou uma data certinha."). Se ele ficar calado, o CRM manda o card pra Venda Futura sozinho e marca a retomada pra 15 dias depois da pergunta (Fabio 03/11).
 - Se ele falou de quando mas SEM definir mês ou data ("ano que vem", "depois que o advogado resolver", "uns meses", "sem previsão", "não sei") — agora ou respondendo à pergunta: NÃO pergunte de novo (Fabio 03/11) — sugira VOCÊ um mês ou dia DENTRO do que ele falou e JÁ agende: "moveToStage": "Venda Futura" + "resumeOn" (só o mês → dia 10), e na "reply" diga, curto, quando vai chamar e que, se preferir outra data, é só falar (ex.: "Sem problema! Vou te chamar em janeiro pra ver como ficou — se preferir outro mês, é só me falar. 😊"). "Ano que vem"/"próximo ano"/"início do ano" → janeiro do ano que vem; evento com época conhecida ("depois das férias", "o inquilino sai em março") → o mês seguinte ao evento; nada que dê uma época ("sem previsão", "não sei") → daqui 15 dias. Se ele pedir outra data, troque o "resumeOn".
 - Card que já está em "Venda Futura" e o cliente pede outra data ou responde "ainda não é o momento" depois da nossa mensagem de retomada: aceite a NOVA data e devolva "resumeOn" (o card continua em Venda Futura, moveToStage null); se ele não disser quando, pergunte; se responder vago, sugira pela regra acima.
-- Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).
+- ADIOU PRA DEPOIS DE UM EVENTO PRÓXIMO (Fabio 12/11, Ivani: "meu filho vai vir em casa fim de semana, vou conversar sobre meu projeto com ele" — a IA respondeu "fico no aguardo da documentação" e o card ficou parado; "era pra colocar como Venda Futura e falar com ele na segunda"): cliente com crédito aprovado (inclusive em Aguardando Documentação) que diz que vai decidir, conversar com alguém (filho, esposa, sócio), juntar o dinheiro ou os documentos DEPOIS de um evento próximo com época conhecida ("no fim de semana", "semana que vem", "depois do pagamento dia 5", "quando eu voltar de viagem sexta") também é Venda Futura: "moveToStage": "Venda Futura" + "resumeOn" = o 1º dia útil DEPOIS do evento ("fim de semana" → ${cal.proximaSegunda}; "semana que vem" → a segunda da semana que vem; "dia 5" → dia 6; dia útil = segunda a sexta). Na "reply", em 1 frase, diga que chama nesse dia (ex.: "Combinado, Ivani! Converse com calma com ele, e na segunda eu te chamo pra gente seguir. 😊"). NÃO pergunte a data e NÃO responda só "fico no aguardo". NÃO vale pra quem só diz QUANDO manda os documentos ("mando amanhã", "à noite eu envio", "sexta eu mando") — esse continua em Aguardando Documentação, com a cobrança combinada.
+${voltaPra
+    ? `- Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: como o card veio de "${voltaPra}", use "moveToStage": "${voltaPra}" e siga dali (em Aguardando Documentação: diga o que falta mandar) — NÃO volte pra Prospecção nem peça o formulário de novo.`
+    : '- Cliente que responde "quero retomar" (ou equivalente) à mensagem de retomada: "moveToStage": "Prospecção" e siga o atendimento normal (formulário primeiro).'}
 - Cliente JÁ APROVADO: a aprovação pode ser contratada em até 90 dias (Base de Conhecimento). A data de retomada (a dele ou a que você sugerir) fica DENTRO desse prazo (de preferência antes de acabar) e avise o cliente da validade; se ele só puder depois dos 90 dias, diga com tato que a análise terá de ser refeita.
 - "resumeOn" é null em todos os outros casos.`;
 }
@@ -688,7 +703,7 @@ ${R.CREDIT_ANALYSIS_RULES}
 ${R.NO_RECEIPT_LIST_RULES}
 
 ${R.NO_REPLY_RULES}`;
-    const systemDynamic = `${opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado)}
+    const systemDynamic = `${opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado, String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaDe || '') || null)}
 
 ${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 
