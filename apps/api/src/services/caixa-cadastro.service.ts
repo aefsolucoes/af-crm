@@ -189,7 +189,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         // O card manda (a equipe corrige o campo se o cliente mudou de ideia); o texto da proposta só vale quando o card não diz o tipo/finalidade — igual ao que o botão confere no clique.
         const cardDiz = [cf.finalidade, cf.imovel_tipo, cf.tipo_imovel, cf.modalidade].some((v) => String(v ?? '').trim());
         const construcao = ehFh && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh(cardDiz ? '' : propFh?.content || '', cf);
-        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo), ehFh ? { pediuPrice, compraVenda, construcao } : null, ehFh ? null : { pediuSac });
+        const operacao = operacaoDaAvaliacao(cf, [quem.tomador, ...quem.incluir], valorDe((ajuste?.data as Cf | null)?.prazo), ehFh ? { pediuPrice, compraVenda, construcao, construcaoPedida: !!av.construcaoPedida } : null, ehFh ? null : { pediuSac });
         if (typeof operacao === 'string') {
           await salvar(id, (x) => { x.avaliacao = { ...x.avaliacao, status: `SEGURADO: ${operacao}`, fim: new Date().toISOString() }; });
           await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `⏸️ Avaliação de Risco CAIXA não rodou: ${operacao}. Corrija e peça de novo (painel CAIXA da Análise de Crédito).` } }).catch(() => {});
@@ -562,7 +562,7 @@ export function avaliacaoParaRefazer(historico: Cf[], produto: string): Cf | nul
  *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo —
  *  salvo `denovo` (Fabio 03/11, Jézer/Fernanda: "JÁ FORAM AUTORIZADAS PELO PV … RODE A AVALIAÇÃO NOVAMENTE"): a anterior vai pro histórico (`avaliacao.anteriores`),
  *  o resultado dela sai de `_caixaResultado` (a consulta de Formulários Enviados roda de novo depois do novo envio) e a extensão refaz o mesmo roteiro. */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown> } = {}): Promise<string | null> {
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown>; construcaoConferida?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -574,14 +574,16 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   if (denovo && !avaliacaoTerminada(cf)) return 'A Avaliação de Risco deste card está na fila/rodando agora — espere terminar pra rodar de novo';
   const produto = /home|garantia/i.test(l.pipeline?.department?.name || '') ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário';
   const quem = participantesDaAvaliacao(ps);
-  const enviar = opts.enviar === true;
+  // Construção (Fabio 12/11): pedir = OK pra montar como construção; ENVIAR só depois de conferir a tela preenchida (`construcaoConferida`).
+  const construcao = !/garantia/i.test(produto) && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf);
+  const enviar = opts.enviar === true && (!construcao || opts.construcaoConferida === true);
   // autorizacao = quem deu o OK pra este cliente e quando (botão "Análise CAIXA" do card, Fabio 03/11). A avaliação anterior (com o resultado dela) vai pro histórico.
   const anteriores = [...(Array.isArray(anterior?.anteriores) ? anterior.anteriores : []), ...(anterior?.status ? [resumoAvaliacaoAnterior(anterior, cf._caixaResultado)] : [])].slice(-10);
   // Rodar de novo (Fabio 03/11): a extensão REABRE a avaliação que deu erro (Formulários Enviados → proposta) e clica em Avançar lá — não preenche avaliação nova.
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(construcao ? { construcaoPedida: true, ...(opts.construcaoConferida ? { construcaoConferida: true } : {}) } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
@@ -743,15 +745,16 @@ const valorDe = (v: any): number | null => {
 /** Tela "Informações da Operação" da Avaliação de Risco (Fabio 31/10): PRICE, TR, garantia = alienação fiduciária, prazo máximo (240; outro só quando o
  *  cliente pede — ajuste "prazo" da CAIXA), imóvel e crédito da proposta do card, prestação necessária = 30% da renda BRUTA de quem entra na avaliação. Pura. */
 export const SEGURA_CONSTRUCAO = 'card de CONSTRUÇÃO (terreno/obra) — a Avaliação de Risco automática só roda como aquisição de imóvel USADO; a de construção é feita pela equipe no portal da CAIXA (Fabio 12/11)';
-export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null, fh?: { pediuPrice?: boolean; compraVenda?: number | null; construcao?: boolean } | null, he?: { pediuSac?: boolean } | null): Record<string, any> | string {
-  // Construção NUNCA roda como imóvel usado (Fabio 12/11: "se eu solicitar a avaliação do crédito, ele vai rodar como construção?" — não: hoje só existe a modalidade de imóvel usado).
-  if (fh?.construcao) return SEGURA_CONSTRUCAO;
+export function operacaoDaAvaliacao(cf: Cf, pessoas: any[], prazoPedido?: number | null, fh?: { pediuPrice?: boolean; compraVenda?: number | null; construcao?: boolean; construcaoPedida?: boolean } | null, he?: { pediuSac?: boolean } | null): Record<string, any> | string {
+  // Construção NUNCA roda como imóvel usado (Fabio 12/11). Sem pedido explícito de construção fica segurada; com o pedido (Fabio 12/11, Isidro: "vamos fazer a análise
+  // de crédito do Isidro construção") vai a operação de CONSTRUÇÃO EM TERRENO PRÓPRIO — e a 1ª rodada só preenche e para (conferência), ver `pedirAvaliacao`.
+  if (fh?.construcao && !fh.construcaoPedida) return SEGURA_CONSTRUCAO;
   const imovel = valorDe(cf.valor_imovel), credito = valorDe(cf.valor_credito);
   const renda = pessoas.reduce((t, p) => t + (valorDe(p?.rendaBrutaMensal) || valorDe(p?.contracheques?.[0]?.bruto) || 0), 0);
   if (!imovel || !credito) return 'valor do imóvel ou do crédito vazio no card';
   if (!renda) return 'renda bruta vazia na ficha';
   // Valor do imóvel no Financiamento = o de COMPRA E VENDA da proposta que o próprio cliente mandou (Fabio 02/11), não o do card.
-  if (fh) return operacaoFh(cf, { imovel: fh.compraVenda && fh.compraVenda > 0 ? fh.compraVenda : imovel, credito, renda, prazoPedido, pediuPrice: !!fh.pediuPrice });
+  if (fh) return operacaoFh(cf, { imovel: fh.construcao ? imovel : fh.compraVenda && fh.compraVenda > 0 ? fh.compraVenda : imovel, credito, renda, prazoPedido, pediuPrice: !!fh.pediuPrice, construcao: !!fh.construcao });
   return { portabilidade: 'NAO', origem: 'CAIXA', prazo: prazoPedido && prazoPedido > 0 ? Math.round(prazoPedido) : 240, valorImovel: imovel, valorFinanciamento: credito,
     rendaBruta: Math.round(renda * 100) / 100, prestacao: Math.round(renda * 0.3 * 100) / 100, garantia: 'alienacao fiduciaria', amortizacao: he?.pediuSac ? 'SAC' : 'PRICE', indexador: 'TR' }; // Home Equity sempre PRICE, salvo o cliente pedir SAC (Fabio 02/11)
 }
@@ -816,8 +819,8 @@ export const PRAZO_MAX_FH = 420;
 
 /** Tela "Informações da Operação" do Financiamento Habitacional, imóvel usado. Amortização (Fabio 02/11): SAC é o padrão; PRICE quando a 1ª parcela da SAC
  *  passa da prestação que a renda comporta (30% da renda bruta — cliente de renda mais baixa, pra alcançar o valor do financiamento) ou quando o cliente pediu PRICE. Pura. */
-function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number; prazoPedido?: number | null; pediuPrice: boolean }): Record<string, any> | string {
-  if (imovelNovo(cf)) return 'imóvel NOVO — no Financiamento a CAIXA fica só com o cadastro; a avaliação do imóvel novo é com a equipe (Fabio 02/11)';
+function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number; prazoPedido?: number | null; pediuPrice: boolean; construcao?: boolean }): Record<string, any> | string {
+  if (!v.construcao && imovelNovo(cf)) return 'imóvel NOVO — no Financiamento a CAIXA fica só com o cadastro; a avaliação do imóvel novo é com a equipe (Fabio 02/11)';
   // Exceção (Fabio 02/11): cliente que já tem OUTRO imóvel na mesma região do que quer comprar vai pro SBPE mesmo dentro dos limites do MCMV.
   const outroNaRegiao = /^s/i.test(String(cf.outro_imovel_regiao || '').trim());
   const faixa = outroNaRegiao ? 'SBPE' : v.renda <= MCMV_LIMITES.outrasClasses.renda && v.imovel <= MCMV_LIMITES.outrasClasses.imovel ? 'MCMV'
@@ -829,6 +832,13 @@ function operacaoFh(cf: Cf, v: { imovel: number; credito: number; renda: number;
   const amortizacao = v.pediuPrice || sac1 > prestacao ? 'PRICE' : 'SAC';
   const porque = v.pediuPrice ? 'o cliente pediu PRICE' : sac1 > prestacao ? `a 1ª parcela estimada na SAC (R$ ${sac1.toLocaleString('pt-BR')}) passa dos 30% da renda (R$ ${prestacao.toLocaleString('pt-BR')})` : `SAC cabe na renda (1ª parcela estimada R$ ${sac1.toLocaleString('pt-BR')})`;
   const base = { fh: true, portabilidade: 'NAO', prazo, valorImovel: v.imovel, valorFinanciamento: v.credito, rendaBruta: Math.round(v.renda * 100) / 100, prestacao, amortizacao, amortizacaoPorque: porque, indexador: 'TR', garantia: 'alien. fiduc. - imoveis residenciais urbanos' };
+  // Construção em terreno próprio (Fabio 12/11, Isidro): mesma faixa/prazo/SAC-PRICE; muda a modalidade e o produto. Os nomes exatos das listas da CAIXA ainda não
+  // foram vistos — a extensão escolhe o mais parecido e a 1ª rodada PARA na tela pra conferência (nada é enviado sem o OK).
+  if (v.construcao) {
+    const sfi = v.imovel > 1_500_000 ? 'sfi' : 'sfh';
+    if (faixa === 'SBPE') return { ...base, construcao: true, enquadramento: 'SBPE · construção', origem: 'SBPE', modalidade: 'construcao em terreno proprio - individual|construcao em terreno proprio', produto: `ccsbpe ${sfi} - tr - construcao em terreno proprio|construcao em terreno proprio` };
+    return { ...base, construcao: true, enquadramento: `${faixa === 'MCMV_CM' ? 'MCMV Classe Média' : 'MCMV (outras classes)'} · construção`, origem: 'FGTS', modalidade: 'construcao em terreno proprio', produto: 'construcao em terreno proprio' };
+  }
   if (faixa === 'SBPE') return { ...base, enquadramento: 'SBPE', origem: 'SBPE', modalidade: 'aquisicao de imovel residencial usado - individual', produto: `ccsbpe ${v.imovel > 1_500_000 ? 'sfi' : 'sfh'} - tr - aquisicao de imovel residencial usado` };
   if (faixa === 'MCMV_CM') return { ...base, enquadramento: 'MCMV Classe Média', origem: 'FGTS', modalidade: 'aquisicao de imovel usado', produto: 'pmcmv - imovel usado individual - classe media' };
   return { ...base, enquadramento: 'MCMV (outras classes)', origem: 'FGTS', modalidade: 'aquisicao de imovel usado', produto: 'npmcmv- fs - imovel usado individual' };
@@ -990,7 +1000,8 @@ export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
   if (!temFicha(cf)) return { tipo: 'falta', msg: 'O card ainda não tem a ficha de cadastro (dados lidos dos documentos) — rode o "Cadastro CAIXA" primeiro' };
   const q = participantesDaAvaliacao(participantesDa(cf));
   if (q.segurar) return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${q.segurar}` };
-  const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null, construcao: (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf) } : null, fh ? null : { pediuSac: false });
+  // Clicar no botão = pedido explícito (construção vira operação de construção e a 1ª rodada só confere — Fabio 12/11).
+  const op = operacaoDaAvaliacao(cf, [q.tomador, ...q.incluir], null, fh ? { pediuPrice: false, compraVenda: null, construcao: (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf), construcaoPedida: true } : null, fh ? null : { pediuSac: false });
   if (typeof op === 'string') return { tipo: 'falta', msg: `Não dá pra rodar a análise: ${op}` };
   const semCadastro = [q.tomador, ...q.incluir].filter((p) => !gravado(c, p.ordem));
   if (semCadastro.length) {
