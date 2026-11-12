@@ -63,6 +63,27 @@ function dadosDoCard(cf: Record<string, any>) {
   return { cpf, nascimento, renda, maisDeUm, fgts };
 }
 
+/** Etapa 2 do simulador ("Dados do imóvel"). Cidade/UF do imóvel → senão a do endereço do tomador (ficha) → senão Brasília/DF (12/11, Windson: o card não tinha a cidade). */
+function imovelDoCard(cf: Record<string, any>, he: boolean) {
+  const ps: any[] = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
+  const end = (ps.find((x, i) => (Number(x?.ordem) || i + 1) === 1) || {}).endereco || {};
+  const ufImovel = String(cf.uf_imovel || cf.imovel_uf || '').trim().toUpperCase();
+  const cidadeImovel = String(cf.cidade_imovel || cf.imovel_cidade || '').trim();
+  const [uf, cidade] = ufImovel && cidadeImovel ? [ufImovel, cidadeImovel] : end.uf && end.cidade ? [String(end.uf).toUpperCase(), String(end.cidade)] : ['DF', 'BRASILIA'];
+  const tipo = `${cf.imovel_tipo || ''} ${cf.tipo_imovel || ''} ${cf.condicao_imovel || ''}`;
+  const deseja = he ? 'emprestimo' : /terreno|lote/i.test(tipo) ? 'terreno' : /constru/i.test(tipo) ? 'construir' : /novo|planta|lan[çc]amento/i.test(tipo) ? 'novo' : 'usado';
+  const sim = (v: unknown) => /^(s|sim|true|1)/i.test(String(v ?? '').trim());
+  return {
+    tipoImovel: /comercial|sala|loja/i.test(tipo) ? 'comercial' : 'residencial',
+    deseja,
+    valorImovel: brl(num(cf.valor_imovel)),
+    uf, cidade,
+    subsidio: sim(cf.subsidio || cf.recebeu_subsidio),
+    outroImovelCidade: sim(cf.outro_imovel_cidade || cf.possui_imovel_cidade),
+    origemCidade: ufImovel && cidadeImovel ? 'card' : end.uf && end.cidade ? 'endereço do tomador' : 'padrão DF',
+  };
+}
+
 /** Fila da extensão. */
 export async function proximaSimulacaoCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
@@ -85,9 +106,9 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
       celular: (require('./caixa-codigo-qr.service') as typeof import('./caixa-codigo-qr.service')).numeroQr(accountId)!,
       dados: {
         cpf: d.cpf, nascimento: d.nascimento, renda: brl(d.renda), maisDeUm: d.maisDeUm, fgts3anos: d.fgts,
-        valorImovel: brl(num(cf.valor_imovel)), valorFinanciamento: brl(num(cf.valor_credito)),
+        valorFinanciamento: brl(num(cf.valor_credito)),
         prazoMeses: num(cf._fhPrazo || cf.prazo_meses || cf.prazo) || null,
-        uf: String(cf.uf || cf.imovel_uf || '').toUpperCase(), cidade: String(cf.cidade || cf.imovel_cidade || ''),
+        ...imovelDoCard(cf, he),
       },
     };
   }
