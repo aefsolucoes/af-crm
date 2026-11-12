@@ -38,6 +38,9 @@ interface Estado {
     avaliacao: { status: string; pedidoEm: string | null; inicio: string | null; fim: string | null; por: string | null; enviar: boolean; denovo: boolean; autorizacao: { por?: string; em?: string } | null; vezes: number } | null;
     denovo: { status: string; fim: string | null; resultado: string | null; refazer: Refazer | null } | null;
     resultado: string | null;
+    /** SBPE/MCMV (só Financiamento) e SAC/PRICE da operação avaliada (Fabio 12/11) — null quando o CRM não sabe. */
+    enquadramento?: string | null;
+    amortizacao?: 'SAC' | 'PRICE' | null;
   };
 }
 
@@ -159,8 +162,9 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
     : estado.participantes.length ? estado.participantes.map((p) => `${p.nome.split(' ')[0] || `${p.ordem}º`}: ${p.cadastro ? curto(p.cadastro).toLowerCase() : p.consultado ? 'consultado, sem cadastro' : 'sem consulta'}`).join(' · ')
     : 'sem ficha de cadastro nem participantes no card';
   const ta = a.trava;
+  const operacao = [a.enquadramento, a.amortizacao].filter(Boolean).join(' · '); // "SBPE · SAC" ao lado do resultado (Fabio 12/11)
   const linhaAnalise = ta?.tipo === 'andamento' ? ta.msg
-    : a.avaliacao ? `${curto(a.avaliacao.status).toLowerCase() || '—'} · ${quando(a.avaliacao.fim || a.avaliacao.pedidoEm)}${!aguardando(a.resultado) ? ` · resultado: ${a.resultado}` : ''}${a.avaliacao.vezes > 1 ? ` · ${a.avaliacao.vezes}ª vez` : ''}`
+    : a.avaliacao ? `${curto(a.avaliacao.status).toLowerCase() || '—'} · ${quando(a.avaliacao.fim || a.avaliacao.pedidoEm)}${!aguardando(a.resultado) ? ` · resultado: ${a.resultado}${operacao ? ` (${operacao})` : ''}` : ''}${a.avaliacao.vezes > 1 ? ` · ${a.avaliacao.vezes}ª vez` : ''}`
     : 'não rodou';
 
   // Botão: desabilitado quando já está na fila/rodando (ou feito, no cadastro) ou o card não está aberto; o título diz por quê. "Falta" fica clicável: a janela mostra o que falta.

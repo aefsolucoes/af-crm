@@ -576,7 +576,7 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
@@ -593,8 +593,9 @@ export async function gravarAvaliacao(accountId: string, leadId: string, r: { st
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!l) return;
   const enquadramento = enquadramentoDaOperacao(r.texto); // SBPE/MCMV da tela da operação (Fabio 11/11) — as telas seguintes não trazem, fica o que já foi lido
+  const amortizacao = amortizacaoDaOperacao(r.texto); // SAC/PRICE da mesma tela (Fabio 12/11); na condicionada refeita vem já com a troca pra PRICE
   await salvar(leadId, (x) => {
-    x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString(), ...(enquadramento ? { enquadramento } : {}) };
+    x.avaliacao = { ...(x.avaliacao || {}), status: r.status, fim: new Date().toISOString(), ...(enquadramento ? { enquadramento } : {}), ...(amortizacao ? { amortizacao } : {}) };
     // Condicionada → PRICE: a extensão só marca "condicionada na PRICE" quando trocou mesmo a prestação e a amortização na tela (o status final sobrescreve).
     if (x.avaliacao.ajuste && /condicionada na PRICE/i.test(r.status)) x.avaliacao.ajuste = { ...x.avaliacao.ajuste, aplicado: true };
     delete x.atual;
@@ -772,6 +773,35 @@ export function enquadramentoDaOperacao(texto: string | null | undefined): 'SBPE
   }
   return /fgts/.test(origem) ? 'MCMV' : null;
 }
+
+/** SAC ou PRICE da operação que foi pra CAIXA (Fabio 12/11: "coloca também se a aprovação foi SAC ou PRICE"), lido da linha "• sistema de amortizacao: SAC" que a
+ *  extensão manda da tela da operação — o que estava escolhido na tela na hora do envio. Na condicionada refeita o texto traz antes "troquei: amortização: PRICE";
+ *  vale a última linha (a da tela). Texto sem essa linha → null: não chuta pelo "Enquadramento: SBPE; SAC: …", que é a conta do CRM, não a tela. Pura. */
+export function amortizacaoDaOperacao(texto: string | null | undefined): 'SAC' | 'PRICE' | null {
+  const t = String(texto || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const lidos = Array.from(t.matchAll(/amortizacao\s*:\s*([^\n;]+)/g)).map((m) => m[1]);
+  const v = lidos[lidos.length - 1] || '';
+  return /price/.test(v) ? 'PRICE' : /\bsac\b/.test(v) ? 'SAC' : null;
+}
+
+/** SAC/PRICE da Avaliação de Risco do card: o gravado na avaliação (desde 12/11); condicionada refeita com a troca pra PRICE confirmada pela extensão; nas enviadas
+ *  antes, a anotação do envio (`notaDaOperacao`, ver notasDaOperacao). Sem nada disso → null (o card fica como era, sem chutar). Pura. */
+export function amortizacaoDaAvaliacao(cf: Cf, notaDaOperacao?: string | null): 'SAC' | 'PRICE' | null {
+  const av = cf?._caixaCadastro?.avaliacao as Cf | undefined;
+  const gravado = String(av?.amortizacao || '').toUpperCase();
+  if (gravado === 'SAC' || gravado === 'PRICE') return gravado;
+  if (av?.ajuste?.aplicado === true) return 'PRICE';
+  return amortizacaoDaOperacao(notaDaOperacao);
+}
+
+/** Anotação mais recente de cada card com as linhas da tela da operação ("• origem do recurso: …", "• sistema de amortizacao: …") de uma avaliação ENVIADA à CAIXA
+ *  (a tela parada antes do envio não conta) — de onde saem o SBPE/MCMV e o SAC/PRICE das avaliações enviadas antes de o CRM gravar isso na própria avaliação
+ *  (11/11 e 12/11). Só leitura. */
+export async function notasDaOperacao(leadIds: string[]): Promise<Map<string, string>> {
+  if (!leadIds.length) return new Map();
+  const notas = await prisma.note.findMany({ where: { leadId: { in: leadIds }, AND: [{ content: { contains: 'origem do recurso', mode: 'insensitive' } }, { content: { contains: 'ENVIADA' } }] }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } });
+  return new Map(notas.map((n) => [n.leadId, n.content] as const));
+}
 /** Taxa anual usada SÓ pra estimar a 1ª parcela da SAC e decidir SAC x PRICE (não vai pra CAIXA). */
 const TAXA_ESTIMADA = { SBPE: 0.12, MCMV_CM: 0.105, MCMV: 0.085 };
 export const PRAZO_MAX_FH = 420;
@@ -872,6 +902,9 @@ export async function painelCaixa(accountId: string): Promise<any[]> {
     FROM "Lead" l LEFT JOIN "Pipeline" p ON p.id = l."pipelineId" LEFT JOIN "Department" d ON d.id = p."departmentId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."customFields"->'_caixaCadastro' IS NOT NULL
     ORDER BY l."updatedAt" DESC LIMIT 80`;
+  // SBPE/MCMV e SAC/PRICE da operação avaliada (Fabio 11/11 e 12/11), só de quem já tem resultado: o gravado na avaliação; nas enviadas antes, a anotação do envio.
+  const comResultado = (r: { res: string | null }) => /^\s*RESULTADO:/i.test(String(r.res || '')); // o que a CAIXA respondeu (fila/consulta parada não conta)
+  const notasOp = await notasDaOperacao(rows.filter((r) => comResultado(r) && (!amortizacaoDaAvaliacao({ _caixaCadastro: r.c }) || (!ehHe(r.dept) && !r.c?.avaliacao?.enquadramento))).map((r) => r.id)).catch(() => new Map<string, string>());
   return rows.map((r) => {
     const c = r.c || {};
     const ps = (Array.isArray(r.ps) ? r.ps : []).map((p: any, i: number) => ({ ordem: Number(p.ordem) || i + 1, nome: p.nome || '', semRenda: p.semRenda === true }));
@@ -882,6 +915,8 @@ export async function painelCaixa(accountId: string): Promise<any[]> {
       conferencia: c.conferencia || null,
       avaliacao: c.avaliacao ? { status: c.avaliacao.status, pedidoEm: c.avaliacao.pedidoEm || null, fim: c.avaliacao.fim || null } : null,
       resultado: r.res ? String(r.res).slice(0, 160) : null, // resultado da Avaliação de Risco (Formulários Enviados), pra coluna CAIXA do HE
+      enquadramento: comResultado(r) && !ehHe(r.dept) ? c.avaliacao?.enquadramento || enquadramentoDaOperacao(notasOp.get(r.id)) : null,
+      amortizacao: comResultado(r) ? amortizacaoDaAvaliacao({ _caixaCadastro: c }, notasOp.get(r.id)) : null,
     };
   });
 }
@@ -988,6 +1023,9 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   const terminada = avaliacaoTerminada(cf);
   const anteriores = Array.isArray(av?.anteriores) ? av!.anteriores : [];
   const res = cf._caixaResultado as Cf | undefined;
+  // SBPE/MCMV e SAC/PRICE da operação avaliada, ao lado do resultado (Fabio 12/11): o gravado na avaliação; nas enviadas antes, a anotação do envio.
+  const comResultado = /^\s*RESULTADO:/i.test(String(res?.status || ''));
+  const notaOp = comResultado && (!amortizacaoDaAvaliacao(cf) || (!he && !av?.enquadramento)) ? (await notasDaOperacao([leadId]).catch(() => new Map<string, string>())).get(leadId) : null;
   return {
     mostrar: true,
     podeConsultar,
@@ -1013,6 +1051,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
       // refazer = a avaliação que deu erro e vai ser REABERTA (proposta/data de Formulários Enviados); null = nenhuma chegou à CAIXA, roda do começo.
       denovo: terminada ? { status: String(terminada.status || '').slice(0, 160), fim: terminada.fim || terminada.pedidoEm || null, resultado: res?.status && res.status !== 'AGUARDANDO_NOVA_AVALIACAO' ? String(res.status).slice(0, 200) : null, refazer: avaliacaoParaRefazer([...anteriores, resumoAvaliacaoAnterior(terminada, res)], he ? '11 - empréstimo com garantia de imóvel' : '1 - crédito imobiliário') } : null,
       resultado: (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).resultadoNoCard(res),
+      enquadramento: comResultado && !he ? av?.enquadramento || enquadramentoDaOperacao(notaOp) : null,
+      amortizacao: comResultado ? amortizacaoDaAvaliacao(cf, notaOp) : null,
     },
   };
 }

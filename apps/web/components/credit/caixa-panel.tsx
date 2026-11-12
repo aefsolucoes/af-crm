@@ -18,6 +18,9 @@ export interface CardCaixa {
   conferencia: { status: string; desde?: string; por?: string; em?: string } | null;
   avaliacao: { status: string; pedidoEm: string | null; fim: string | null } | null;
   resultado?: string | null;
+  /** SBPE/MCMV (só Financiamento) e SAC/PRICE da operação avaliada (Fabio 12/11) — só quando o CRM sabe (gravado na avaliação ou na anotação do envio). */
+  enquadramento?: string | null;
+  amortizacao?: 'SAC' | 'PRICE' | null;
 }
 interface SemCad { leadId: string; nome: string; produto: 'HE' | 'FH'; fichaEm: string | null; participantes: string[] }
 export interface PainelCaixa { cards: CardCaixa[]; semCadastro: SemCad[]; avaliacaoAposConferencia?: boolean }
@@ -243,7 +246,10 @@ export function CaixaColuna({ leadId, data }: { leadId: string; data?: PainelCai
   const ps = c.participantes.length ? c.participantes : [{ ordem: 1, nome: '', semRenda: false, cadastro: null, consultado: c.status === 'CONSULTADO' } as Part];
   const card: Estado[] = [];
   if (c.atual?.tipo === 'avaliar') card.push({ rotulo: 'Rodando', cls: 'bg-blue-100 text-blue-700', sub: 'Avaliação de Risco', pulsa: true });
-  else if (c.resultado) card.push({ rotulo: rotuloResultado(c.resultado), cls: tomCaixa(rotuloResultado(c.resultado)), sub: 'Avaliação de Risco', title: c.resultado });
+  else if (c.resultado) {
+    const op = [c.enquadramento, c.amortizacao].filter(Boolean).join(' · '); // "SBPE · SAC" (Fabio 12/11)
+    card.push({ rotulo: rotuloResultado(c.resultado), cls: tomCaixa(rotuloResultado(c.resultado)), sub: op ? `Avaliação de Risco · ${op}` : 'Avaliação de Risco', title: c.resultado });
+  }
   else if (c.avaliacao) card.push({ rotulo: c.avaliacao.status === 'FILA' ? 'Na fila' : curto(c.avaliacao.status), cls: tomCaixa(c.avaliacao.status), sub: `Avaliação de Risco${c.avaliacao.fim || c.avaliacao.pedidoEm ? ` · ${ago(c.avaliacao.fim || c.avaliacao.pedidoEm)}` : ''}`, title: c.avaliacao.status });
   if (c.conferencia?.status === 'PENDENTE') card.push({ rotulo: 'Conferir cadastro', cls: 'bg-amber-100 text-amber-700', sub: 'no quadro CAIXA, acima' });
   return (

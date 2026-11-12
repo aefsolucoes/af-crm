@@ -1256,10 +1256,11 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
   const propostas = leads.length ? await db.message.findMany({ where: { leadId: { in: leads.map((l) => l.id) }, content: { contains: 'Serasa' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
   const restricao = new Map(propostas.map((m) => { const r = /Restri[cç][aã]o no Serasa:\s*\**\s*(Sim|N[aã]o)/i.exec(m.content); return [m.leadId, r ? /^sim/i.test(r[1]) : null] as const; }));
   // SBPE ou MCMV da CAIXA (Fabio 11/11): gravado na avaliação desde 11/11; nas enviadas antes, lido da anotação do envio (linhas da tela da operação).
-  const { enquadramentoDaOperacao, andamentoCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  const semEnq = leads.filter((l) => { const cf = (l.customFields || {}) as Record<string, any>; return cf._caixaResultado && !cf._caixaCadastro?.avaliacao?.enquadramento; }).map((l) => l.id);
-  const notasOp = semEnq.length ? await db.note.findMany({ where: { leadId: { in: semEnq }, content: { contains: 'origem do recurso', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, distinct: ['leadId'], select: { leadId: true, content: true } }) : [];
-  const enqNota = new Map(notasOp.map((n) => [n.leadId, enquadramentoDaOperacao(n.content)] as const));
+  // SAC ou PRICE da mesma operação (Fabio 12/11: "coloca também se a aprovação foi SAC ou PRICE"): gravado na avaliação desde 12/11; antes, a mesma anotação do envio.
+  const { enquadramentoDaOperacao, andamentoCaixa, amortizacaoDaAvaliacao, notasDaOperacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const semEnq = leads.filter((l) => { const cf = (l.customFields || {}) as Record<string, any>; return cf._caixaResultado && (!cf._caixaCadastro?.avaliacao?.enquadramento || !amortizacaoDaAvaliacao(cf)); }).map((l) => l.id);
+  const textoOp = await notasDaOperacao(semEnq).catch(() => new Map<string, string>());
+  const enqNota = new Map(Array.from(textoOp, ([id, t]) => [id, enquadramentoDaOperacao(t)] as const));
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
     const cred = l.creditAnalyses.filter((r) => r.bank === FH_BANK);
@@ -1276,7 +1277,9 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
     const caixa = caixaNoFinanciamento(cf._caixaResultado);
     const manualCaixa = l.creditAnalyses.find((x) => x.bank === 'CAIXA_FH');
     if (caixa && (!manualCaixa || !caixa.em || new Date(manualCaixa.updatedAt).getTime() < new Date(caixa.em).getTime())) bancos.CAIXA = { status: caixa.status, texto: caixa.texto };
-    const enq = cf._caixaResultado ? cf._caixaCadastro?.avaliacao?.enquadramento || enqNota.get(l.id) : null;
+    const enqSo = cf._caixaResultado ? cf._caixaCadastro?.avaliacao?.enquadramento || enqNota.get(l.id) : null;
+    const amort = cf._caixaResultado ? amortizacaoDaAvaliacao(cf, textoOp.get(l.id)) : null;
+    const enq = [enqSo, amort].filter(Boolean).join(' · ') || null; // "SBPE · SAC"; sem o SAC/PRICE conhecido fica só o enquadramento, como antes
     if (bancos.CAIXA && enq) bancos.CAIXA = { ...bancos.CAIXA, status: `${bancos.CAIXA.status} · ${enq}` };
     return {
       id: l.id, name: l.name, status: l.status, stage: l.stage?.name || '', pipeline: l.pipeline?.name || '', stageEnteredAt: l.stageEnteredAt,
@@ -1540,8 +1543,15 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
   const preNoteAt = new Map<string, Date>();
   for (const n of preNotes) if (!preNoteAt.has(n.leadId)) preNoteAt.set(n.leadId, n.createdAt);
   const autoSetting = await db.creditAutoSetting.findUnique({ where: { accountId: p.accountId }, select: { enabled: true, enabledAt: true, paused: true } });
-  const { andamentoCaixa: andamentoCaixaHe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  const resultadoCaixaHe = (res: any): string | null => caixaNoFinanciamento(res)?.status || null;
+  const { andamentoCaixa: andamentoCaixaHe, amortizacaoDaAvaliacao: amortHe, notasDaOperacao } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  // SAC ou PRICE ao lado do resultado da CAIXA (Fabio 12/11) — no Home Equity não tem SBPE/MCMV; as enviadas antes de 12/11 pela anotação do envio.
+  const semAmort = leads.filter((l) => { const cf = (l.customFields || {}) as Record<string, any>; return /^an[aá]lise\s+caixa/i.test(l.stage?.name || '') && /^\s*RESULTADO:/i.test(String(cf._caixaResultado?.status || '')) && !amortHe(cf); }).map((l) => l.id);
+  const notaOpHe = await notasDaOperacao(semAmort).catch(() => new Map<string, string>());
+  const resultadoCaixaHe = (res: any, cf: Record<string, any>, id: string): string | null => {
+    const st = caixaNoFinanciamento(res)?.status || null;
+    const a = st && /^\s*RESULTADO:/i.test(String(res?.status || '')) ? amortHe(cf, notaOpHe.get(id)) : null;
+    return st && a ? `${st} · ${a}` : st;
+  };
   return leads.map((l) => {
     const cf = (l.customFields || {}) as Record<string, any>;
     const preAnaliseAt = (l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || '') && l.stageEnteredAt) || preNoteAt.get(l.id) || null;
@@ -1582,7 +1592,7 @@ export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: 
       inPre: l.status === 'OPEN' && /^pré-an/i.test(l.stage?.name || ''),
       // Aba "Análise CAIXA" (Fabio 11/11): quem está na etapa aparece na tela mesmo sem ter rodado em banco nenhum, com o andamento da CAIXA.
       inCaixa: naCaixa,
-      caixaEtapa: naCaixa ? andamentoCaixaHe(cf, resultadoCaixaHe(cf._caixaResultado)) || null : null,
+      caixaEtapa: naCaixa ? andamentoCaixaHe(cf, resultadoCaixaHe(cf._caixaResultado, cf, l.id)) || null : null,
       autoPaused: !!cf._autoPaused,
       scr: cf._scrCreditas ? { status: cf._scrCreditas.status, at: cf._scrCreditas.at || null, askedAt: cf._scrCreditas.askedAt || null, sentAt: cf._scrCreditas.sentAt || null, creditasId: cf._scrCreditas.creditasId || null, holderName: cf._scrCreditas.holderName || null, holderCpf: cf._scrCreditas.holderCpf || null } : null,
       preAnaliseAt,
@@ -2168,6 +2178,11 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
     const habiteFora = hs.aiHabiteBancosLinha(cf, cf._habiteSe?.status === 'NAO_TEM' ? '' : await hs.propostaDoLead(leadId).catch(() => ''));
     if (habiteFora) linhas.push(habiteFora);
   }
+  // O banco não abriu outra proposta (Fabio 12/11): a IA não promete rodar de novo nem diz que está em processamento.
+  const naoAbriu = cf._changeNaoAbriu;
+  if (naoAbriu && Array.isArray(naoAbriu.bancos) && agora - Date.parse(String(naoAbriu.em || '')) < 30 * 86_400_000) {
+    linhas.push(`NOVA PROPOSTA NÃO ABRE (${naoAbriu.bancos.map((b: string) => BANKS[b]?.label || b).join(', ')}${naoAbriu.pedido ? `; o cliente pediu ${naoAbriu.pedido}` : ''}): o portal não cria outra proposta com a atual ativa e não deu outra opção. NÃO marque "simulate" pra esse banco, NÃO prometa rodar de novo e NUNCA diga que a nova proposta está em processamento. Diga que o banco liberou o crédito apenas nas condições já passadas${naoAbriu.menor ? ' e que a gente consegue reduzir o valor depois da vistoria do imóvel' : ''}, e pergunte se ele deseja seguir assim. Não cobre documento antes de ele responder isso.`);
+  }
   return `ANÁLISE DE CRÉDITO DESTE CLIENTE (leitura dos portais dos bancos feita pela extensão do Chrome; entre parênteses, há quanto tempo foi lida):\n${linhas.join('\n')}`;
 };
 
@@ -2300,6 +2315,8 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
   const escolhido = aprovadas.find((a) => a.chosen)?.bank;
   const candidatos = escolhido ? [escolhido] : Array.from(new Set(aprovadas.map((a) => a.bank)));
   const motivos: string[] = [];
+  const na = (lead.customFields as any)?._changeNaoAbriu;
+  const naoAbriu: string[] = na && Array.isArray(na.bancos) && Date.now() - Date.parse(String(na.em || '')) < 30 * 86_400_000 ? na.bancos : [];
   const bancos = candidatos.filter((b) => {
     // Aprovou A MENOR (Fabio 26/10): pedir valor MAIOR que a aprovação não adianta — o banco já deu o máximo. Só vale prazo diferente (aprovação costuma subir com prazo maior).
     const ap = aprovadas.find((a) => a.bank === b);
@@ -2307,6 +2324,8 @@ export async function requestProposalChangeForAi(db: Db, accountId: string, lead
       motivos.push(`${BANKS[b]?.label || b} já aprovou a menor (${fmtBRL(Number(ap.approvedValue))}) e não aprova mais que isso`); return false;
     }
     if (prazo && !valor && b === 'CREDITAS') { motivos.push('Creditas não deixa escolher o prazo'); return false; }
+    // O portal não abriu outra proposta deste banco pra este CPF nos últimos 30 dias (Fabio 12/11): pedir de novo só relê a mesma — o banco liberou apenas nessas condições.
+    if (naoAbriu.includes(b)) { motivos.push(`${BANKS[b]?.label || b} não abre outra proposta com a atual ativa (liberou só nas condições já passadas; dá pra reduzir o valor depois da vistoria do imóvel)`); return false; }
     if (prazo && !valor && aprovadas.find((a) => a.bank === b)?.termMonths === prazo) { motivos.push(`${BANKS[b]?.label || b} já foi analisado em ${prazo} meses`); return false; }
     return true;
   });
@@ -2370,7 +2389,28 @@ export async function finishProposalChange(db: Db, leadId: string): Promise<void
   const naoCriada = veredito.filter((v) => /n[aã]o criei outra/i.test(v.detail || ''));
   if (naoCriada.length) {
     const bancos = naoCriada.map((v) => BANKS[v.bank]?.label || v.bank).join(', ');
-    await nota(`⚠️ A nova proposta pedida pelo cliente (${cf._changeAsk || 'outro prazo/valor'}) NÃO foi criada no ${bancos}: o portal não aceita outra proposta pra este CPF enquanto a atual estiver ativa, e a extensão só releu a proposta que já existe (os números são os de antes). Pra rodar o pedido: peça ao consultor do banco que altere o valor/prazo da proposta atual, ou cancele a atual no portal e peça de novo. A aprovação anterior continua valendo — o cliente ainda NÃO foi avisado disso.`);
+    // Fabio 12/11: "avisar a cliente que o banco liberou apenas nessas condições e que podemos reduzir após a vistoria do imóvel". Antes só a equipe ficava sabendo
+    // (nota + push) e a IA seguia dizendo "em processamento" e cobrando documento. `menor` = pediu valor abaixo do que o banco aprovou.
+    const pedidoValor = brNumber((/R\$\s*([\d.]+(?:,\d{2})?)/.exec(String(cf._changeAsk || '')) || [])[1] || '');
+    const aprovado = await db.creditAnalysis.findFirst({ where: { leadId, bank: naoCriada[0].bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { createdAt: 'desc' }, select: { approvedValue: true } });
+    const menor = !!pedidoValor && !!aprovado?.approvedValue && pedidoValor < Number(aprovado.approvedValue);
+    await salvar((c) => { c._changeNaoAbriu = { bancos: naoCriada.map((v) => v.bank), pedido: String(cf._changeAsk || ''), menor, em: new Date().toISOString() }; });
+    const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+    let comoFicou = '';
+    if (lead.status !== 'OPEN') comoFicou = 'O card não está aberto: nada foi dito ao cliente.';
+    else if (lead.aiAutoReplyActive) {
+      const out = await an.sendChangeNotOpenedNow({ accountId: lead.accountId, leadId, banco: bancos, menor }).catch((e: any) => ({ ok: false, error: e?.message || 'erro', text: undefined as string | undefined }));
+      if (out.ok) comoFicou = 'O cliente foi avisado disso e perguntei se deseja seguir assim.';
+      else {
+        await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'novaPropostaNaoAbriu', `avisar que ${bancos} não abriu outra proposta, liberou o crédito só nas condições já passadas${menor ? ' e que dá pra reduzir o valor depois da vistoria do imóvel' : ''}, e perguntar se deseja seguir${out.text ? ` — "${out.text}"` : ''}`);
+        comoFicou = `O aviso ao cliente NÃO saiu (${out.error}).${out.text ? ` Texto pronto:\n\n${out.text}` : ''}`;
+      }
+    } else {
+      const texto = await an.buildChangeNotOpenedText(leadId, bancos, menor).catch(() => null);
+      await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'novaPropostaNaoAbriu', `avisar que ${bancos} não abriu outra proposta, liberou o crédito só nas condições já passadas${menor ? ' e que dá pra reduzir o valor depois da vistoria do imóvel' : ''}, e perguntar se deseja seguir${texto ? ` — "${texto}"` : ''}`);
+      comoFicou = `O aviso NÃO saiu sozinho: a IA deste card está desligada.${texto ? ` Texto pronto pra você mandar:\n\n${texto}` : ''}`;
+    }
+    await nota(`⚠️ A nova proposta pedida pelo cliente (${cf._changeAsk || 'outro prazo/valor'}) NÃO foi criada no ${bancos}: o portal não aceita outra proposta pra este CPF enquanto a atual estiver ativa, e a extensão só releu a proposta que já existe (os números são os de antes). Regra do Fabio (12/11): o banco liberou apenas nessas condições${menor ? ' e a gente pode reduzir o valor depois da vistoria do imóvel' : ''}. ${comoFicou}`);
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: '⚠️ Nova proposta não criada', body: `${bancos}: já existe proposta ativa pro CPF — o pedido do cliente (${cf._changeAsk || 'outro prazo/valor'}) não rodou`, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
   }
   const valido = veredito.filter((v) => !naoCriada.includes(v));
