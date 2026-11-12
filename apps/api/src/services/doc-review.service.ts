@@ -15,9 +15,10 @@ const DOC_DO_VENDEDOR = /^(MATRICULA|CERTIDAO DE ONUS|ESCRITURA)/;
  * A conferência de "chegou tudo?" (docs-checker) só olhava tipo e titular; aqui é a qualidade. Cada arquivo é lido uma vez e fica guardado no card
  * (customFields._docReview, por id do anexo). */
 
-/** PDF até 20 MB (Fabio 12/11: contracheques escaneados de 12,8 MB ficavam sem leitura; em base64 dá ~27 MB, abaixo dos 32 MB por pedido da API).
+/** PDF até 50 MB (Fabio 12/11: contracheques escaneados de 12,8 MB ficavam sem leitura; pediu 20 e depois 50). Em base64 dá ~67 MB, abaixo dos 128 MB por pedido
+ *  da API da Anthropic (o limite de páginas, 600, continua valendo: acima disso a leitura falha e o arquivo fica pra conferir à mão).
  *  Foto continua em 10 MB: a API não aceita imagem acima de 5 MB, então mandar maior só gasta a chamada. */
-const MAX_REVIEW_BYTES = { pdf: 20_000_000, imagem: 10_000_000 };
+const MAX_REVIEW_BYTES = { pdf: 50_000_000, imagem: 10_000_000 };
 
 export interface DocReview {
   tipo: string;
@@ -147,8 +148,43 @@ export function ehPessoaJuridica(nome: string | null | undefined): boolean {
   return /\b(LTDA|EIRELI|EMPREENDIMENTOS?|INCORPORA(DORA|DORES|COES|CAO)|CONSTRUTORA|CONSTRUCOES|ENGENHARIA|LOTEADORA|LOTEAMENTOS?|URBANISMO|URBANIZADORA|IMOBILIARIA|IMOBILIARIOS?|PARTICIPACOES|HOLDING|COMERCIO|INDUSTRIA|SERVICOS|COOPERATIVA|ASSOCIACAO|FUNDACAO|BANCO|CAIXA ECONOMICA|COMPANHIA|CIA|CONDOMINIO|PREFEITURA|MUNICIPIO|UNIAO FEDERAL|COHAB|CDHU|TERRACAP|INVESTIMENTOS|ADMINISTRADORA|PATRIMONIAL|EMPRESA)\b/.test(t);
 }
 
+/** PDF em base64 dentro do pedido: a API recusa acima de 32 MiB de base64 (~25 MB de arquivo; testado 12/11 com um PDF de 45 MB: "PDF exceeds 32 MB maximum").
+ *  Maior que isso vai pela Files API: sobe uma vez, as duas leituras usam o file_id (com cache) e o arquivo é apagado no fim (e expira em 1 h, se o reinício cortar). */
+const PDF_INLINE_MAX = 24_000_000;
+const ANTHROPIC_FILES_BETA = 'files-api-2025-04-14';
+
+async function subirPdfNaAnthropic(apiKey: string, buffer: Buffer, nome: string): Promise<string | null> {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: 'application/pdf' }), nome);
+  form.append('expires_in_seconds', '3600');
+  const res = await fetch('https://api.anthropic.com/v1/files', {
+    method: 'POST',
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': ANTHROPIC_FILES_BETA },
+    body: form,
+  }).catch(() => null);
+  if (!res || !res.ok) {
+    if (res) console.error('[DocReview] Erro ao subir PDF grande:', res.status, (await res.text()).slice(0, 200));
+    return null;
+  }
+  const j = (await res.json().catch(() => null)) as { id?: string } | null;
+  return j?.id || null;
+}
+
 /** Lê UM arquivo. undefined = não deu pra ler (tipo, tamanho, erro de rede/API) — tenta de novo na próxima conferência. */
 export async function reviewAttachment(accountId: string, att: Att, context: string, opts: { learned?: string; teamAnswer?: { pergunta: string; resposta: string } } = {}): Promise<DocReview | undefined> {
+  const subido: { fileId?: string } = {};
+  try {
+    return await lerAnexo(accountId, att, context, opts, subido);
+  } finally {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (subido.fileId && apiKey) {
+      void fetch(`https://api.anthropic.com/v1/files/${subido.fileId}`, { method: 'DELETE', headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-beta': ANTHROPIC_FILES_BETA } })
+        .catch(() => { /* expira sozinho em 1 h */ });
+    }
+  }
+}
+
+async function lerAnexo(accountId: string, att: Att, context: string, opts: { learned?: string; teamAnswer?: { pergunta: string; resposta: string } }, subido: { fileId?: string }): Promise<DocReview | undefined> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return undefined;
   const isPdf = att.mimeType === 'application/pdf';
@@ -164,13 +200,17 @@ export async function reviewAttachment(accountId: string, att: Att, context: str
   if (buffer.length > (isPdf ? MAX_REVIEW_BYTES.pdf : MAX_REVIEW_BYTES.imagem)) return undefined;
   const mediaType = isPdf ? 'application/pdf' : mimeType;
   if (!isPdf && !['image/jpeg', 'image/png', 'image/gif', 'image/webp'].includes(mediaType)) return undefined;
-  const source = { type: 'base64', media_type: mediaType, data: buffer.toString('base64') };
+  if (isPdf && buffer.length > PDF_INLINE_MAX) {
+    subido.fileId = (await subirPdfNaAnthropic(apiKey, buffer, att.fileName || 'documento.pdf')) || undefined;
+    if (!subido.fileId) return undefined;
+  }
+  const source = subido.fileId ? { type: 'file', file_id: subido.fileId } : { type: 'base64', media_type: mediaType, data: buffer.toString('base64') };
   const system = cachedSystem(SYSTEM, opts.learned ? `REGRAS APRENDIDAS COM A EQUIPE (respostas anteriores a dúvidas de documento — valem pra qualquer cliente):\n${opts.learned}` : undefined);
   /** Uma leitura do arquivo: o JSON do leitor, ou null (erro de rede/API ou resposta sem JSON válido). */
   const ler = async (texto: string): Promise<Record<string, any> | null> => {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', ...(subido.fileId ? { 'anthropic-beta': ANTHROPIC_FILES_BETA } : {}) },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
         max_tokens: 4096, // o raciocínio do modelo conta nesse limite: com 700 matrícula e foto de IPTU saíam cortadas e ficavam sem leitura (Maria Antônia, 15/10)
