@@ -1416,6 +1416,46 @@ export async function buildChangeRefusalText(leadId: string): Promise<string | n
   return `${saudacao}Rodei a nova proposta com ${pediu} e, nessas condições, o banco não aprovou. A aprovação que você já tem continua valendo para seguir:\n\n${recap}${fecho}`;
 }
 
+/** O BANCO NÃO ABRE OUTRA PROPOSTA (Fabio 12/11, Creditas: a cliente com R$ 85,7 mil aprovados pediu R$ 60 mil; o portal não cria outra proposta com a atual
+ *  ativa nem mostra outra opção, e o CRM ficou dois dias dizendo "em processamento" e cobrando documento): "avisar a cliente que o banco liberou apenas nessas
+ *  condições e que podemos reduzir após a vistoria do imóvel". `menor` = o cliente pediu valor MENOR que o aprovado — só aí se fala em reduzir depois da vistoria.
+ *  Sem frase de negativa (a aprovação continua de pé) e sem pedir documento. */
+/** "Sobre o valor de R$ 60.000,00: a Creditas liberou o crédito apenas nas condições que eu te passei, não abriu outra opção agora." Pura. */
+export function fraseNaoAbriu(pediu: string, banco: string): string {
+  const varios = /,/.test(banco);
+  const quem = varios ? 'os bancos' : `${/creditas|caixa/i.test(banco) ? 'a' : 'o'} ${banco}`;
+  return `Sobre ${pediu}: ${quem} ${varios ? 'liberaram' : 'liberou'} o crédito apenas nas condições que eu te passei, não ${varios ? 'abriram' : 'abriu'} outra opção agora.`;
+}
+
+export async function buildChangeNotOpenedText(leadId: string, banco: string, menor: boolean): Promise<string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { name: true } } } });
+  if (!lead) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const pediu = String(cf._changeAsk || cf._changeNaoAbriu?.pedido || 'o que você pediu');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name, lead.contact?.name);
+  const saudacao = (await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+  const reduzir = menor ? ' Mas a gente consegue reduzir o valor depois da vistoria do imóvel.' : '';
+  return `${saudacao}${fraseNaoAbriu(pediu, banco)}${reduzir} Você deseja seguir assim?`;
+}
+
+/** Manda o aviso acima: só 07h–21h e com a janela de 24 h aberta. Quando não dá pra mandar, devolve o texto pronto pra quem chamou deixar com a equipe/IA. */
+export async function sendChangeNotOpenedNow(p: { accountId: string; leadId: string; banco: string; menor: boolean; io?: any }): Promise<{ ok: boolean; error?: string; text?: string }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const text = await buildChangeNotOpenedText(p.leadId, p.banco, p.menor);
+  if (!text) return { ok: false, error: 'Card não encontrado' };
+  if (!inNoticeWindow()) return { ok: false, error: 'fora do horário dos avisos (07h às 21h)', text };
+  if (!(await whatsappWindowOpen(p.leadId))) return { ok: false, error: 'janela de 24 h fechada', text };
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, content: text, io: p.io });
+  if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar', text };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_changeAsk' WHERE id = ${p.leadId}`.catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado: ${p.banco} não abriu outra proposta (${cf._changeAsk || 'outro prazo/valor'}) — liberou só nas condições já passadas${p.menor ? ', e dá pra reduzir o valor depois da vistoria do imóvel' : ''}. Perguntei se deseja seguir assim.` } }).catch(() => {});
+  logActivity({ accountId: p.accountId, userId: null, userName: 'Análise automática', action: 'lead_edited', leadId: p.leadId, leadName: lead.name, summary: 'avisou que o banco não abriu outra proposta e que a aprovação atual continua valendo' });
+  return { ok: true, text };
+}
+
 /** Manda o aviso acima. Só 07h–21h (fora disso agenda, como os outros avisos) e só com a janela de 24 h aberta (não existe template pra isso: sem janela, fica nota pra equipe). */
 export async function sendChangeRefusalNow(p: { accountId: string; leadId: string; userId?: string; io?: any; ignoreWindow?: boolean }): Promise<{ ok: boolean; scheduled?: boolean; at?: string; error?: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });

@@ -216,6 +216,10 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
     if (cf._docsPrazo && agora < Date.parse(cf._docsPrazo)) continue; // ele já disse quando manda
     const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     if (!ultimaIn) continue;
+    // A vez é NOSSA (Fabio 12/11: o CRM cobrou documento de quem esperava a nova proposta de R$ 60 mil): nova proposta pedida pelo cliente ainda rodando, ou o
+    // banco não abriu outra e o cliente ainda não respondeu se segue nas condições atuais — não cobra documento.
+    if (cf._changeRound) continue;
+    if (cf._changeNaoAbriu?.em && ultimaIn.createdAt.getTime() < Date.parse(String(cf._changeNaoAbriu.em))) continue;
     const fecha = ultimaIn.createdAt.getTime() + JANELA_MS;
     if (agora < quandoPerguntarDocs(ultimaIn.createdAt).getTime() || agora > fecha - 15 * 60_000) continue;
     const marca = ultimaIn.createdAt.toISOString();
