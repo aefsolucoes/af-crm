@@ -188,7 +188,11 @@ export function isDescritivoParcela(type: string | null | undefined): boolean {
 }
 
 /** Documento do imóvel (vai pra subpasta IMOVEL; sem nome de pessoa no arquivo). */
+// Documento PESSOAL que pode trazer "averbação"/"escritura"/"registro" no nome (Fabio 13/11, Vicente: "certidão de casamento com averbação de divórcio" foi pra pasta IMOVEL) — nunca é do imóvel.
+const PERSONAL_CERT_RE = /CASAMENTO|NASCIMENTO|OBITO|UNIAO ESTAVEL|DIVORCIO|ESTADO CIVIL|PACTO ANTENUPCIAL|SEPARACAO|INTERDICAO|CURATELA/;
+
 export function isPropertyDocType(type: string): boolean {
+  if (PERSONAL_CERT_RE.test(String(type || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) return false;
   return /IMOVEL|MATRICULA|ONUS|IPTU|ESCRITURA|HABITE|PLANTA|LAUDO|AVALIACAO|VISTORIA|CONDOMINIO|ITBI|COMPRA E VENDA|PROMESSA|VINTENARIA|INTEIRO TEOR|MEMORIAL|AVERBACAO|REGISTRO DE IMOVEIS|CADASTRO IMOBILIARIO/.test(type);
 }
 

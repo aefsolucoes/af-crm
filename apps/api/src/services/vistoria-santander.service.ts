@@ -223,6 +223,14 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     for (const c of emitidas) if (String(c.matricula || '').replace(/\D/g, '') === alvo) idsOk.add(c.driveFileId!);
     cat.onus = files.filter((f) => idsOk.has(f.id) && OK_ARQ.test(f.mimeType)).slice(0, 2);
   }
+  // Identidade/estado civil com leitura de PROBLEMA (foto ilegível, de outra pessoa) não vai pra Letícia (Fabio 13/11, Vicente: a CNH ilegível ia no pacote) — conta como faltando.
+  {
+    const revs = (cf._docReview || {}) as Record<string, any>;
+    const atts = await prisma.messageAttachment.findMany({ where: { leadId, driveFileId: { not: null } }, select: { id: true, driveFileId: true } });
+    const ruins = new Set(atts.filter((a) => revs[a.id]?.resultado === 'PROBLEMA').map((a) => a.driveFileId));
+    cat.ident = cat.ident.filter((f) => !ruins.has(f.id));
+    cat.civil = cat.civil.filter((f) => !ruins.has(f.id));
+  }
   const faltam: string[] = [];
   // IPTU: a CND OU a capa — uma ou outra basta (Fabio 13/11). Sem nenhuma das duas, a CND pode ir depois (a A&F emite).
   if (!cat.cnd.length && !cat.capa.length) faltam.push('CND de IPTU ou capa do IPTU (a A&F emite a CND)');

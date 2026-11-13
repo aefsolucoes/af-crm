@@ -735,6 +735,23 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       if (pessoas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${pessoas.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
       if (empresas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏢 O documento do imóvel está no nome da EMPRESA ${empresas.map((d) => d.dono).join(' e ')} (pessoa jurídica — em geral a loteadora/construtora, venda ainda não registrada, ou a matrícula-mãe do empreendimento). ${sent.success ? 'Perguntei ao cliente se ele tem a matrícula individual já no nome dele; o card espera. Se ele disser que o imóvel ainda não está no nome dele ou que a empresa é dele, a pergunta vai pro balão Dúvidas da IA.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte se ele tem a matrícula individual no nome dele.' : 'IA desligada: pergunte ao cliente se ele tem a matrícula individual no nome dele.'}` } }).catch(() => {});
     }
+    // O dono em aberto NÃO esconde os outros ajustes (Fabio 13/11, Vicente: "era pra o CRM ter solicitado essa CNH dele antes" — a conferência parava na pergunta do dono e a CNH
+    // ilegível, o contracheque claro demais e as folhas faltando nunca foram pedidos). O que ainda não foi dito sai numa mensagem à parte, uma vez cada (mesma marca do caminho normal).
+    if (review.problemas.length && lead.aiAutoReplyActive) {
+      const frP = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+      const cfP = (frP?.customFields || {}) as Record<string, any>;
+      const ditosP = new Set<string>(Array.isArray(cfP._docProblemsTold) ? cfP._docProblemsTold : []);
+      const naoDitos = review.problemas.filter((p) => !ditosP.has(chaveProblema(p)));
+      if (naoDitos.length) {
+        const textoP = buildDocProblemsMessage({ ...review, problemas: naoDitos });
+        const sentP = await sendOutboundWhatsApp({ accountId, leadId, content: textoP, io: io || undefined });
+        if (sentP.success) {
+          const quandoP = Object.fromEntries(naoDitos.map((p) => [chaveProblema(p), new Date().toISOString()]));
+          await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docProblemsTold}', ${JSON.stringify(Array.from(new Set([...ditosP, ...naoDitos.map(chaveProblema)])))}::jsonb, true), '{_docProblemsToldAt}', COALESCE("customFields"->'_docProblemsToldAt', '{}'::jsonb) || ${JSON.stringify(quandoP)}::jsonb, true) WHERE id = ${leadId}`;
+          await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Junto com a pergunta do dono do imóvel, pedi ao cliente os ajustes nos documentos: ${naoDitos.map((p) => `${p.doc} — ${p.texto.join('; ')}`).join(' | ')}.` } }).catch(() => {});
+        }
+      }
+    }
     return true; // card espera o dono do imóvel ser esclarecido (a pergunta ao cliente já foi feita)
   }
   if ((lead.customFields as any)?._donoAskedAt && !(lead.customFields as any)?._donoResolvedAt) {
