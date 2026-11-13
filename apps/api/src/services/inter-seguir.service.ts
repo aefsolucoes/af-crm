@@ -64,7 +64,7 @@ export async function ensureInterSeguir(accountId: string, leadId: string, io: I
     push(accountId, '🤝 Seguir com proposta (Inter)', `${lead.name}: precisa da confirmação do cliente pra seguir com o Inter`, leadId);
   };
   if (!lead.aiAutoReplyActive) { await avisaEquipe('IA do card desligada: confirme com o cliente e clique em "Seguir com proposta" no portal.'); return; }
-  if (!(await contractingAutoOn(accountId))) { await avisaEquipe('Automação da contratação desligada: confirme com o cliente e clique em "Seguir com proposta" no portal.'); return; }
+  if (!(await contractingAutoOn(accountId, leadId))) { await avisaEquipe('Automação da contratação desligada: confirme com o cliente e clique em "Seguir com proposta" no portal.'); return; }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   if (!(await whatsappWindowOpen(leadId))) { await avisaEquipe('A janela de 24 h do WhatsApp está fechada: a pergunta sai assim que o cliente responder qualquer mensagem.'); return; }

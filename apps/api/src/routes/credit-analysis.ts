@@ -296,6 +296,19 @@ router.put('/auto', async (req: AuthRequest, res: Response) => {
   try { res.json(await setAutoSetting(req.user!.accountId, req.body?.enabled === true, req.user!.id)); } catch (err) { fail(res, err, 'Erro ao salvar a análise automática'); }
 });
 
+// Piloto da contratação automática num card só (Fabio 13/11: "nosso primeiro processo do Santander rodando automático") — só admin.
+router.put('/auto/lead/:leadId', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores ligam a contratação automática' });
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const { setPilotoContratacao, pilotoContratacao } = require('../services/contracting-auto.service') as typeof import('../services/contracting-auto.service');
+    const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
+    await setPilotoContratacao(lead.id, req.body?.on === true, u?.name || 'equipe');
+    res.json({ leadId: lead.id, on: await pilotoContratacao(lead.id) });
+  } catch (err) { fail(res, err, 'Erro ao ligar a contratação automática no card'); }
+});
+
 router.get('/extensions', (req: AuthRequest, res: Response) => res.json(extensionStatus(req.user!.accountId)));
 // Varre os e-mails da Creditas "descontinuada por falta de movimentação" já recebidos e marca o stand-by nos cards (Fabio 03/11).
 router.post('/creditas-standby-scan', async (req: AuthRequest, res: Response) => {

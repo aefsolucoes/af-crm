@@ -327,7 +327,7 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
     return;
   }
   // Chave geral desligada (Fabio 22/10): a equipe pergunta à mão; o texto vai pronto na nota. Ligando depois, esse card não é perguntado de novo (já foi registrado como da equipe).
-  if (!(await contractingAutoOn(accountId))) {
+  if (!(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-pergunta', pushTitle: '🏢 Laudo do apartamento', pushBody: `${lead.name}: perguntar dormitórios/banheiros/suítes/vagas`,
       note: `🏢 Apartamento + vistoria do Inter: pergunte ao cliente dormitórios, banheiros, suítes e vagas com uso exclusivo (laudo digital). Passo manual (automação da contratação desligada). Texto pronto:\n“${laudoAskText().replace(/\n+/g, ' ')}”` });
     await marca(leadId, { _laudoAsk: { teamAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' } });
@@ -458,7 +458,7 @@ async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   if (!job) return;
   // Chave geral desligada: a equipe aciona o preenchimento do laudo no botão do card (uma nota avisa que já está pronto) — exceto quando já clicaram no botão
   // e o CRM estava só esperando a resposta do cliente (_laudoPedidoAt, Fabio 03/11).
-  if (!cf._laudoPedidoAt && !(await contractingAutoOn(accountId))) {
+  if (!cf._laudoPedidoAt && !(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-fila', pushTitle: '🏢 Laudo pronto pra preencher', pushBody: `${lead.name}: card completo, falta acionar o laudo`,
       note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e envia ao Inter). Passo manual (automação da contratação desligada).' });
     return;

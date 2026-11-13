@@ -102,7 +102,7 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   const texto = textoAverbar;
   const push = () => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Pedir averbação da quitação', body: `${lead.name}: termo de quitação enviado, alienação ainda na matrícula`, leadId }).catch(() => {}); } catch { /* aviso */ } };
 
-  if (lead.aiAutoReplyActive && (await contractingAutoOn(accountId))) {
+  if (lead.aiAutoReplyActive && (await contractingAutoOn(accountId, leadId))) {
     const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
     if (!inNoticeWindow() || !(await whatsappWindowOpen(leadId))) return; // tenta de novo no próximo minuto
     const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io as any });

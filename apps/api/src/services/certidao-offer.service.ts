@@ -204,7 +204,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
   if (ativo) return false;
   // Chave da contratação (Fabio 23/10: "coloca um interruptor igual da vistoria"): desligada, a IA NÃO oferece a emissão — nota + push com o passo pra equipe (que combina com o cliente e usa o botão do card).
-  if (!(await contractingAutoOn(accountId))) {
+  if (!(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${d.matricula}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: mandou a escritura sem a certidão — oferecer a emissão`,
       note: `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus/matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Se for emitir pelo cartório digital (ONR), combine com o cliente (a certidão é essencial pra solicitar a vistoria; o custo só se ele perguntar) e use o botão "Pedir certidão pelo ONR" na aba Financiamento do card.` });
     return false;
@@ -233,7 +233,7 @@ async function maybeOfferPorEndereco(accountId: string, leadId: string, lead: No
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
   if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) return false; // já perguntado (Jarvis/equipe), esperando
   const end = `${enderecoTexto(e.endereco)} — ${e.cidade}/${e.uf}`;
-  if (!(await contractingAutoOn(accountId))) {
+  if (!(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${chave}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: falta a certidão e não há matrícula — oferecer a emissão pelo endereço`,
       note: `🏛️ Falta a certidão de ônus/matrícula e os documentos não trazem a matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Pra emitir pelo endereço (${end}), combine com o cliente e peça pelo Jarvis ou pelo botão do card.` });
     return false;
@@ -276,7 +276,7 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
     // o CRM pergunta ao cliente qual é; se ele não souber, a equipe confere no mapa do registro de imóveis.
     const e = await enderecoDoImovel(leadId, cf);
     if (!e) return { created: false, why: 'não achei a matrícula nos documentos nem o endereço completo do imóvel (CEP, rua, número, cidade/UF)' };
-    if (!opts.manual && !(await contractingAutoOn(accountId))) {
+    if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) {
       await manualStep({ accountId, leadId, leadName: lead.name, step: 'certidao-pedido-endereco', pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
         note: `🏛️ A emissão da certidão pelo ENDEREÇO do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" do card.` });
       return { created: false, why: 'modo manual da contratação' };
@@ -289,7 +289,7 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
       return { created: false, why: String(err?.message || err) };
     }
   }
-  if (!opts.manual && !(await contractingAutoOn(accountId))) {
+  if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-pedido-${d.matricula}`, pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
       note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
     return { created: false, why: 'modo manual da contratação' };

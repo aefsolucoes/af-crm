@@ -73,7 +73,7 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     // Santander (Credimorar): autorização + declaração de saúde assinadas pelo gov.br + ficha + documentos → Letícia (Fabio 30/10) — vistoria-santander-fh.service
     if (/^santander$/i.test(b)) {
       const sfh = require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service');
-      const auto = await contractingAutoOn(accountId);
+      const auto = await contractingAutoOn(accountId, leadId);
       if (!auto && !(cf._vistoriaSantFh || {}).startedByTeam) {
         const avisou = await manualStep({ accountId, leadId, leadName: lead.name, step: 'vistoria', pushTitle: '🏠 Solicitar a vistoria', pushBody: `${lead.name}: documentação completa, Financiamento pelo Santander`,
           note: '🏠 Documentação completa; o cliente segue pelo Santander (Financiamento). Passo manual (automação da contratação desligada): na vistoria do Santander do card, clique em "Iniciar / avançar": o CRM manda a autorização e a declaração de saúde pra assinar pelo gov.br, pede ao cliente o contato do corretor/vendedor e os dados do vendedor, preenche a ficha e junta os documentos; você envia à Letícia no botão "Enviar à Letícia".' });
@@ -139,7 +139,7 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     return;
   }
   // Chave geral desligada (Fabio 22/10: passos manuais por enquanto): nada sai sozinho — a equipe recebe a nota com o que fazer. Ligando a chave, o card segue daqui automaticamente.
-  if (!(await contractingAutoOn(accountId))) {
+  if (!(await contractingAutoOn(accountId, leadId))) {
     const nome = BANCO[banco] || banco;
     // Santander: se a equipe já começou pelo botão do card, o CRM continua conferindo assinatura/documentos (e segura o envio à Letícia até o clique) e avisa o colaborador se faltar a CND de IPTU.
     if (banco === 'CREDIMORAR') {

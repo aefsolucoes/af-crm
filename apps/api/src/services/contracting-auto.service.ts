@@ -12,13 +12,33 @@ import { prisma } from '../lib/prisma';
 const TTL_MS = 20_000;
 const cache = new Map<string, { at: number; on: boolean }>();
 
-export async function contractingAutoOn(accountId: string): Promise<boolean> {
+/** PILOTO POR CARD (Fabio 13/11, Vicente: "vamos colocar o CRM para fazer esse processo sozinho, será nosso primeiro processo do Santander rodando automático"): o card com
+ *  `_contratacaoAuto` roda os passos da contratação no automático mesmo com a chave geral desligada. Quem chama passa o leadId. */
+export async function contractingAutoOn(accountId: string, leadId?: string): Promise<boolean> {
+  if (leadId && (await pilotoContratacao(leadId))) return true;
   const hit = cache.get(accountId);
   if (hit && Date.now() - hit.at < TTL_MS) return hit.on;
   const s = await prisma.creditAutoSetting.findUnique({ where: { accountId }, select: { contractingAuto: true } });
   const on = !!s?.contractingAuto;
   cache.set(accountId, { at: Date.now(), on });
   return on;
+}
+
+/** O card está no piloto da contratação automática? */
+export async function pilotoContratacao(leadId: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  return !!((l?.customFields || {}) as Record<string, any>)._contratacaoAuto?.on;
+}
+
+/** Liga/desliga o piloto num card (só a chave, por SQL) + nota. */
+export async function setPilotoContratacao(leadId: string, on: boolean, por: string): Promise<void> {
+  if (on) {
+    const v = JSON.stringify({ on: true, por, at: new Date().toISOString() });
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_contratacaoAuto}', ${v}::jsonb, true) WHERE id = ${leadId}`;
+  } else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_contratacaoAuto' WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: on
+    ? `🚀 Contratação AUTOMÁTICA ligada só neste card (piloto, por ${por}): os passos da contratação (vistoria, certidão, laudo, transferência…) saem sozinhos daqui pra frente; quando o CRM ficar em dúvida de como seguir, a equipe recebe push.`
+    : `⏸️ Piloto da contratação automática desligado neste card (por ${por}): os passos voltam a seguir a chave geral.` } }).catch(() => {});
 }
 
 export function resetContractingAutoCache(accountId: string): void {

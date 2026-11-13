@@ -141,7 +141,7 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (semTexto) motivo = 'o texto sugerido trazia resultado de crédito (aprovação/valores) e foi descartado — escreva só o pedido, sem falar de aprovação';
   else if (d.certeza !== 'alta') motivo = 'não tenho certeza se o pedido é pro cliente — confira o e-mail antes de mandar';
-  else if (!(await contractingAutoOn(accountId))) motivo = 'automação da contratação desligada — mande você';
+  else if (!(await contractingAutoOn(accountId, lead.id))) motivo = 'automação da contratação desligada — mande você';
   else if (!lead.aiAutoReplyActive) motivo = 'a IA deste card está desligada — mande você';
   else if (cf._autoPaused) motivo = 'o cliente está com STOP TOTAL — mande você';
   else if (!inNoticeWindow()) motivo = 'fora do horário (07h–21h) — mande você de manhã';

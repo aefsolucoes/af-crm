@@ -111,7 +111,7 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   };
   const { contractingAutoOn } = require('./contracting-auto.service') as typeof import('./contracting-auto.service');
   if (!lead.aiAutoReplyActive && !opts.manual) { await avisaEquipe('IA do card desligada: o CRM não perguntou.'); return false; }
-  if (!opts.manual && !(await contractingAutoOn(accountId))) { await avisaEquipe('Automação da contratação desligada: o CRM não perguntou.'); return false; }
+  if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) { await avisaEquipe('Automação da contratação desligada: o CRM não perguntou.'); return false; }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow() && !opts.manual) return false;
   if (!(await whatsappWindowOpen(leadId))) { await avisaEquipe('A janela de 24 h do WhatsApp está fechada: a pergunta sai assim que o cliente responder.'); return false; }

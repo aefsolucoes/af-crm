@@ -57,7 +57,7 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   };
   if (!lead.aiAutoReplyActive) { await marca(leadId, { teamNotifiedAt: new Date().toISOString(), por: 'equipe (IA do card desligada)' }); await avisaEquipe('O cliente ainda não transferiu o imóvel e o card já passou da vistoria (IA do card desligada, não pedi sozinha).'); return; }
   // Chave geral desligada (Fabio 22/10): a equipe pede à mão.
-  if (!(await contractingAutoOn(accountId))) { await marca(leadId, { teamNotifiedAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' }); await avisaEquipe(`O cliente ainda não transferiu o imóvel e o card já passou da vistoria. Passo manual (automação da contratação desligada). Texto pronto:\n“${transferenciaAskText().replace(/\n+/g, ' ')}”\n`); return; }
+  if (!(await contractingAutoOn(accountId, leadId))) { await marca(leadId, { teamNotifiedAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' }); await avisaEquipe(`O cliente ainda não transferiu o imóvel e o card já passou da vistoria. Passo manual (automação da contratação desligada). Texto pronto:\n“${transferenciaAskText().replace(/\n+/g, ' ')}”\n`); return; }
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return;
   if (!(await whatsappWindowOpen(leadId))) {
