@@ -120,7 +120,14 @@ export function pedeResposta(conteudo: unknown): boolean {
 /** Mensagem automática do próprio loop (lembrete com a janela aberta sai como texto comum; pergunta antes da janela fechar): não é resposta ao cliente. Pura. */
 export function ehTextoDoLoop(conteudo: unknown): boolean {
   const t = semAc(conteudo).replace(/\s+/g, ' ').trim();
-  return /sua pre-analise de credito foi aprovada e o processo esta aguardando a sua documentacao|seu processo de credito segue aguardando os documentos|para dar andamento ao seu credito aprovado precisamos receber a sua documentacao|quando voce consegue me encaminhar (o restante da documentacao|a documentacao que te pedi)/.test(t);
+  // A pergunta de 13/11 só pelo texto inteiro do CRM: a IA também pergunta "até quando você consegue me mandar…" respondendo o cliente, e isso é resposta de verdade.
+  return /sua pre-analise de credito foi aprovada e o processo esta aguardando a sua documentacao|seu processo de credito segue aguardando os documentos|para dar andamento ao seu credito aprovado precisamos receber a sua documentacao|quando voce consegue me encaminhar (o restante da documentacao|a documentacao que te pedi)|recebi parte da documentacao, obrigad[ao]!.{0,8}ate quando voce consegue me mandar o restante/.test(t);
+}
+
+/** A pergunta da janela (abaixo, processJanelaDocs): "Até quando você consegue me mandar o restante?" (13/11) ou "Quando você consegue me encaminhar…" (08/11). Pura. */
+export function ehPerguntaDoPrazo(conteudo: unknown): boolean {
+  const t = semAc(conteudo).replace(/\s+/g, ' ').trim();
+  return /ate quando voce consegue me mandar o restante|quando voce consegue me encaminhar (o restante da documentacao|a documentacao que te pedi)/.test(t);
 }
 
 /** Última mensagem do cliente no WhatsApp que pede resposta e ainda não teve nenhuma no WhatsApp (da equipe ou da IA). Não contam como resposta: template, e-mail
@@ -295,18 +302,50 @@ async function enviarPasso(accountId: string, leadId: string, leadName: string, 
 }
 
 /* Antes da janela de 24 h fechar (Fabio 08/11, Evandro: "antes da janela fechar, encaminhar uma msg perguntando quando ele consegue encaminhar a documentação solicitada").
- * Card em Aguardando Documentação com a IA ligada e a janela ainda aberta: ~2 h antes de fechar (se cair fora de 07h–21h, às 20h30 da véspera) o CRM pergunta quando o
- * cliente consegue mandar. A resposta reabre a janela, e o prazo que ele der segue pela cobrança combinada (docs-checker.maybeScheduleDocsFollowUp) e pelo loop (`_docsPrazo`).
- * Uma vez por janela: `_janelaDocs` guarda a última mensagem do cliente que já teve a pergunta. */
+ * Card em Aguardando Documentação com a janela ainda aberta (contada da última mensagem do cliente): ~2 h antes de fechar, no horário de atendimento, o CRM pergunta.
+ * Fabio 13/11: "se o cliente começar a encaminhar a documentação, a gente analisar, e até o final das 24 h ele não tiver encaminhado o restante, o CRM deve encaminhar uma
+ * mensagem sutil perguntando até quando poderá encaminhar o restante." → documento já LIDO pela conferência e card ainda esperando o resto: "Fulano, recebi parte da
+ * documentação, obrigada! 😊 Até quando você consegue me mandar o restante?" — sem lista (a conferência já listou). Conferência agendada/rodando: espera ela. Dúvida de
+ * documento com a equipe (a conferência não cobra nada enquanto isso), documentação do comprador fechada ou contratação segurada pelo habite-se: não pergunta. IA desligada ou
+ * cliente esperando resposta nossa: não pergunta — nota + push pra equipe. STOP TOTAL: nada. A resposta ("até sexta", "amanhã") vira `_docsPrazo`
+ * (docs-checker.maybeScheduleDocsFollowUp) e o loop de lembretes espera a data. Uma vez por janela: `_janelaDocs` guarda a última mensagem do cliente que já teve a pergunta. */
 const JANELA_MS = 24 * 3_600_000;
+const ULTIMO_HORARIO = 20 * 60 + 30; // 20h30 de Brasília: meia hora de folga pro poller (07h–21h) pegar a pergunta
 
-/** Quando perguntar, pela última mensagem do cliente: 2 h antes de a janela fechar; fora de 07h–21h de Brasília, às 20h30 de antes. Pura. */
+/** Quando perguntar, pela última mensagem do cliente: 2 h antes de a janela fechar; caindo depois das 20h30 de Brasília, às 20h30 do mesmo dia; antes das 07h, às 20h30 da véspera. Pura. */
 export function quandoPerguntarDocs(ultimaDoCliente: Date): Date {
   const alvo = ultimaDoCliente.getTime() + JANELA_MS - 2 * 3_600_000;
   const l = new Date(alvo + BRT);
-  const h = l.getUTCHours();
-  if (h >= 7 && h < 21) return new Date(alvo);
-  return new Date(Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() - (h < 7 ? 1 : 0), 20, 30) - BRT);
+  const min = l.getUTCHours() * 60 + l.getUTCMinutes();
+  if (min >= 7 * 60 && min <= ULTIMO_HORARIO) return new Date(alvo);
+  return new Date(Date.UTC(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate() - (min < 7 * 60 ? 1 : 0), 20, 30) - BRT);
+}
+
+/** A pergunta pode sair agora? Entre 07h e 21h, a partir de `quandoPerguntarDocs` e até 15 min antes de a janela fechar. Pura. */
+export function podePerguntarDocs(ultimaDoCliente: Date, agora: number): boolean {
+  const h = new Date(agora + BRT).getUTCHours();
+  if (h < 7 || h >= 21) return false;
+  return agora >= quandoPerguntarDocs(ultimaDoCliente).getTime() && agora <= ultimaDoCliente.getTime() + JANELA_MS - 15 * 60_000;
+}
+
+/** Documentação do cliente pra pergunta da janela (Fabio 13/11). Pura.
+ *  NADA = nenhum documento lido (pergunta de 08/11, só com a IA ligada); CONFERINDO = conferência agendada ou rodando (espera ela); PARCIAL = a conferência já leu
+ *  documento e o card segue esperando o resto (pergunta de 13/11); EQUIPE = dúvida de documento aberta no balão; COMPLETO = documentação do comprador fechada ou
+ *  contratação segurada pelo habite-se. `lidos` = arquivos do cliente que a leitura classificou como documento (`_docInfo` ≠ IGNORAR). */
+export type SituacaoDocs = 'NADA' | 'CONFERINDO' | 'PARCIAL' | 'EQUIPE' | 'COMPLETO';
+export function situacaoDocs(p: { cf: Record<string, any>; lidos: number; compradorCompleto: boolean; duvidaComEquipe: boolean }): SituacaoDocs {
+  const { cf } = p;
+  if (cf._docsCheckDue || cf._docsConferindo || cf._docsConferindoBotao) return 'CONFERINDO';
+  if (p.compradorCompleto || cf._habiteSeSegurado) return 'COMPLETO';
+  if (!p.lidos) return 'NADA';
+  return p.duvidaComEquipe ? 'EQUIPE' : 'PARCIAL';
+}
+
+/** Texto da pergunta. Pura. PARCIAL (13/11): sutil, sem lista. NADA (08/11): o texto de antes. */
+export function textoJanelaDocs(sit: 'PARCIAL' | 'NADA', nome: string | null, o: { mandouArquivo?: boolean; conversaAtiva?: boolean } = {}): string {
+  if (sit === 'PARCIAL') return `${nome ? `${nome}, r` : 'R'}ecebi parte da documentação, obrigada! 😊 Até quando você consegue me mandar o restante?`;
+  const oi = o.conversaAtiva ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
+  return `${oi}Quando você consegue me encaminhar ${o.mandouArquivo ? 'o restante da documentação' : 'a documentação que te pedi'}? Assim a gente já dá andamento no seu crédito. 😊`;
 }
 
 /** Poller (1 min, 07h–21h). */
@@ -315,18 +354,21 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
   const agora = Date.now();
   const leads = await prisma.lead.findMany({
     where: {
-      accountId, status: 'OPEN', archived: false, isGroup: false, aiAutoReplyActive: true,
+      accountId, status: 'OPEN', archived: false, isGroup: false,
       stage: { name: { contains: 'aguardando document', mode: 'insensitive' } },
       NOT: { tags: { has: 'Pediu pra parar lembretes' } },
       // a pergunta cai nas últimas ~13 h da janela: só quem escreveu entre 11 h e 24 h atrás
       messages: { some: { direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(agora - JANELA_MS), lt: new Date(agora - 11 * 3_600_000) } } },
     },
-    select: { id: true, name: true, stageEnteredAt: true, customFields: true },
+    select: { id: true, name: true, aiAutoReplyActive: true, stageEnteredAt: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } },
   });
   const { isWaitingApprovalReply, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const { isStickerAttachment, isScreenshotAttachment } = require('./google.service') as typeof import('./google.service');
+  const { soDocsDoComprador, naRotaCaixa } = require('./docs-checker.service') as typeof import('./docs-checker.service');
   for (const l of leads) {
+    try {
     const cf = (l.customFields || {}) as Record<string, any>;
-    if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater || cf._imovelSemGarantia) continue; // _docsLater: já tem a cobrança combinada com ele
+    if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater || cf._imovelSemGarantia) continue; // STOP TOTAL: nada · _docsLater: já tem a cobrança combinada com ele
     if (cf._docsPrazo && agora < Date.parse(cf._docsPrazo)) continue; // ele já disse quando manda
     const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     if (!ultimaIn) continue;
@@ -334,26 +376,48 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
     // banco não abriu outra e o cliente ainda não respondeu se segue nas condições atuais — não cobra documento.
     if (cf._changeRound) continue;
     if (cf._changeNaoAbriu?.em && ultimaIn.createdAt.getTime() < Date.parse(String(cf._changeNaoAbriu.em))) continue;
-    const fecha = ultimaIn.createdAt.getTime() + JANELA_MS;
-    if (agora < quandoPerguntarDocs(ultimaIn.createdAt).getTime() || agora > fecha - 15 * 60_000) continue;
+    if (!podePerguntarDocs(ultimaIn.createdAt, agora)) continue;
     const marca = ultimaIn.createdAt.toISOString();
     if (cf._janelaDocs === marca) continue;
     // Mensagem nossa na última hora: a conversa está andando — espera.
     if (await prisma.message.findFirst({ where: { leadId: l.id, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(agora - 60 * 60_000) } }, select: { id: true } })) continue;
     if (await isWaitingApprovalReply(l.id, { comFalha: true })) continue;
+    // O que já chegou (Fabio 13/11): só arquivo que pode ser documento (sem figurinha, áudio, vídeo e captura de tela) e que a leitura classificou.
+    const anexos = (await prisma.messageAttachment.findMany({ where: { leadId: l.id, message: { direction: 'INBOUND' } }, select: { id: true, fileName: true, mimeType: true, createdAt: true } }))
+      .filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a) && !isScreenshotAttachment(a));
+    const info = (cf._docInfo || {}) as Record<string, unknown>;
+    const lidos = anexos.filter((a) => info[a.id] && info[a.id] !== 'IGNORAR').length;
+    const compradorCompleto = soDocsDoComprador(cf, l.pipeline?.department?.name, l.stage.name) && !!(naRotaCaixa(cf, l.stage.name) ? cf._caixaDocsAt : cf._fhDocsCompradorAt);
+    const duvidaComEquipe = lidos > 0 && (await prisma.aiTeamQuestion.count({ where: { leadId: l.id, kind: 'DOC_QUESTION', status: 'OPEN' } })) > 0;
+    const sit = situacaoDocs({ cf, lidos, compradorCompleto, duvidaComEquipe });
+    if (sit === 'CONFERINDO' || sit === 'EQUIPE' || sit === 'COMPLETO') continue; // CONFERINDO: tenta de novo no minuto seguinte
+    if (sit === 'NADA' && !l.aiAutoReplyActive) continue; // pergunta de 08/11: só com a IA ligada
+    // Cliente esperando resposta nossa (pergunta, dúvida, pedido de ajuda): cobrar o restante por cima da pergunta dele não — a equipe é avisada (abaixo).
+    const esperando = await clienteEsperandoResposta(l.id);
+    if (sit === 'NADA' && esperando) continue;
     // Pega a vez (uma por janela, mesmo com dois servidores no ar durante um deploy).
     const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_janelaDocs}', to_jsonb(${marca}::text), true) WHERE id = ${l.id} AND COALESCE("customFields"->>'_janelaDocs', '') <> ${marca}`;
     if (!pegou) continue;
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
     const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name);
-    const mandouAlgo = await prisma.messageAttachment.count({ where: { leadId: l.id, message: { direction: 'INBOUND' }, createdAt: { gt: l.stageEnteredAt || new Date(0) } } });
-    const oi = (await conversationActive(l.id, 2)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
-    const texto = `${oi}Quando você consegue me encaminhar ${mandouAlgo ? 'o restante da documentação' : 'a documentação que te pedi'}? Assim a gente já dá andamento no seu crédito. 😊`;
+    const fecha = ultimaIn.createdAt.getTime() + JANELA_MS;
+    const hora = new Date(fecha).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    if (sit === 'PARCIAL' && (!l.aiAutoReplyActive || esperando)) {
+      // A equipe é quem fala com o cliente agora: o CRM não manda — anota e avisa, com o texto pronto.
+      const trecho = esperando ? esperando.content.replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+      const porque = !l.aiAutoReplyActive ? 'a IA está desligada neste card' : `ele está esperando resposta nossa ("${trecho}")`;
+      await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⏳ A janela de 24 h do WhatsApp fecha ${hora}. O cliente mandou parte da documentação e ainda não mandou o restante, mas ${porque} — NÃO perguntei. Sugestão: "${textoJanelaDocs('PARCIAL', nome)}"` } }).catch(() => {});
+      avisa(accountId, `⏳ ${l.name}: janela fecha ${hora}`, !l.aiAutoReplyActive ? 'Mandou parte da documentação — perguntar até quando manda o restante (IA desligada)' : `Esperando resposta nossa: "${trecho}"`, l.id);
+      continue;
+    }
+    const mandouArquivo = anexos.some((a) => a.createdAt > (l.stageEnteredAt || new Date(0)));
+    const texto = sit === 'PARCIAL' ? textoJanelaDocs('PARCIAL', nome) : textoJanelaDocs('NADA', nome, { mandouArquivo, conversaAtiva: await conversationActive(l.id, 2) });
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const r = await sendOutboundWhatsApp({ accountId, leadId: l.id, content: texto, io: io || undefined });
-    const hora = new Date(fecha).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-    await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.success ? `⏳ A janela de 24 h do WhatsApp fecha ${hora}: perguntei ao cliente quando ele consegue mandar a documentação.` : `⏳ A janela de 24 h do WhatsApp fecha ${hora} e a pergunta da documentação não saiu (${(r as any).error || 'erro'}).` } }).catch(() => {});
-    if (r.success) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId: l.id, leadName: l.name, summary: 'perguntou quando o cliente manda a documentação (janela de 24 h fechando)' });
+    const oQue = sit === 'PARCIAL' ? 'até quando ele consegue mandar o restante da documentação (já mandou parte)' : 'quando ele consegue mandar a documentação';
+    await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: r.success ? `⏳ A janela de 24 h do WhatsApp fecha ${hora}: perguntei ao cliente ${oQue}.` : `⏳ A janela de 24 h do WhatsApp fecha ${hora} e a pergunta da documentação não saiu (${(r as any).error || 'erro'}).` } }).catch(() => {});
+    if (r.success) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId: l.id, leadName: l.name, summary: `perguntou ${oQue} (janela de 24 h fechando)` });
     else console.error(`[Janela da documentação] ${l.name}: não saiu — ${(r as any).error}`);
+    } catch (e: any) { console.error(`[Janela da documentação] ${l.name} (${l.id}):`, e?.message || e); } // um card com erro não para os outros
   }
 }

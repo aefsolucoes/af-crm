@@ -340,7 +340,18 @@ export async function maybeRecheckOwnerAnswer(accountId: string, leadId: string,
 /** Hook do WhatsApp: texto do cliente num card em Aguardando Documentação. */
 export async function maybeScheduleDocsFollowUp(accountId: string, leadId: string, text: string): Promise<void> {
   const t = (text || '').trim();
-  if (!t || t.length > 220 || NEGATIVE_RX.test(t) || !TIME_RX.test(t) || !SEND_RX.test(t)) return;
+  if (!t || t.length > 220 || NEGATIVE_RX.test(t)) return;
+  // Resposta à pergunta da janela ("Até quando você consegue me mandar o restante?", docs-loop.processJanelaDocs — Fabio 13/11): "até sexta", "amanhã", "hoje" já é o prazo,
+  // sem precisar de "mando"/"envio". Fora disso, a regra de sempre: horário/dia + verbo de mandar.
+  const prazoCurto = TIME_RX.test(t) || /\bhoje\b|\b(essa|esta) semana\b/i.test(t);
+  if (!prazoCurto) return;
+  if (!TIME_RX.test(t) || !SEND_RX.test(t)) {
+    // A última mensagem nossa ANTES da dele (a resposta da IA a esta mesma mensagem pode já ter saído) tem que ser a pergunta, de no máximo 26 h atrás.
+    const dele = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    const nossa = dele && await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, status: { not: 'FAILED' }, createdAt: { lt: dele.createdAt } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
+    const { ehPerguntaDoPrazo } = require('./docs-loop.service') as typeof import('./docs-loop.service');
+    if (!dele || !nossa || dele.createdAt.getTime() - nossa.createdAt.getTime() > 26 * 3_600_000 || !ehPerguntaDoPrazo(nossa.content)) return;
+  }
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId, status: 'OPEN' }, select: { customFields: true, stage: { select: { name: true } } } });
   if (!lead || !norm(lead.stage.name).includes('aguardando documentacao')) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -359,8 +370,10 @@ export async function maybeScheduleDocsFollowUp(accountId: string, leadId: strin
     due = next8 <= windowEnd - 90 * 60_000 ? next8 : Math.max(now.getTime() + 30 * 60_000, Date.UTC(dl.getUTCFullYear(), dl.getUTCMonth(), dl.getUTCDate() + (hh >= 21 ? 0 : -1), 20, 30, 0) - BRT);
   }
   const beyond = promised.getTime() > due + 60 * 60_000; // prometeu algo além do que a janela permite
-  // _docsPrazo: a data que o cliente deu — o loop de lembretes (docs-loop.service) espera até ela.
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _docsLater: { at: new Date(due).toISOString(), said: t.slice(0, 120), setAt: now.toISOString(), beyond }, _docsPrazo: promised.toISOString() } as any } });
+  // _docsPrazo: a data que o cliente deu — o loop de lembretes (docs-loop.service) espera até ela. Só as duas chaves (jsonb_set): regravar o card inteiro apaga o que outro
+  // processo gravou no meio (customfields-write-race).
+  const later = JSON.stringify({ at: new Date(due).toISOString(), said: t.slice(0, 120), setAt: now.toISOString(), beyond });
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsLater}', ${later}::jsonb, true), '{_docsPrazo}', to_jsonb(${promised.toISOString()}::text), true) WHERE id = ${leadId}`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⏰ Cliente avisou que manda os documentos depois ("${t.slice(0, 120)}"). O card fica em Aguardando Documentação; a IA cobra ${new Date(due).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })} — antes da janela de 24 h do WhatsApp fechar.` } }).catch(() => {});
 }
 
