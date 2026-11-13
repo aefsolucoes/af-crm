@@ -1096,6 +1096,11 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     if (rodada && RX_CAD_DIV.test(`${rodada.detail || ''} ${rodada.conditions || ''}`)) {
       return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: 'Cadastro divergente: parei de conferir a lista do banco até o cadastro ser corrigido (o CRM pergunta ao cliente e refaz a análise quando ele corrigir).' } });
     }
+    // Santander com a proposta parada em "Simulação" (o Enviar não passou nem na nova tentativa da extensão): ela NÃO está em análise no banco — conferir de 10 em 10 min só repete a
+    // mesma leitura (Fabio 13/11, Bartolomeu: 18 conferências de uma proposta nunca enviada). Para aqui; o reenvio fica com a retomada de falha técnica (credit-auto) e a equipe.
+    if (row.bank === 'CREDIMORAR' && row.status === 'CHECK' && /N[ÃA]O foi enviada ao Santander|N[ÃA]O ENVIADA/i.test(row.detail || '')) {
+      return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 1500) } });
+    }
     const creditas = row.bank === 'CREDITAS' || row.bank === FH_BANK; // Financiamento também leva horas: limite pelo tempo (60 h), como o Creditas
     const maxTries = CHECK_MAX_TRIES + (creditas ? CREDITAS_EXTRA_TRIES : 0);
     const velho = creditas && Date.now() - row.createdAt.getTime() > CREDITAS_MAX_AGE_MS; // Creditas: o limite é o tempo (60 h), não a contagem

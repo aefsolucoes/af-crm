@@ -758,6 +758,10 @@ const ETAPAS_RETRY_DEPOIS_DA_PRE = ['Aguardando Documenta', 'Documentação Rece
 const RETRY_FORA_DA_PRE_MS = 72 * 3_600_000;
 /** Rodada que caiu no meio (não é o banco recusando): janela/aba do banco fechada, página recarregada, extensão reiniciada. */
 export const RODADA_CAIU = /Frame with ID \d+ was removed|p[aá]gina recarregou ou a janela fechou|No tab with id|parou no meio|foi recarregada ou reiniciada no meio|janela do banco fechada|a execu[cç][aã]o terminou sem registrar resultado/i;
+/** Santander (Credimorar): simulou, mas o "Enviar" não passou (erro do banco, tela parada) — a proposta ficou em "Simulação" no portal. Fabio 13/11 (Bartolomeu): ficou 6 h
+ *  esperando alguém clicar em Enviar e depois 18 conferências lendo "Simulação" como se estivesse em análise. É falha TÉCNICA: refaz como CONFERÊNCIA da mesma proposta
+ *  (a extensão abre e clica em Enviar de novo), nunca proposta nova. */
+export const NAO_ENVIOU_SANTANDER = /n[aã]o consegui enviar a proposta|N[ÃA]O foi enviada ao Santander|N[ÃA]O ENVIADA/i;
 
 /** 5) Falha TÉCNICA (extensão travou, tela não carregou, dado faltando) não deixa o cliente parado na Pré-Análise: refaz sozinho o banco que falhou, até 3 vezes, de 15 em
  *  15 min (Fabio 14/10: "como faz pros clientes que falhou rodar sozinha depois?"). Falha OBJETIVA (regra do banco/imóvel) e "rodada anulada" não entram — essas são decisão. */
@@ -793,6 +797,7 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
     const retries: Record<string, { n: number; at: string; gaveUp?: boolean }> = { ...(cf._autoRetries || {}) };
     const redo: string[] = [];
     const redoCheck = new Set<string>(); // bancos cuja ÚLTIMA linha era uma CONFERÊNCIA que falhou: refaz a conferência, NUNCA cria proposta nova
+    const emSimulacao = new Set<string>(); // Santander com a proposta parada em "Simulação" (o Enviar não passou): a conferência abre e clica em Enviar de novo
     const gaveUp: string[] = [];
     for (const b of BANCOS) {
       const r = rows.filter((x) => x.bank === b && semRuidoDeSimulacao(x) && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
@@ -800,7 +805,9 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
       if (!naPre && Date.now() - r.updatedAt.getTime() > RETRY_FORA_DA_PRE_MS) continue; // fora da Pré-Análise: só a falha recente
       // Rodada que CAIU no meio (janela/aba do banco fechou, página recarregou, extensão reiniciou) termina como "conferir" (RUN + CHECK), não como FAILED — antes ninguém refazia (jorge 11/11).
       const caiu = r.kind === 'RUN' && r.status === 'CHECK' && !r.proposalNumber && RODADA_CAIU.test(r.detail || '');
-      const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE' || caiu;
+      // (campo faltando na proposta — "Enviar" desabilitado, aba do 2º proponente vazia — não se resolve clicando de novo: fica pra equipe, como antes)
+      const naoEnviou = b === 'CREDIMORAR' && r.kind === 'RUN' && r.status === 'CHECK' && NAO_ENVIOU_SANTANDER.test(r.detail || '') && !/desabilitad|campos pendentes|vazios ou recusados|n[aã]o preenchidos/i.test(r.detail || '');
+      const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE' || caiu || naoEnviou;
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
       // O portal recusou um DADO do cadastro (telefone/e-mail inválido…): refazer sem corrigir o dado dá o mesmo erro. Espera alguém corrigir o card (que gera pedido novo).
       if (DADO_PARA_CORRIGIR.test(r.detail || '')) continue;
@@ -810,12 +817,14 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
       const semLogin = /n[aã]o est[aá] logada/i.test(r.detail || '');
       if (semLogin && loginNeededFor(accountId, b)) continue;
       const semGasto = semLogin || /foi recarregada ou reiniciada no meio/i.test(r.detail || '');
-      if (st.gaveUp || Date.now() - r.updatedAt.getTime() < RETRY_GAP_MS) continue;
+      // Intervalo contado da última linha OU da última tentativa: a conferência que refaz não vira "a última linha" quando termina em "conferir" — sem isso as 3 tentativas saíam em 3 min.
+      if (st.gaveUp || Date.now() - Math.max(r.updatedAt.getTime(), Date.parse(st.at) || 0) < RETRY_GAP_MS) continue;
       if (st.n >= RETRY_MAX && !semGasto) { retries[b] = { ...st, gaveUp: true }; gaveUp.push(b); continue; }
       retries[b] = { n: semGasto ? st.n : st.n + 1, at: new Date().toISOString() };
       redo.push(b);
       // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
-      if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
+      if (naoEnviou) { redoCheck.add(b); emSimulacao.add(b); }
+      else if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
       // Caiu DEPOIS de enviar/criar a proposta (Creditas cria no 1º passo; Santander só manda ao banco no "Enviar"): confere a lista em vez de criar outra proposta.
       else if (caiu && (b === 'CREDITAS' || /enviar|enviad|proposta criada/i.test(r.detail || ''))) redoCheck.add(b);
     }
@@ -825,7 +834,7 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
       if (runBanks.length) await createRequests(prisma, { accountId, leadIds: [l.id], banks: runBanks, dryRun: false, force: true });
       if (redoCheck.size) await createRequests(prisma, { accountId, leadIds: [l.id], banks: [...redoCheck], dryRun: false, kind: 'CHECK' });
       await saveCf(l.id, { _autoRetries: retries });
-      await addNote(l.id, `🤖 Falha técnica na análise (${redo.map((b) => label[b]).join(', ')}): refazendo sozinha — tentativa ${Math.max(...redo.map((b) => retries[b].n))} de ${RETRY_MAX}.`);
+      await addNote(l.id, `🤖 Falha técnica na análise (${redo.map((b) => label[b]).join(', ')}): ${emSimulacao.size ? 'a proposta do Santander ficou em "Simulação" (o Enviar não passou) — vou abrir e clicar em Enviar de novo' : 'refazendo sozinha'} — tentativa ${Math.max(...redo.map((b) => retries[b].n))} de ${RETRY_MAX}.`);
     } else if (gaveUp.length) {
       await saveCf(l.id, { _autoRetries: retries });
       await addNote(l.id, `⚠️ ${gaveUp.map((b) => label[b]).join(', ')} falhou ${RETRY_MAX} vezes seguidas por problema técnico: precisa de olhada (botão "Rodar" ou "Ajustar").`);
