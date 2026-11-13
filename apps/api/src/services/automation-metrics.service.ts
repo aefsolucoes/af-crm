@@ -35,7 +35,7 @@ async function kpisDoPeriodo(accountId: string, de: Date, ate: Date) {
                    AND jsonb_exists(COALESCE(ll."customFields", '{}'::jsonb), '_autoStartedAt') GROUP BY 1),
          av AS (SELECT apr."leadId", apr.t AS aprovou, LEAST(
                   (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t),
-                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" = 'credito_aprovado_condicoes' OR m."content" LIKE '%Crédito aprovado!%'))) AS avisou FROM apr)
+                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" IN ('credito_aprovado_condicoes', 'aprovacao_processo_credito', 'aprovacao_processo_habitacional') OR m."content" LIKE '%Crédito aprovado!%'))) AS avisou FROM apr)
     SELECT count(*)::int AS aprovadas, count(*) FILTER (WHERE avisou IS NOT NULL AND extract(epoch FROM (avisou - aprovou)) <= 900)::int AS ate15 FROM av`))[0] || {};
   const wa = (await prisma.$queryRaw<any[]>(Prisma.sql`
     SELECT count(*)::int AS total, count(*) FILTER (WHERE m."status" = 'FAILED')::int AS falhas FROM "Message" m JOIN "Lead" l ON l."id" = m."leadId"
@@ -121,7 +121,7 @@ export async function automationMetrics(accountId: string, days: number) {
          av AS (SELECT apr."leadId", apr.t AS aprovou, LEAST(
                   (SELECT min(n."createdAt") FROM "Note" n WHERE n."leadId" = apr."leadId" AND n."content" LIKE '📣 Cliente avisado das opções%' AND n."createdAt" >= apr.t),
                   -- aviso feito à mão (a equipe mandou a aprovação ou o template "ver condições") também conta como avisado
-                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" = 'credito_aprovado_condicoes' OR m."content" LIKE '%Crédito aprovado!%'))
+                  (SELECT min(m."createdAt") FROM "Message" m WHERE m."leadId" = apr."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= apr.t AND (m."templateName" IN ('credito_aprovado_condicoes', 'aprovacao_processo_credito', 'aprovacao_processo_habitacional') OR m."content" LIKE '%Crédito aprovado!%'))
                 ) AS avisou FROM apr)
     SELECT count(*)::int AS aprovadas, count(avisou)::int AS avisadas,
       count(*) FILTER (WHERE avisou IS NOT NULL AND extract(epoch FROM (avisou - aprovou)) <= 900)::int AS ate15,
@@ -137,7 +137,7 @@ export async function automationMetrics(accountId: string, days: number) {
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_autoPaused') -- cliente pausado à mão (Stop total): não é falha da automação
       AND NOT EXISTS (SELECT 1 FROM "Stage" st WHERE st."id" = l."stageId" AND st."name" ILIKE 'Venda Futura%')
       AND NOT EXISTS (SELECT 1 FROM "Note" n WHERE n."leadId" = a."leadId" AND n."content" LIKE '📣 Cliente avisado%' AND n."createdAt" >= a.t)
-      AND NOT EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = a."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= a.t AND (m."content" LIKE '%Crédito aprovado%' OR m."templateName" = 'credito_aprovado_condicoes'))
+      AND NOT EXISTS (SELECT 1 FROM "Message" m WHERE m."leadId" = a."leadId" AND m."direction" = 'OUTBOUND' AND m."createdAt" >= a.t AND (m."content" LIKE '%Crédito aprovado%' OR m."templateName" IN ('credito_aprovado_condicoes', 'aprovacao_processo_credito', 'aprovacao_processo_habitacional')))
     ORDER BY a.t ASC LIMIT 15`);
 
   // ── 3. Avisos ao cliente ──────────────────────────────────────────────

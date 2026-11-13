@@ -43,36 +43,48 @@ export function nextNoticeStart(d = new Date()): Date {
 
 
 export const APPROVAL_TEMPLATE = 'credito_aprovado_condicoes';
-/** Lembrete pra quem recebeu o aviso de aprovação e não respondeu (Fabio 13/10): até 3 vezes —
- *  1º 2 dias depois do aviso, os outros a cada 3 dias; 3 dias depois do 3º sem resposta o card
- *  vai pra "Lead Sem Retorno". Texto aprovado pelo Fabio, enviado à Meta como MARKETING. */
+/** Lembrete antigo (Marketing) — só enquanto o de Utilidade da área não estiver aprovado na Meta. */
 export const APPROVAL_REMINDER_TEMPLATE = 'credito_aprovado_lembrete';
-const FIRST_REMINDER_AFTER_DAYS = 2;
-const NEXT_REMINDER_EVERY_DAYS = 3;
-const MAX_REMINDERS = 3;
-const MOVE_AFTER_LAST_DAYS = 3;
-const RETRY_AFTER_FAIL_MS = 6 * 60 * 60 * 1000;
-const MAX_FAILED_REMINDERS = 3;
+/** Aviso de aprovação de UTILIDADE, um por área (Fabio 13/11, Adriana: o de Marketing foi bloqueado pela Meta — 131049 —, o card foi pra Aguardando
+ *  Documentação, ela recebeu só lembrete de documento e nunca soube as condições). Botões [Ver as condições] [Não tenho interesse]. */
+export const APPROVAL_UTILITY_TEMPLATES = { he: 'aprovacao_processo_credito', fh: 'aprovacao_processo_habitacional' } as const;
+/** Todo template que avisa a aprovação: depois de qualquer um deles o cliente "deve a resposta". */
+export const APPROVAL_TEMPLATE_NAMES: string[] = [APPROVAL_TEMPLATE, APPROVAL_REMINDER_TEMPLATE, APPROVAL_UTILITY_TEMPLATES.he, APPROVAL_UTILITY_TEMPLATES.fh];
+/** Reenvio do aviso (Fabio 13/11): "encaminha ao cliente dia sim e dia não até ele responder" — sem limite de vezes; para quando ele responde ou o card sai de Aguardando Documentação. */
+const RESEND_EVERY_DAYS = 2;
+const MAX_FALHAS_SEGUIDAS = 3;
 const DAY_MS = 86_400_000;
-const YES_RE = /^sim,?\s*quero saber\b/i;
+const YES_RE = /^(sim,?\s*quero saber|ver as condi[cç][oõ]es)\b/i;
 const RECENT_DAYS = 3;
 
 let running = false;
 let runningReminders = false;
-const tplCache = new Map<string, { at: number; approved: boolean; body: string | null }>();
+const tplCache = new Map<string, { at: number; approved: boolean; body: string | null; category: string | null }>();
 
 /** Status/texto de um template na Meta, com cache de 15 min. */
-async function metaTemplate(accountId: string, name: string): Promise<{ approved: boolean; body: string | null }> {
+async function metaTemplate(accountId: string, name: string): Promise<{ approved: boolean; body: string | null; category: string | null }> {
   const hit = tplCache.get(name);
   if (hit && Date.now() - hit.at < 15 * 60 * 1000) return hit;
   const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
   const t: any = (await listMetaTemplates(accountId).catch(() => [])).find((x: any) => x.name === name);
-  const info = { at: Date.now(), approved: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null };
+  const info = { at: Date.now(), approved: t?.status === 'APPROVED', body: t?.components?.find((c: any) => c.type === 'BODY')?.text || null, category: t?.category || null };
   tplCache.set(name, info);
   return info;
 }
-const approvalTemplate = (accountId: string) => metaTemplate(accountId, APPROVAL_TEMPLATE);
 
+/** Template do aviso de aprovação pra conversa fechada: o de UTILIDADE da área do card (Financiamento Habitacional ou Home Equity) quando a Meta já aprovou e
+ *  manteve como Utilidade; senão o antigo de Marketing (aviso: credito_aprovado_condicoes; reenvio: credito_aprovado_lembrete). null = nenhum aprovado. */
+export async function approvalTemplateFor(accountId: string, leadId: string, nome: string, reenvio = false): Promise<{ templateName: string; language: string; bodyParams: string[]; previewText: string } | null> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { department: { select: { name: true } } } } } });
+  const util = /habita/i.test(l?.pipeline?.department?.name || '') ? APPROVAL_UTILITY_TEMPLATES.fh : APPROVAL_UTILITY_TEMPLATES.he;
+  const u = await metaTemplate(accountId, util);
+  const usaUtil = u.approved && u.category === 'UTILITY';
+  const templateName = usaUtil ? util : reenvio ? APPROVAL_REMINDER_TEMPLATE : APPROVAL_TEMPLATE;
+  const t = usaUtil ? u : await metaTemplate(accountId, templateName);
+  if (!t.approved) return null;
+  const botoes = usaUtil ? '[Ver as condições]  [Não tenho interesse]' : '[Sim, quero saber]  [Não tenho interesse]';
+  return { templateName, language: 'pt_BR', bodyParams: [nome], previewText: `${(t.body || '').replace(/\{\{1\}\}/g, nome)}\n\n${botoes}` };
+}
 /** Roda a cada 2 min (index.ts). */
 export async function processApprovalNotices(io: any): Promise<void> {
   if (!inNoticeWindow()) return; // aviso ao cliente só das 07h às 21h
@@ -95,18 +107,17 @@ export async function processApprovalNotices(io: any): Promise<void> {
       if (spoke > 0) continue;
       // A equipe (Andreia) também manda esse template à mão: se já foi enviado
       // com sucesso pra esse cliente, por qualquer um, não manda de novo.
-      const already = await prisma.message.count({ where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } } });
+      const already = await prisma.message.count({ where: { leadId: l.id, direction: 'OUTBOUND', templateName: { in: APPROVAL_TEMPLATE_NAMES }, status: { not: 'FAILED' } } });
       if (already > 0) continue;
-      const tpl = await approvalTemplate(l.accountId);
-      if (!tpl.approved) return; // ainda em análise na Meta — tenta na próxima rodada
       const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name, l.contact?.name) || 'cliente';
-      const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
+      const tpl = await approvalTemplateFor(l.accountId, l.id, nome);
+      if (!tpl) return; // ainda em análise na Meta — tenta na próxima rodada
       const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-      const r = await sendOutboundWhatsAppTemplate({ accountId: l.accountId, leadId: l.id, templateName: APPROVAL_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, io });
+      const r = await sendOutboundWhatsAppTemplate({ accountId: l.accountId, leadId: l.id, ...tpl, io });
       const fresh = (await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true } }))?.customFields as Record<string, any> || {};
       if (r.success) {
         await prisma.lead.update({ where: { id: l.id }, data: { aiAutoReplyActive: true, customFields: { ...fresh, _aprovTemplateAt: new Date().toISOString() } } });
-        console.log(`[Aprovação] ${l.name}: template "${APPROVAL_TEMPLATE}" enviado (cliente nunca falou no WhatsApp)`);
+        console.log(`[Aprovação] ${l.name}: template "${tpl.templateName}" enviado (cliente nunca falou no WhatsApp)`);
       } else {
         const fails = Number(fresh._aprovTemplateFails || 0) + 1;
         await prisma.lead.update({ where: { id: l.id }, data: { customFields: { ...fresh, _aprovTemplateFails: fails, ...(fails >= 3 ? { _aprovTemplateAt: 'falhou' } : {}) } } });
@@ -118,44 +129,49 @@ export async function processApprovalNotices(io: any): Promise<void> {
   }
 }
 
-export interface ReminderPlanItem { leadId: string; accountId: string; name: string; action: 'remind' | 'move'; number?: number }
+export interface ReminderPlanItem { leadId: string; accountId: string; name: string; action: 'remind' | 'travado'; ultimoAt: string }
 
-/** Quem precisa de lembrete (ou de ir pra Lead Sem Retorno) agora. Só leitura — o envio é em processApprovalReminders. */
+/** Dia do calendário em Brasília (pra "dia sim, dia não"). */
+const diaBrt = (t: number) => Math.floor((t + BRT_MS) / DAY_MS);
+
+/** Os 3 últimos avisos de aprovação do card (mais novo primeiro). travado = os 3 falharam (número sem WhatsApp, bloqueio da Meta…): o reenvio para,
+ *  os lembretes de documentação não ficam mais segurados por ele e a equipe é avisada uma vez. */
+async function ultimosAvisos(leadId: string): Promise<{ ultimo: { createdAt: Date } | null; travado: boolean }> {
+  const envios = await prisma.message.findMany({
+    where: { leadId, direction: 'OUTBOUND', templateName: { in: APPROVAL_TEMPLATE_NAMES } },
+    orderBy: { createdAt: 'desc' }, select: { createdAt: true, status: true }, take: MAX_FALHAS_SEGUIDAS,
+  });
+  return { ultimo: envios[0] || null, travado: envios.length >= MAX_FALHAS_SEGUIDAS && envios.every((e) => e.status === 'FAILED') };
+}
+
+/** Quem precisa do reenvio do aviso de aprovação agora (Fabio 13/11: "dia sim e dia não até ele responder"). Só leitura — o envio é em processApprovalReminders.
+ *  Card em Aguardando Documentação que recebeu um template de aprovação (QUALQUER status: o que a Meta bloqueou também conta — Adriana, 27/10) e não respondeu nada
+ *  no WhatsApp depois do último: reenvia 2 dias depois (no calendário) do último, sem limite de vezes. Para quando ele responde, o card sai da etapa ou 3 avisos seguidos falham. */
 export async function planApprovalReminders(): Promise<ReminderPlanItem[]> {
   const leads = await prisma.lead.findMany({
-    where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Aguardando Document', mode: 'insensitive' } } },
+    where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Aguardando Document', mode: 'insensitive' } }, NOT: { tags: { has: 'Pediu pra parar lembretes' } } },
     select: { id: true, accountId: true, name: true, customFields: true },
   });
   const plan: ReminderPlanItem[] = [];
   const now = Date.now();
   for (const l of leads) {
-    if (((l.customFields || {}) as Record<string, any>)._optouCaixa?.banco) continue; // optou pela CAIXA/BRB: não lembra das outras aprovações (Fabio 29/10)
-    const tpl = await prisma.message.findFirst({
-      where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } },
-      orderBy: { createdAt: 'desc' }, select: { createdAt: true },
-    });
-    if (!tpl) continue;
-    const replied = await prisma.message.count({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: tpl.createdAt } } });
+    const cf = (l.customFields || {}) as Record<string, any>;
+    if (cf._optouCaixa?.banco) continue; // optou pela CAIXA/BRB: não lembra das outras aprovações (Fabio 29/10)
+    if (cf._autoPaused) continue; // Stop total
+    if (cf._aprovReenvioDia === String(diaBrt(now))) continue; // já tentou hoje
+    const { ultimo, travado } = await ultimosAvisos(l.id);
+    if (!ultimo) continue;
+    const replied = await prisma.message.count({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: ultimo.createdAt } } });
     if (replied > 0) continue; // respondeu: o fluxo normal assume
-    const tries = await prisma.message.findMany({
-      where: { leadId: l.id, direction: 'OUTBOUND', templateName: APPROVAL_REMINDER_TEMPLATE, createdAt: { gt: tpl.createdAt } },
-      orderBy: { createdAt: 'asc' }, select: { createdAt: true, status: true },
-    });
-    const ok = tries.filter((t) => t.status !== 'FAILED');
-    if (tries.length - ok.length >= MAX_FAILED_REMINDERS) continue; // a Meta recusou várias vezes: deixa pra equipe
-    const lastTry = tries[tries.length - 1];
-    if (lastTry && now - lastTry.createdAt.getTime() < RETRY_AFTER_FAIL_MS) continue;
-    if (ok.length >= MAX_REMINDERS) {
-      if (now - ok[ok.length - 1].createdAt.getTime() >= MOVE_AFTER_LAST_DAYS * DAY_MS) plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'move' });
-      continue;
-    }
-    const dueAt = ok.length === 0 ? tpl.createdAt.getTime() + FIRST_REMINDER_AFTER_DAYS * DAY_MS : ok[ok.length - 1].createdAt.getTime() + NEXT_REMINDER_EVERY_DAYS * DAY_MS;
-    if (now >= dueAt) plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'remind', number: ok.length + 1 });
+    const ultimoAt = ultimo.createdAt.toISOString();
+    if (travado) { if (cf._aprovReenvioParou !== ultimoAt) plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'travado', ultimoAt }); continue; }
+    if (diaBrt(now) - diaBrt(ultimo.createdAt.getTime()) < RESEND_EVERY_DAYS) continue;
+    plan.push({ leadId: l.id, accountId: l.accountId, name: l.name, action: 'remind', ultimoAt });
   }
   return plan;
 }
 
-/** Roda a cada 2 min (index.ts): manda os lembretes que venceram e move pra Lead Sem Retorno quem não respondeu aos 3. */
+/** Roda a cada 2 min (index.ts): reenvia o aviso de aprovação de quem ainda não respondeu (dia sim, dia não). */
 export async function processApprovalReminders(io: any): Promise<void> {
   if (!inNoticeWindow()) return; // lembrete ao cliente só das 07h às 21h
   if (runningReminders) return;
@@ -164,34 +180,33 @@ export async function processApprovalReminders(io: any): Promise<void> {
     const plan = await planApprovalReminders();
     if (!plan.length) return;
     for (const item of plan) {
-      const lead = await prisma.lead.findUnique({ where: { id: item.leadId }, select: { id: true, name: true, pipelineId: true, customFields: true, stage: { select: { name: true } }, contact: { select: { name: true } } } });
+      const lead = await prisma.lead.findUnique({ where: { id: item.leadId }, select: { id: true, name: true, userId: true, customFields: true, contact: { select: { name: true } } } });
       if (!lead) continue;
-      if ((lead.customFields as any)?._autoPaused) continue; // Stop total do cliente: sem lembrete nem mudança de etapa
-      if (item.action === 'remind') {
-        const tpl = await metaTemplate(item.accountId, APPROVAL_REMINDER_TEMPLATE);
-        if (!tpl.approved) continue; // ainda em análise na Meta — tenta na próxima rodada
-        const cf = (lead.customFields || {}) as Record<string, any>;
-        const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
-        const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
-        const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-        const r = await sendOutboundWhatsAppTemplate({ accountId: item.accountId, leadId: lead.id, templateName: APPROVAL_REMINDER_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, io });
-        if (r.success) {
-          await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: true } }).catch(() => {});
-          console.log(`[Aprovação] ${lead.name}: ${item.number}º lembrete de aprovação enviado`);
-        } else {
-          console.error(`[Aprovação] ${lead.name}: falha no ${item.number}º lembrete: ${r.error}`);
-        }
+      const cf = (lead.customFields || {}) as Record<string, any>;
+      if (cf._autoPaused) continue; // Stop total do cliente
+      if (item.action === 'travado') {
+        // Pega a vez (dois servidores no ar durante um deploy) e avisa a equipe uma vez por travamento.
+        const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_aprovReenvioParou}', to_jsonb(${item.ultimoAt}::text), true) WHERE id = ${lead.id} AND COALESCE("customFields"->>'_aprovReenvioParou', '') <> ${item.ultimoAt}`;
+        if (!pegou) continue;
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `⚠️ Aviso da pré-análise: os ${MAX_FALHAS_SEGUIDAS} últimos envios do template falharam no WhatsApp (veja o erro na mensagem). O reenvio dia sim, dia não parou e os lembretes de documentação voltam a valer. Fale com o cliente por outro meio (ligação ou e-mail).` } }).catch(() => {});
+        const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+        sendPushToAccount(item.accountId, { title: `⚠️ ${lead.name}: aviso de aprovação não chega`, body: `${MAX_FALHAS_SEGUIDAS} envios seguidos falharam no WhatsApp — ligue ou mande e-mail.`, leadId: lead.id }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+        continue;
+      }
+      const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
+      const tpl = await approvalTemplateFor(item.accountId, lead.id, nome, true);
+      if (!tpl) continue; // ainda em análise na Meta — tenta na próxima rodada
+      // Uma tentativa por dia (e um servidor só durante um deploy): marca o dia antes de mandar. Falhou na hora → tenta de novo amanhã.
+      const dia = String(diaBrt(Date.now()));
+      const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_aprovReenvioDia}', to_jsonb(${dia}::text), true) WHERE id = ${lead.id} AND COALESCE("customFields"->>'_aprovReenvioDia', '') <> ${dia}`;
+      if (!pegou) continue;
+      const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+      const r = await sendOutboundWhatsAppTemplate({ accountId: item.accountId, leadId: lead.id, ...tpl, io });
+      if (r.success) {
+        await prisma.lead.update({ where: { id: lead.id }, data: { aiAutoReplyActive: true } }).catch(() => {});
+        console.log(`[Aprovação] ${lead.name}: aviso de aprovação reenviado ("${tpl.templateName}"; o anterior foi em ${item.ultimoAt.slice(0, 10)})`);
       } else {
-        // 3 lembretes e nenhuma resposta: Lead Sem Retorno do mesmo funil.
-        const target = (await prisma.stage.findMany({ where: { pipelineId: lead.pipelineId }, orderBy: { order: 'asc' }, select: { id: true, name: true } }))
-          .find((st) => st.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().startsWith('lead sem retorno'));
-        if (!target) { console.error(`[Aprovação] ${lead.name}: sem estágio "Lead Sem Retorno" no funil — card não movido`); continue; }
-        const { updateLeadStage } = require('./lead.service') as typeof import('./lead.service');
-        await updateLeadStage(lead.id, item.accountId, target.id);
-        await prisma.note.create({ data: { leadId: lead.id, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '?'}" → "${target.name}" — por Aviso de aprovação (o cliente não respondeu ao aviso de crédito aprovado nem aos ${MAX_REMINDERS} lembretes)` } }).catch(() => {});
-        logActivity({ accountId: item.accountId, userId: null, userName: 'Aviso de aprovação', action: 'lead_stage_changed', leadId: lead.id, leadName: lead.name, summary: `moveu pra "${target.name}": cliente aprovado não respondeu ao aviso nem a ${MAX_REMINDERS} lembretes` });
-        io?.to(`account_${item.accountId}`).emit('lead_moved', { leadId: lead.id, stageId: target.id });
-        console.log(`[Aprovação] ${lead.name}: ${MAX_REMINDERS} lembretes sem resposta → ${target.name}`);
+        console.error(`[Aprovação] ${lead.name}: falha no reenvio do aviso de aprovação (tenta amanhã): ${r.error}`);
       }
     }
   } finally {
@@ -199,16 +214,25 @@ export async function processApprovalReminders(io: any): Promise<void> {
   }
 }
 
-/** true = o cliente recebeu o template de aprovação ("seu crédito foi aprovado, quer saber as
- *  condições?") e AINDA NÃO respondeu nada no WhatsApp depois dele. O lembrete de documentação
- *  espera isso (Fabio 13/10): sem resposta o cliente nunca viu a lista de documentos, e o
- *  lembrete falaria de "documentos solicitados anteriormente". */
-export async function isWaitingApprovalReply(leadId: string): Promise<boolean> {
-  const tpl = await prisma.message.findFirst({
-    where: { leadId, direction: 'OUTBOUND', templateName: APPROVAL_TEMPLATE, status: { not: 'FAILED' } },
-    orderBy: { createdAt: 'desc' },
-    select: { createdAt: true },
-  });
+/** true = o cliente recebeu um template de aprovação ("sua pré-análise foi aprovada, quer ver as
+ *  condições?") e AINDA NÃO respondeu nada no WhatsApp depois do último. O lembrete de documentação
+ *  espera isso (Fabio 13/10): sem resposta o cliente nunca viu as condições nem a lista de documentos.
+ *  comFalha: conta também o template que a Meta bloqueou (Fabio 13/11, Adriana: o aviso falhou, os lembretes de documento
+ *  saíram e ela nunca soube que tinha aprovado) — é o que os lembretes de documentação usam; o reenvio dia sim, dia não cuida dela.
+ *  Com 3 avisos seguidos falhando (travado), não segura mais: o reenvio parou e a equipe foi avisada. */
+export async function isWaitingApprovalReply(leadId: string, opts?: { comFalha?: boolean }): Promise<boolean> {
+  let tpl: { createdAt: Date } | null;
+  if (opts?.comFalha) {
+    const u = await ultimosAvisos(leadId);
+    if (u.travado) return false;
+    tpl = u.ultimo;
+  } else {
+    tpl = await prisma.message.findFirst({
+      where: { leadId, direction: 'OUTBOUND', templateName: { in: APPROVAL_TEMPLATE_NAMES }, status: { not: 'FAILED' } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
+  }
   if (!tpl) return false;
   const replied = await prisma.message.count({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: tpl.createdAt } } });
   return replied === 0;
@@ -774,9 +798,9 @@ export async function maybeSendApprovalOnYes(accountId: string, leadId: string, 
   if (!lead) return false;
   const built = await buildApprovalText(leadId);
   if (!built) {
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ O cliente tocou em "Sim, quero saber" (crédito aprovado), mas não achei as condições de aprovação nas notas nem na aba Financiamento. Mande as condições à mão — a conversa está aberta.' } }).catch(() => {});
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ O cliente pediu as condições no botão do aviso (crédito aprovado), mas não achei as condições de aprovação nas notas nem na aba Financiamento. Mande as condições à mão — a conversa está aberta.' } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(accountId, { title: `${lead.name}: quer saber as condições`, body: 'Tocou em "Sim, quero saber" — mande as condições de aprovação.', leadId }).catch(() => {});
+    sendPushToAccount(accountId, { title: `${lead.name}: quer saber as condições`, body: 'Pediu as condições no botão do aviso — mande as condições de aprovação.', leadId }).catch(() => {});
     io?.to(lead.userId ? `user_${lead.userId}` : `account_${accountId}`).emit('ai_handoff', { leadId, leadName: lead.name, reason: 'Cliente quer saber as condições da aprovação — mande à mão (não achei as condições no card).' });
     return true;
   }
@@ -1119,12 +1143,11 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     }
     await sendOutroCanalAviso(p); // por último: já mandou dados/tentou por outro meio? + não tentar em outro canal (Fabio 29/10)
   } else {
-    const tpl = await approvalTemplate(p.accountId);
-    if (!tpl.approved) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
     const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name, lead.contact?.name) || 'cliente';
-    const previewText = `${(tpl.body || '').replace(/\{\{1\}\}/g, nome)}\n\n[Sim, quero saber]  [Não tenho interesse]`;
+    const tpl = await approvalTemplateFor(p.accountId, p.leadId, nome);
+    if (!tpl) return { ok: false, error: 'A janela de 24 h do WhatsApp fechou e o template de aprovação ainda não foi aprovado pela Meta.' };
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-    const r = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, templateName: APPROVAL_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText, userId: p.userId, io: p.io });
+    const r = await sendOutboundWhatsAppTemplate({ accountId: p.accountId, leadId: p.leadId, ...tpl, userId: p.userId, io: p.io });
     if (!r.success) return { ok: false, error: (r as any).error || 'Falha ao enviar o template' };
     await prisma.lead.update({ where: { id: p.leadId }, data: { aiAutoReplyActive: true, customFields: { ...cf, _aprovTemplateAt: new Date().toISOString() } } });
   }
@@ -1135,7 +1158,7 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
     if (c._changeNotice || c._reopenedOnApproval) { delete c._changeNotice; delete c._reopenedOnApproval; await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: c as any } }).catch(() => {}); }
   }
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Sim, quero saber"'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Cliente avisado das opções de crédito (${preview.options} opç${preview.options === 1 ? 'ão' : 'ões'}) — ${preview.mode === 'text' ? 'texto enviado' : 'template enviado; o texto completo sai quando ele tocar em "Ver as condições"/"Sim, quero saber" (sem resposta, o aviso é reenviado dia sim, dia não)'}${docsSent ? '; lista de documentos enviada' : ''}${moved ? `; card movido para ${moved}` : ''}.` } });
   return { ok: true, mode: preview.mode, options: preview.options, docsSent, moved };
 }
 

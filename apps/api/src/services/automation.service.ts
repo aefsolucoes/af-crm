@@ -710,7 +710,7 @@ export async function checkInactivityAutomations(io: unknown): Promise<void> {
           const parado = hasWindow ? calendarDaysSince(lastMsgAt) >= idleDays : lastMsgAt <= new Date(Date.now() - idleDays * 86_400_000);
           const semTemplateRecente = !ultimoTemplate || (hasWindow ? calendarDaysSince(ultimoTemplate.createdAt) >= idleDays : ultimoTemplate.createdAt <= new Date(Date.now() - idleDays * 86_400_000));
           if (!parado || !semTemplateRecente) continue;
-          if (await isWaitingApprovalReply(lead.id)) { countHeld++; continue; }
+          if (await isWaitingApprovalReply(lead.id, { comFalha: true })) { countHeld++; continue; }
         } else {
           const eligible = hasWindow ? calendarDaysSince(lastMsgAt) >= days : lastMsgAt <= threshold;
           if (!eligible) continue;

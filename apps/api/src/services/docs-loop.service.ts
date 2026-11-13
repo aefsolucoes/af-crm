@@ -226,7 +226,7 @@ export async function processDocLoop(accountId: string, io?: Io): Promise<void> 
     }
     if (liberaEm && diasDesde(liberaEm) < diasMin) continue;
     if (cf._docsPrazo && Date.now() < Date.parse(cf._docsPrazo)) continue; // cliente disse até quando manda: espera a data
-    if (await isWaitingApprovalReply(l.id)) continue; // ainda não respondeu o aviso de aprovação
+    if (await isWaitingApprovalReply(l.id, { comFalha: true })) continue; // ainda não respondeu o aviso de aprovação (o que a Meta bloqueou também conta: o reenvio dia sim, dia não cuida — Fabio 13/11)
     // CLIENTE ESPERANDO RESPOSTA NOSSA (Fabio 12/11: "o loop cobra documento de quem espera resposta nossa" — perguntou "quais documentos ainda faltam?" e recebeu 6 lembretes):
     // a última mensagem dele pede resposta e ninguém respondeu → o lembrete NÃO sai; a equipe é avisada (no dia, 2 e 4 dias depois). Qualquer resposta na conversa libera.
     // 7 dias segurado sem ninguém responder → o loop volta (a equipe foi avisada 3 vezes).
@@ -340,7 +340,7 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
     if (cf._janelaDocs === marca) continue;
     // Mensagem nossa na última hora: a conversa está andando — espera.
     if (await prisma.message.findFirst({ where: { leadId: l.id, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(agora - 60 * 60_000) } }, select: { id: true } })) continue;
-    if (await isWaitingApprovalReply(l.id)) continue;
+    if (await isWaitingApprovalReply(l.id, { comFalha: true })) continue;
     // Pega a vez (uma por janela, mesmo com dois servidores no ar durante um deploy).
     const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_janelaDocs}', to_jsonb(${marca}::text), true) WHERE id = ${l.id} AND COALESCE("customFields"->>'_janelaDocs', '') <> ${marca}`;
     if (!pegou) continue;

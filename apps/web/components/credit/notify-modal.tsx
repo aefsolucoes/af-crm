@@ -26,7 +26,7 @@ export function NotifyClientModal({ leadId, leadName, onClose, onSent }: { leadI
     try {
       const { data: r } = await api.post('/api/credit-analysis/notify-client', { leadId, sendDocs, moveStage });
       if (r.scheduled) { toast(`Fora do horário dos avisos (07h–21h): aviso agendado pra ${new Date(r.at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' })}`, 'success'); onSent?.(); onClose(); return; }
-      toast(`${r.mode === 'text' ? 'Cliente avisado pelo WhatsApp' : 'Template enviado — o texto completo sai quando o cliente tocar em "Sim, quero saber"'}${r.docsSent ? ' · lista de documentos enviada' : ''}${r.moved ? ` · card em ${r.moved}` : ''}`, 'success');
+      toast(`${r.mode === 'text' ? 'Cliente avisado pelo WhatsApp' : 'Template enviado — o texto completo sai quando o cliente tocar em "Ver as condições"'}${r.docsSent ? ' · lista de documentos enviada' : ''}${r.moved ? ` · card em ${r.moved}` : ''}`, 'success');
       onSent();
       onClose();
     } catch (err: any) {
@@ -43,7 +43,7 @@ export function NotifyClientModal({ leadId, leadName, onClose, onSent }: { leadI
           <>
             <p className="text-xs text-slate-500">
               {data.options > 1 ? `São ${data.options} opções: o cliente escolhe respondendo no WhatsApp, e a IA do CRM dá o apoio.` : 'Uma opção aprovada.'}
-              {' '}{data.mode === 'text' ? 'O cliente falou nas últimas 24 h: o texto vai direto.' : 'A janela de 24 h fechou: vai o template de aprovação e o texto abaixo sai quando ele tocar em "Sim, quero saber".'}
+              {' '}{data.mode === 'text' ? 'O cliente falou nas últimas 24 h: o texto vai direto.' : 'A janela de 24 h fechou: vai o template de aprovação e o texto abaixo sai quando ele tocar em "Ver as condições" (sem resposta, o aviso volta dia sim, dia não).'}
             </p>
             <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-slate-800 whitespace-pre-line max-h-80 overflow-y-auto">{data.text}</div>
             {data.docsText && <div className="rounded-xl bg-emerald-50 border border-emerald-100 p-3 text-sm text-slate-800 whitespace-pre-line max-h-60 overflow-y-auto"><p className="text-[11px] text-emerald-700 mb-1">2ª mensagem (documentos), logo depois:</p>{data.docsText}</div>}
