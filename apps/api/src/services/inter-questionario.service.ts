@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { templateAtualizacaoDoLead } from './template-atualizacao';
 import { sendOutboundWhatsApp } from './message.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
@@ -31,7 +32,6 @@ export function zeevResponsavel(): { nome: string; cpf: string; email: string } 
   return { nome: nome || 'Andreia Batista de Oliveira', cpf: cpf || '', email: email || 'andreia@aefsolucoesfinanceiras.com.br' };
 }
 const VENCIMENTOS = [1, 5, 10, 15, 20];
-const TEMPLATE = 'atualizacao_processo_credito';
 const CIVIL_ESPERA_MS = 10 * 86_400_000;
 const CONFIRMA_ESPERA_MS = 24 * 3600_000;
 
@@ -309,7 +309,7 @@ export async function perguntarQuestionario(accountId: string, leadId: string, i
     if (!recente) {
       const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
       const n = nome || 'cliente';
-      const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: TEMPLATE, language: 'pt_BR', bodyParams: [n], previewText: `Oi ${n}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io: io as any });
+      const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, n)), io: io as any });
       ok = t.success;
       if (!t.success) await note(leadId, `📝 Questionário do Inter: a conversa está fechada e o template de atualização não saiu (${t.error}). Pergunte ao cliente o vencimento, as despesas de registro e confirme profissão/e-mail/telefone.`);
     }

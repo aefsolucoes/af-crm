@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { templateAtualizacaoDoLead } from './template-atualizacao';
 
 /* Resultado da Avaliação de Risco da CAIXA. A tela do envio só dá o número da proposta (Fabio 01/11: "O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR
  * DEPOIS" e "PARA CONSULTAR O RESULTADO, PRECISA VOLTAR NO MENU E IR EM FORMULÁRIOS ENVIADOS"): Consulta de Formulários Enviados → Buscar por CPF →
@@ -330,7 +331,7 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
     return;
   }
   if (c.status === 'PENDING') {
-    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, saudacao || 'cliente')), io });
     if (!t.success) return falhou(`a conversa está fechada e o template de atualização não saiu (${t.error})`);
     await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'TEMPLATE', templateAt: new Date().toISOString() }; });
     await nota(`📨 ${rotulo}: conversa fechada, mandei o template de atualização. O aviso ao cliente sai quando ele responder.`);
@@ -389,7 +390,6 @@ async function gravarProcessando(accountId: string, leadId: string, nome: string
 // cadastro dele bloqueou porque ele rodou em outro correspondente e isso impacta na aprovação e pode acabar bloqueando o cadastro dele na CAIXA"; depois
 // "Sim, mandar sozinho"). 07h–21h; conversa fechada → template de atualização e o texto sai quando ele responder (poller); 48 h sem resposta → equipe.
 const PV_RE = /autoriza[cç][aã]o do PV/i;
-const PV_TEMPLATE = 'atualizacao_processo_credito';
 
 export function textoPv(saudacao: string): string {
   return `Oi${saudacao ? ` ${saudacao}` : ''}, tudo bem? Uma atualização sobre a CAIXA: o seu cadastro lá ficou bloqueado porque consta que o seu crédito também foi rodado por outro correspondente. Isso impacta na aprovação e pode acabar bloqueando o seu cadastro na CAIXA. Só pra nossa informação: você chegou a encaminhar a sua documentação pra outro correspondente?`;
@@ -416,7 +416,7 @@ export async function avisarPvCliente(accountId: string, leadId: string, io?: an
     return;
   }
   if (pv.status === 'PENDING') {
-    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, saudacao || 'cliente')), io });
     if (!t.success) {
       await salvar(leadId, (x) => { x.pvAviso = { ...(x.pvAviso || {}), status: 'FALHOU' }; });
       await nota(`⚠️ Autorização do PV: a conversa está fechada e o template de atualização não saiu (${t.error}). Avise você o cliente. Texto pronto:\n“${texto}”`);
@@ -491,7 +491,7 @@ export async function avisarAprovadaCaixa(accountId: string, leadId: string, io?
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
     const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || 'cliente';
     const msg = require('./message.service') as typeof import('./message.service');
-    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PV_TEMPLATE, language: 'pt_BR', bodyParams: [saudacao], previewText: `Oi ${saudacao}, tudo bem? Temos uma atualização sobre o seu processo de crédito.`, io });
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, saudacao)), io });
     if (!t.success) return segura('SEGURADO', `a conversa está fechada e o template de atualização não saiu (${t.error})`);
     await salvar(leadId, (x) => { x.aprovadaAviso = { ...(x.aprovadaAviso || {}), status: 'TEMPLATE', templateAt: new Date().toISOString() }; });
     await nota(`📨 CAIXA aprovada: conversa fechada, mandei o template de atualização. A aprovação com a simulação em SAC sai quando o cliente responder.`);

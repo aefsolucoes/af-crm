@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { templateAtualizacaoDoLead } from './template-atualizacao';
 
 /** BANCO "AINDA EM ANÁLISE" QUE REPROVOU DEPOIS DO AVISO (Fabio 05/11, Paloma: "o CRM falou que estava aguardando o Inter, mas o Inter reprovou e ele não informou a cliente").
  *  O aviso de aprovação diz "⏳ Ainda em análise: X. Se sair uma condição melhor, te aviso por aqui." — o aviso novo só saía quando X APROVAVA (a assinatura do aviso é feita das
@@ -96,7 +97,7 @@ export async function processPendenteReprovou(accountId: string, io?: Io): Promi
       continue;
     }
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'atualizacao_processo_credito', language: 'pt_BR', bodyParams: [nome || 'tudo bem'], previewText: `Oi ${nome}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io: io as any });
+    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, nome || 'tudo bem')), io: io as any });
     if (t.success) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_msgNaResposta}', ${JSON.stringify({ texto, desde: new Date().toISOString(), por: 'banco em análise não aprovou' })}::jsonb, true) WHERE id = ${leadId}`;
     await marca({ status: t.success ? 'TEMPLATE' : 'FALHOU', via: 'template' });
     await nota(t.success ? `⏳ ${bancosNeg} não aprovou depois do aviso de aprovação e a conversa estava fechada: mandei o template de atualização; quando o cliente responder, sai o recado de que a aprovação que ele tem continua valendo.` : `⏳ ${bancosNeg} não aprovou depois do aviso e o template não saiu (${t.error}). Avise o cliente à mão: "${texto}"`);

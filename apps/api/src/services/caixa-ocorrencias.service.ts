@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { templateAtualizacaoDoLead } from './template-atualizacao';
 
 /* Restrição no nome na consulta da CAIXA (Fabio 01/11): "Sempre que fizer a consulta e mostrar que o cliente possui ocorrências, solicite ao cliente que baixe
  * o app do SERASA e do SCPC e também veja se há algum protesto junto ao https://www.pesquisaprotesto.com.br/ … caso o cliente diga que não há nenhuma
@@ -11,7 +12,6 @@ type Cf = Record<string, any>;
 type Oc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SEM' | 'COM' | 'EQUIPE'; consultadoEm?: string; nomes?: string[]; avisados?: string[]; titular?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
 const WAIT_MAX_MS = 48 * 3600_000;
 const OCORRENCIA_RE = /constam ocorr[eê]ncias/i;
-const TEMPLATE = 'atualizacao_processo_credito';
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -107,7 +107,7 @@ export async function enviarOrientacao(accountId: string, leadId: string, io?: a
     return;
   }
   if (oc.status === 'PENDING') {
-    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: TEMPLATE, language: 'pt_BR', bodyParams: [saudacao || 'cliente'], previewText: `Oi ${saudacao || 'cliente'}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io });
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, saudacao || 'cliente')), io });
     if (!t.success) {
       await salva(leadId, { status: 'EQUIPE', at: new Date().toISOString() });
       await note(leadId, `⚠️ Ocorrência no nome (CAIXA): a conversa está fechada e o template de atualização não saiu (${t.error}). Mande você a orientação ao cliente. Texto pronto:\n“${texto}”`);

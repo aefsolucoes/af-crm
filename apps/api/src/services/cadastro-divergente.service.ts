@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { templateAtualizacaoDoLead } from './template-atualizacao';
 import { sendOutboundWhatsApp } from './message.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
@@ -88,10 +89,9 @@ export async function processCadastroDivergente(accountId: string, io: Io): Prom
 }
 
 // ─── REABRIR A CONVERSA (Fabio 26/10, Hélio: "precisa reabrir a conversa e o CRM conversar com ele sobre isso pra tentar ajustar, senão vai ficar lá pra sempre") ───
-// Divergência pendente (pergunta feita sem resposta, ou esperando a janela) e a janela de 24 h FECHADA: manda o template de UTILIDADE "atualizacao_processo_credito"
+// Divergência pendente (pergunta feita sem resposta, ou esperando a janela) e a janela de 24 h FECHADA: manda o template de UTILIDADE de atualização da área do card (template-atualizacao)
 // ("Temos uma atualização sobre o seu processo… Responda esta mensagem…"). Quando o cliente responde, a janela abre: a pergunta sai (PENDING) ou a IA retoma o assunto (ASKED).
 // Até 3 vezes, de 48 em 48 h, só 07h–21h e com a IA do card ligada.
-const REABRIR_TEMPLATE = 'atualizacao_processo_credito';
 const REABRIR_GAP_MS = 48 * 3600_000;
 const REABRIR_MAX = 3;
 async function reabrirConversas(accountId: string, io: Io): Promise<void> {
@@ -114,7 +114,7 @@ async function reabrirConversas(accountId: string, io: Io): Promise<void> {
     const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
     const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || String(lead.name || '').trim().split(/\s+/)[0] || 'cliente';
     const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
-    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, templateName: REABRIR_TEMPLATE, language: 'pt_BR', bodyParams: [nome], previewText: `Oi ${nome}, tudo bem? Temos uma atualização sobre o seu processo de crédito com garantia de imóvel. Responda esta mensagem para que a gente possa te passar os detalhes.`, io: io as any });
+    const t = await sendOutboundWhatsAppTemplate({ accountId, leadId: lead.id, ...(await templateAtualizacaoDoLead(lead.id, nome)), io: io as any });
     if (!t.success) { await note(lead.id, `🔎 Cadastro divergente: tentei reabrir a conversa (template de atualização) e não saiu: ${t.error}.`); await salva(lead.id, { reopenAt: new Date().toISOString(), reopenN: (cd.reopenN || 0) + 1 }); continue; }
     // EQUIPE (desistiu depois de 24 h) volta pra PENDING: assim que ele responder, a pergunta da divergência sai sozinha.
     await salva(lead.id, { reopenAt: new Date().toISOString(), reopenN: (cd.reopenN || 0) + 1, ...(cd.status === 'EQUIPE' ? { status: 'PENDING', at: new Date().toISOString() } : {}) });
