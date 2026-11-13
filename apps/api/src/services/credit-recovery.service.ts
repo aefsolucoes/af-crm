@@ -30,6 +30,9 @@ const RUN_MAX_POR_DIA = 2;
 const RODADAS_SEM_APARECER = 2;
 const SEM_APARECER_DIAS = 7;
 const CHECK_GAP_MS = 10 * 60_000;
+/** Etapas depois da Pré-Análise que a retomada também olha (Fabio 13/11, jorge): o card sai da Pré-Análise quando o 1º banco aprova e os outros ainda estão rodando. */
+const ETAPAS_DEPOIS_DA_PRE = ['Aguardando Documenta', 'Documentação Receb'];
+const DEPOIS_DA_PRE_MS = 72 * 3600_000;
 
 export type RecRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; updatedAt: Date; source: string; proposalNumber?: string | null; notBefore?: Date | null };
 export type RecAction = { bank: string; mode: 'RUN' | 'CHECK' | 'STOP'; why: string };
@@ -125,10 +128,12 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
   const lead = await prisma.lead.findFirst({
     where: {
       id: leadId, accountId, status: 'OPEN', archived: false, isGroup: false,
-      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      // Também quem já saiu da Pré-Análise porque outro banco aprovou primeiro (Fabio 13/11, jorge anastacio: "cadê aquela rodada que roda todos pela manhã?" — o Santander caiu no
+      // meio, a Creditas já tinha aprovado e o card foi pra Aguardando Documentação; a retomada só olhava a Pré-Análise). Fora dela, só o banco com movimento recente (72 h).
+      OR: [{ stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, ...ETAPAS_DEPOIS_DA_PRE.map((e) => ({ stage: { name: { startsWith: e, mode: 'insensitive' as const } } }))],
       pipeline: { department: { OR: [{ name: { contains: 'Home Equity', mode: 'insensitive' } }, { name: { contains: 'Habitacional', mode: 'insensitive' } }] } },
     },
-    select: { id: true, name: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } }, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true, notBefore: true } } },
+    select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } }, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true, notBefore: true } } },
   });
   if (!lead) return [];
   const cf = (lead.customFields || {}) as Cf;
@@ -136,7 +141,10 @@ export async function recoverStuckAnalyses(accountId: string, leadId: string, wh
   // Conferência já marcada pra daqui a pouco (3–10 min): cliente cobrando adianta pra agora.
   if (why === 'cobranca') await prisma.creditAnalysis.updateMany({ where: { leadId, dryRun: false, kind: 'CHECK', status: 'REQUESTED', notBefore: { gt: new Date() } }, data: { notBefore: null } }).catch(() => {});
   const fh = /habitacional/i.test(lead.pipeline?.department?.name || '');
-  const plan = planRecovery(lead.creditAnalyses as RecRow[], { fh, loginNeeded: (b) => loginNeededFor(accountId, b === 'ITAU_FH' ? b : b.replace(/_FH$/, '')) });
+  const naPre = /^pr[ée]-an/i.test(lead.stage?.name || '');
+  const ultimaDoBanco = (b: string) => Math.max(0, ...lead.creditAnalyses.filter((r) => r.bank === b).map((r) => r.updatedAt.getTime()));
+  const plan = planRecovery(lead.creditAnalyses as RecRow[], { fh, loginNeeded: (b) => loginNeededFor(accountId, b === 'ITAU_FH' ? b : b.replace(/_FH$/, '')) })
+    .filter((a) => naPre || Date.now() - ultimaDoBanco(a.bank) < DEPOIS_DA_PRE_MS); // fora da Pré-Análise: só o banco que travou há pouco (não ressuscita falha antiga)
   if (!plan.length) return [];
 
   const hoje = dayBrt();
@@ -213,7 +221,7 @@ export async function onClientChase(accountId: string, leadId: string, text: str
   await recoverStuckAnalyses(accountId, leadId, 'cobranca');
 }
 
-/** Das 07h às 12h (Brasília) varre os cards da Pré-Análise uma vez por dia e retoma o que travou (Fabio 26/10: "coloca a rodada para as 07" — com as extensões rodando de madrugada, o que não teve resultado à noite é retomado às 7h). A janela até o meio-dia cobre o servidor que estava fora às 7h. */
+/** Das 07h às 12h (Brasília) varre os cards da Pré-Análise (e, desde 13/11, os que já saíram dela com rodada travada nas últimas 72 h) uma vez por dia e retoma o que travou (Fabio 26/10: "coloca a rodada para as 07" — com as extensões rodando de madrugada, o que não teve resultado à noite é retomado às 7h). A janela até o meio-dia cobre o servidor que estava fora às 7h. */
 export async function processMorningRerun(accountId: string): Promise<void> {
   const h = brt().getUTCHours();
   if (h < 7 || h >= 12) return;
@@ -222,9 +230,14 @@ export async function processMorningRerun(accountId: string): Promise<void> {
     SELECT l.id FROM "Lead" l
     JOIN "Pipeline" p ON p.id = l."pipelineId" JOIN "Department" d ON d.id = p."departmentId" JOIN "Stage" st ON st.id = l."stageId"
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
-      AND (d.name ILIKE '%home equity%' OR d.name ILIKE '%habitacional%') AND st.name ILIKE 'Pré-An%'
+      AND (d.name ILIKE '%home equity%' OR d.name ILIKE '%habitacional%')
       AND COALESCE(l."customFields"->>'_morningRerunDay', '') <> ${hoje}
-      AND EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca."dryRun" = false)
+      AND (
+        (st.name ILIKE 'Pré-An%' AND EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca."dryRun" = false))
+        -- depois da Pré-Análise (Fabio 13/11, jorge): só com rodada que não terminou bem nas últimas 72 h
+        OR ((st.name ILIKE 'Aguardando Documenta%' OR st.name ILIKE 'Documentação Receb%') AND EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca."dryRun" = false
+            AND ca.status IN ('FAILED', 'CHECK', 'SENT', 'INCOMPLETE') AND ca."updatedAt" > ${new Date(Date.now() - DEPOIS_DA_PRE_MS)}))
+      )
     ORDER BY l."stageEnteredAt" ASC
     LIMIT 40`;
   for (const { id } of ids) {

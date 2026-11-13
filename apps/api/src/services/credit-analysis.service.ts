@@ -713,8 +713,9 @@ async function marcarNovaPropostaRecusada(db: Db, row: { id: string; leadId: str
 /** Card que a própria análise FECHOU como reprovado/desqualificado (Perdidos) e depois um banco APROVOU (rodada refeita — prazo máximo, novo valor, troco…): reabre sozinho (Fabio 21/10, Paulino:
  *  "se o cliente aprovar, o CRM precisa alterar o card pra Aguardando Documentação e encaminhar a proposta de aprovação"). Volta pra Pré-Análise do funil de vendas do setor e deixa o fluxo normal fazer o resto:
  *  o aviso de aprovação (com IA do card ligada) manda a proposta e MOVE pra Aguardando Documentação. Só mexe em card perdido por reprovação/desqualificação — nunca no que a equipe marcou Perdido por outro motivo. */
-async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean }): Promise<void> {
+async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; bank: string; dryRun: boolean; status?: string; approvedValue?: number | null }): Promise<void> {
   if (row.dryRun) return;
+  if ((require('./credit-auto.service') as typeof import('./credit-auto.service')).abaixoDoSimuladorSantander({ bank: row.bank, status: row.status || '', approvedValue: row.approvedValue })) return; // Santander aprovou menos de R$ 30 mil: conta como reprovado (Fabio 13/11)
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, status: true, lostReason: true, customFields: true, pipeline: { select: { departmentId: true, department: { select: { name: true } } } } } });
   if (!lead || lead.status !== 'LOST') return;
   if (!/reprov|desqualific|n[aã]o aprov/i.test(lead.lostReason || '')) return;
@@ -738,7 +739,7 @@ async function reabrirSeAprovouDepoisDaNegativa(db: Db, row: { leadId: string; b
  *  na análise automática. O "Enviar" no portal é SEMPRE manual (regra do Fabio, confirmada 20/10). Uma vez por proposta; se o cliente não pôde ser avisado agora (IA do card desligada, janela de 24 h fechada, fora das 07h–21h),
  *  tenta de novo na próxima leitura da extensão. */
 const SANTANDER_MANUAL = /AN[ÁA]LISE MANUAL ABERTA/i;
-const docDoPortal = (t: string): string => {
+export const docDoPortal = (t: string): string => {
   const x = t.replace(/\s*\(obrigat[oó]rio\)\s*$/i, '').trim();
   if (/holerite/i.test(x)) return 'Os 3 últimos holerites (contracheques)';
   if (/irpf|imposto de renda/i.test(x)) return 'Declaração de Imposto de Renda (IRPF) do último exercício + extrato da conta corrente dos últimos 3 meses';
@@ -763,10 +764,6 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
     c._santanderManual = { ...(c._santanderManual || {}), proposta: numero, ...patch };
     await db.lead.update({ where: { id: lead.id }, data: { customFields: c as any } });
   };
-  const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
-  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
-  const texto = santanderManualClientText(nome, !(await conversationActive(lead.id)), itens);
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {
     await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).` } }).catch(() => {});
@@ -774,20 +771,11 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
     sendPushToAccount(lead.accountId, { title: '🏦 Santander pede análise manual', body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
     await salvar({ teamAt: new Date().toISOString() });
   }
-  // Cliente: só com a IA do card ligada, sem STOP TOTAL, dentro das 07h–21h e com a janela de 24 h aberta (senão fica o texto pronto na nota).
-  const motivo = cf._autoPaused ? 'o card está em STOP TOTAL' : !lead.aiAutoReplyActive ? 'a IA deste card está desligada' : !inNoticeWindow() ? 'fora do horário dos avisos (07h–21h)' : !(await whatsappWindowOpen(lead.id)) ? 'a janela de 24 h do WhatsApp está fechada' : '';
-  if (motivo) {
-    if (!st.askedAt && !(cf._santanderManual as any)?.heldNoteFor) {
-      await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `⏳ Santander (análise manual): NÃO pedi os documentos ao cliente agora — ${motivo}. ${motivo.includes('janela') || motivo.includes('IA') ? 'Chame o cliente e mande:' : 'Tento de novo na próxima leitura; se preferir, mande você:'}\n\n${texto}` } }).catch(() => {});
-      await salvar({ heldNoteFor: numero });
-    }
-    return;
-  }
-  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-  const r = await sendOutboundWhatsApp({ accountId: lead.accountId, leadId: lead.id, content: texto });
-  if (!r.success) { console.warn(`[Santander manual] ${lead.name}: pedido de documentos não saiu — ${(r as any).error}`); return; }
-  await salvar({ askedAt: new Date().toISOString() });
-  await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `📨 Santander (análise manual): pedi os documentos ao cliente explicando que a proposta não passou na análise automática.${itens.length ? ` Pedido: ${itens.join('; ')}.` : ''}` } }).catch(() => {});
+  // Cliente (Fabio 13/11, Claudemir): conversa aberta → lista de documentos; janela de 24 h fechada → template de atualização + o pedido guardado pra quando ele responder.
+  // Com a IA desligada / STOP TOTAL / fora das 07h–21h fica o texto pronto na nota (o tick do santander-manual.service pede depois, dentro do horário).
+  // Quando ele mandar tudo, o mesmo serviço encaminha os documentos à Letícia (Credimorar).
+  const { pedirDocumentosSantanderManual } = require('./santander-manual.service') as typeof import('./santander-manual.service');
+  await pedirDocumentosSantanderManual({ accountId: lead.accountId, leadId: lead.id, numero, itens });
 }
 
 /** Quais bancos ainda estão "em jogo" pra este cliente (informativo) e se a COMPROVAÇÃO DE RENDA continua necessária. ATENÇÃO (Fabio 20/10, caso Luiz Fernando): a dispensa de renda foi dita pra ESSE cliente
@@ -1521,6 +1509,13 @@ function orphanDetail(why: string, lastDetail?: string | null): string {
 const MAX_RUN_MIN: Record<string, number> = { INTER: 15, CREDITAS: 15, CREDIMORAR: 6, CREDIMORAR_FH: 20, INTER_FH: 15, ITAU_FH: 15 }; // Santander 6 min por ordem do Fabio (14/10); 4 de 13 rodadas boas dos últimos 5 dias passaram disso
 
 async function expireStuck(db: Db, where: { accountId: string; leadId?: string }) {
+  // Card que foi pra Perdidos (ou fechou como Ganho): a conferência que estava na fila PARA (Fabio 13/11: "SE FOI PARA PERDIDO A CONFERÊNCIA PARA" — Douglas Rafael, Mauricio Jorge
+  // e Cleide tinham conferências esperando desde outubro). Só a conferência AUTOMÁTICA; o "Conferir"/"Rodar" que uma pessoa pede num card fechado continua valendo (ex.: rodada
+  // refeita depois da negativa, que reabre o card se aprovar).
+  await db.creditAnalysis.updateMany({
+    where: { ...where, kind: 'CHECK', status: 'REQUESTED', requestedById: null, lead: { status: { not: 'OPEN' } } },
+    data: { status: 'CHECK', finishedAt: new Date(), detail: 'Conferência encerrada: o card foi para Perdidos (ou foi fechado).' },
+  }).catch(() => {});
   const rows = await db.creditAnalysis.findMany({ where: { ...where, status: 'RUNNING', updatedAt: { lt: new Date(Date.now() - STUCK_RUNNING_MS) } }, select: { id: true, detail: true } });
   for (const r of rows) {
     await db.creditAnalysis.updateMany({

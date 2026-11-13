@@ -342,6 +342,27 @@ export async function processFhRejections(accountId: string, io?: any): Promise<
     const maisNovas = new Map<string, { status: string }>();
     for (const r of [...l.creditAnalyses].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())) if (!maisNovas.has(r.bank)) maisNovas.set(r.bank, r);
     if ([...maisNovas.values()].some((r) => r.status === 'SENT')) continue;
+    // Banco que NÃO chegou a analisar por FALHA TÉCNICA (formulário recusado, janela fechada…) não some do resumo como se tivesse reprovado (Fabio 13/11, Andreia Pimentel 01/11:
+    // a negativa saiu só com o Inter reprovado; o Credimorar tinha falhado em "prazoFinanciamento" e a 2ª tentativa vinha 15 min depois). Enquanto refaz, segura; desistiu das
+    // tentativas → segura a negativa e avisa a equipe uma vez (nota + push).
+    {
+      const { OBJECTIVE_FAIL, DADO_PARA_CORRIGIR } = require('./credit-auto.service') as typeof import('./credit-auto.service');
+      const tecnicos = [...maisNovas.entries()].filter(([, r]) => {
+        const d = String((r as any).detail || '');
+        return (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(d) && !DADO_PARA_CORRIGIR.test(d) && !/RODADA ANULADA/i.test(d)) || r.status === 'INCOMPLETE';
+      }).map(([b]) => b);
+      if (tecnicos.length) {
+        const desistiu = tecnicos.filter((b) => (cf._autoRetries || {})[b]?.gaveUp);
+        const sig = desistiu.sort().join(',');
+        if (desistiu.length === tecnicos.length && cf._fhRejHeldTech !== sig) {
+          const ROT: Record<string, string> = { [FH_BANK]: 'Credimorar (Bradesco/Santander)', INTER_FH: 'Inter', ITAU_FH: 'Itaú' };
+          await saveCf(l.id, { _fhRejHeldTech: sig });
+          await note(l.id, `✋ Financiamento: os bancos que analisaram não aprovaram, mas ${desistiu.map((b) => ROT[b] || b).join(' e ')} NÃO chegou a analisar (falha técnica nas 3 tentativas). Não mandei a negativa: rode de novo esse banco (ou use "Avisar negativa" se for o caso).`);
+          push(accountId, `✋ ${l.name}: negativa segurada`, `${desistiu.map((b) => ROT[b] || b).join(' e ')} não analisou (falha técnica) — rode de novo`, l.id);
+        }
+        continue;
+      }
+    }
     { const { fhCascataPendente } = require('./credit-auto.service') as typeof import('./credit-auto.service'); if (await fhCascataPendente(l.id, cf, l.name).catch(() => false)) continue; }
     const bancos = Object.entries(parseBancosFinanciamento(cf._fhResumo)).filter(([b, x]) => !/^(CAIXA|BRB)$/.test(b) && !/n[aã]o enviad/i.test(x.status));
     if (!bancos.length || !bancos.every(([, x]) => NEG.test(x.status))) continue;

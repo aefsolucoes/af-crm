@@ -289,7 +289,7 @@ export function casadosNaProposta(cf: Cf, proposta: string): boolean {
  *  - NÃO casados → CADA UM SOZINHO: o 1º sozinho e depois o 2º sozinho (o 2º entra assim que o 1º sozinho já foi enviado) — "depois roda cada um sozinho";
  *    1ª rodada que já foi só no 1º (proposta sem o 2º, Creditas que só aceita cônjuge) → o 2º sozinho; CPF do 1º com proposta ativa na Creditas → só o 2º.
  *  Banco com escolha manual da equipe ou já tratado pela regra antiga (_autoP2Banks) fica de fora. Pura (testável). */
-export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null }[], manuais: string[] = [], casados = false, bancos: string[] = BANKS): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
+export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; kind: string; status: string; detail: string | null; holderName: string | null; approvedValue?: number | null }[], manuais: string[] = [], casados = false, bancos: string[] = BANKS): { bank: string; who: 'P1' | 'P2' | 'INV'; why: string }[] {
   const p2 = String(cf.participante_2 || '').trim();
   const cpf2 = String(cf.cpf_2 || '').replace(/\D/g, '');
   if (!p2 || cpf2.length < 11) return [];
@@ -303,9 +303,9 @@ export function cascadePlan(cf: Cf, leadName: string, analyses: { bank: string; 
     const feitos = sozinho[bank] || [];
     const decided = [...rows].reverse().find((a) => ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(a.status));
     const cpfAtivo = !decided && rows.some((a) => a.kind === 'RUN' && a.status === 'FAILED' && CREDITAS_CPF_ATIVO.test(a.detail || ''));
-    const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
+    const falhou = cpfAtivo || (decided && (decided.status === 'REJECTED' || abaixoDoSimuladorSantander(decided) || (decided.status === 'APPROVED' && /aprovad[oa] a menor/i.test(decided.detail || ''))));
     if (!falhou) continue; // aprovado no valor total (ou ainda sem resposta): não precisa
-    const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : 'aprovado a menor';
+    const why = cpfAtivo ? 'CPF do 1º já tem proposta ativa na Creditas' : decided!.status === 'REJECTED' ? 'reprovado' : abaixoDoSimuladorSantander(decided!) ? 'Santander aprovou menos de R$ 30 mil (conta como reprovado)' : 'aprovado a menor';
     if (casados) { if (!feitos.includes('INV')) todo.push({ bank, who: 'INV', why: `${why} no nome do 1º (casados)` }); continue; }
     const primeira = rows.find((a) => a.kind === 'RUN' && /Titular na an[aá]lise:/i.test(a.detail || ''));
     const nosDois = formatoDaRodada(primeira?.detail) === 'AMBOS';
@@ -406,7 +406,7 @@ async function cascadeFh(accountId: string) {
 const PRIORIDADE_BANCOS = ['INTER', 'CREDITAS', 'CREDIMORAR']; // mesma ordem fixa dos PDFs: Inter > Creditas > Santander
 /** O aprovado de MAIOR prioridade é valor TOTAL (não "a menor") e tem os números completos, e os bancos acima dele na ordem já responderam? Pura (testável). */
 export function avisoCedo(rows: VRow[] & { approvedValue?: number | null; firstInstallment?: number | null }[]): boolean {
-  const aprovados = (rows as any[]).filter((a) => (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue && a.firstInstallment && !/aprovad[oa] a menor/i.test(a.detail || ''));
+  const aprovados = (rows as any[]).filter((a) => (a.status === 'APPROVED' || a.status === 'CONDITIONAL') && a.approvedValue && a.firstInstallment && !/aprovad[oa] a menor/i.test(a.detail || '') && !abaixoDoSimuladorSantander(a));
   if (!aprovados.length) return false;
   const melhor = [...aprovados].sort((a, b) => PRIORIDADE_BANCOS.indexOf(a.bank) - PRIORIDADE_BANCOS.indexOf(b.bank))[0];
   const acima = PRIORIDADE_BANCOS.slice(0, PRIORIDADE_BANCOS.indexOf(melhor.bank));
@@ -532,7 +532,12 @@ export const DADO_PARA_CORRIGIR = /DADO PARA CORRIGIR/i;
 /** Creditas: "Este CPF já possui uma proposta ativa … ela NÃO está na lista de Propostas da nossa conta" (Fabio 15/10, Arlan): não tem como rodar na Creditas — conta como NÃO desse banco
  *  (se os outros também não deram, o cliente é avisado e vai pra Perdido; se algum aprovou, o aviso de aprovação sai sem esperar a Creditas). */
 const CREDITAS_CPF_ATIVO = /CPF j[aá] possui uma proposta ativa na Creditas/i;
-type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string };
+type VRow = { bank: string; kind: string; status: string; detail: string | null; createdAt: Date; source: string; approvedValue?: number | null };
+/** Santander que aprovou A MENOR abaixo de R$ 30 mil conta como REPROVADO (Fabio 13/11, Alexandre Pelissari: aprovou R$ 25,7 mil, o aviso saiu sem parcelas e a IA prometeu os
+ *  detalhes 3 vezes). O simulador do Credimorar não abre abaixo de R$ 30 mil financiados, então não há parcelas pra repassar ao cliente — e fica muito abaixo do mínimo de R$ 50 mil
+ *  do Home Equity. Só o Santander do HE (CREDIMORAR); Inter/Creditas abaixo de 50 mil seguem o fluxo normal (Fabio 07/11). Sem o valor gravado não muda nada. */
+export const SANTANDER_SIMULADOR_MINIMO = 30_000;
+export const abaixoDoSimuladorSantander = (r: { bank: string; status: string; approvedValue?: number | null }) => r.bank === 'CREDIMORAR' && ['APPROVED', 'CONDITIONAL'].includes(r.status) && r.approvedValue != null && r.approvedValue > 0 && r.approvedValue < SANTANDER_SIMULADOR_MINIMO;
 /** Linha que NÃO conta como veredito do banco: a simulação de teste antiga (AI_SIM) e a nova proposta que o CLIENTE pediu (outro prazo/valor — AI_CHANGE) quando NÃO foi aprovada:
  *  recusa num prazo/valor diferente não desfaz a aprovação que o banco já deu (senão o CRM mandaria a negativa e fecharia o card de quem está aprovado). Enquanto roda, segura como pendente. */
 export const semRuidoDeSimulacao = (r: { source: string; status: string }) => r.source !== 'AI_SIM' && !(r.source === 'AI_CHANGE' && !['APPROVED', 'CONDITIONAL', 'REQUESTED', 'RUNNING', 'SENT'].includes(r.status));
@@ -543,7 +548,7 @@ export function bankVerdict(rows: VRow[], bank: string): 'NEG' | 'POS' | 'PENDIN
   const mine = rows.filter((r) => r.bank === bank && semRuidoDeSimulacao(r) && !(r.kind === 'CHECK' && r.status === 'CHECK')).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   const r = mine[0];
   if (!r) return 'PENDING';
-  if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return 'POS';
+  if (r.status === 'APPROVED' || r.status === 'CONDITIONAL') return abaixoDoSimuladorSantander(r) ? 'NEG' : 'POS';
   if (r.status === 'REJECTED') return 'NEG';
   if (r.status === 'FAILED' && OBJECTIVE_FAIL.test(r.detail || '')) return 'NEG';
   if (bank === 'CREDITAS' && CREDITAS_CPF_ATIVO.test(r.detail || '')) return 'NEG'; // conferir/"verificar" com esse aviso: não tem como rodar
@@ -632,7 +637,7 @@ async function closeRejected(accountId: string, io: any) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
+    select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true, approvedValue: true } } },
     orderBy: { createdAt: 'asc' }, take: 80,
   });
   for (const l of leads) {
@@ -706,7 +711,7 @@ export function rejectionPendingOf(rows: any[], lead: { status: string; stage?: 
 export async function sendRejectionAndClose(p: { accountId: string; leadId: string; userId: string; io: any }): Promise<{ ok: boolean; scheduled?: boolean; already?: boolean; error?: string }> {
   const l = await prisma.lead.findFirst({
     where: { id: p.leadId, accountId: p.accountId, status: 'OPEN' },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, holderName: true, source: true, approvedValue: true } } },
   });
   if (!l) return { ok: false, error: 'Card não encontrado ou já fechado.' };
   const rows = l.creditAnalyses;
@@ -748,6 +753,11 @@ async function ackPendingProposals(accountId: string, io: any) {
 
 const RETRY_MAX = 3;
 const RETRY_GAP_MS = 15 * 60_000;
+/** Etapas depois da Pré-Análise em que a falha técnica RECENTE ainda é refeita sozinha (Fabio 13/11, jorge): o card sai da Pré-Análise quando o 1º banco aprova, mas os outros seguem rodando. */
+const ETAPAS_RETRY_DEPOIS_DA_PRE = ['Aguardando Documenta', 'Documentação Receb'];
+const RETRY_FORA_DA_PRE_MS = 72 * 3_600_000;
+/** Rodada que caiu no meio (não é o banco recusando): janela/aba do banco fechada, página recarregada, extensão reiniciada. */
+export const RODADA_CAIU = /Frame with ID \d+ was removed|p[aá]gina recarregou ou a janela fechou|No tab with id|parou no meio|foi recarregada ou reiniciada no meio|janela do banco fechada|a execu[cç][aã]o terminou sem registrar resultado/i;
 
 /** 5) Falha TÉCNICA (extensão travou, tela não carregou, dado faltando) não deixa o cliente parado na Pré-Análise: refaz sozinho o banco que falhou, até 3 vezes, de 15 em
  *  15 min (Fabio 14/10: "como faz pros clientes que falhou rodar sozinha depois?"). Falha OBJETIVA (regra do banco/imóvel) e "rodada anulada" não entram — essas são decisão. */
@@ -756,18 +766,25 @@ const RETRY_GAP_MS = 15 * 60_000;
 async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 'HE') {
   const fh = produto === 'FH';
   const BANCOS = fh ? ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'] : BANKS;
+  // Também o card que JÁ SAIU da Pré-Análise porque outro banco aprovou primeiro, com a rodada deste banco caindo depois (Fabio 13/11, jorge anastacio: a Creditas aprovou, o card foi
+  // pra Aguardando Documentação e o Santander, que caiu no meio, nunca foi refeito — "quando a rodada cair, ele tentar novamente"). Fora da Pré-Análise só vale falha RECENTE (72 h).
+  const recenteDesde = new Date(Date.now() - RETRY_FORA_DA_PRE_MS);
   const leads = await prisma.lead.findMany({
     where: {
       accountId, status: 'OPEN', archived: false, isGroup: false,
-      stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } },
+      OR: [
+        { stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } },
+        { OR: ETAPAS_RETRY_DEPOIS_DA_PRE.map((e) => ({ stage: { name: { startsWith: e, mode: 'insensitive' as const } } })), creditAnalyses: { some: { dryRun: false, status: { in: ['FAILED', 'CHECK', 'INCOMPLETE'] }, updatedAt: { gte: recenteDesde } } } },
+      ],
       pipeline: { department: { name: { contains: fh ? 'Habitacional' : 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true } } },
-    orderBy: { createdAt: 'asc' }, take: 80,
+    select: { id: true, name: true, customFields: true, stage: { select: { name: true } }, creditAnalyses: { where: { dryRun: false }, orderBy: { createdAt: 'asc' }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, updatedAt: true, source: true, proposalNumber: true } } },
+    orderBy: { createdAt: 'asc' }, take: 120,
   });
   for (const l of leads) {
     const cf = (l.customFields || {}) as Cf;
+    const naPre = /^pr[ée]-an/i.test(l.stage?.name || '');
     if (cf._autoPaused) continue; // cliente PAUSADO pelo botão da tela: nada automático (rodar, refazer, 2º participante, avisos, fechar)
     const rows = l.creditAnalyses;
     if (cf._noticeAt) continue;
@@ -780,7 +797,10 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
     for (const b of BANCOS) {
       const r = rows.filter((x) => x.bank === b && semRuidoDeSimulacao(x) && !(x.kind === 'CHECK' && x.status === 'CHECK')).sort((a, c) => c.createdAt.getTime() - a.createdAt.getTime())[0];
       if (!r || aberto(b)) continue;
-      const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE';
+      if (!naPre && Date.now() - r.updatedAt.getTime() > RETRY_FORA_DA_PRE_MS) continue; // fora da Pré-Análise: só a falha recente
+      // Rodada que CAIU no meio (janela/aba do banco fechou, página recarregou, extensão reiniciou) termina como "conferir" (RUN + CHECK), não como FAILED — antes ninguém refazia (jorge 11/11).
+      const caiu = r.kind === 'RUN' && r.status === 'CHECK' && !r.proposalNumber && RODADA_CAIU.test(r.detail || '');
+      const tecnica = (r.status === 'FAILED' && !OBJECTIVE_FAIL.test(r.detail || '')) || r.status === 'INCOMPLETE' || caiu;
       if (!tecnica || /RODADA ANULADA/i.test(r.detail || '')) continue;
       // O portal recusou um DADO do cadastro (telefone/e-mail inválido…): refazer sem corrigir o dado dá o mesmo erro. Espera alguém corrigir o card (que gera pedido novo).
       if (DADO_PARA_CORRIGIR.test(r.detail || '')) continue;
@@ -796,6 +816,8 @@ async function retryTechnicalFailures(accountId: string, produto: 'HE' | 'FH' = 
       redo.push(b);
       // Falha de um RODAR que já tinha ENVIADO a proposta ao banco (teto de tempo/extensão travada depois do envio): refazer como RODAR criaria proposta DUPLICADA no portal.
       if (r.kind === 'CHECK' || r.proposalNumber || /proposta (j[aá] )?enviada|lendo o resultado/i.test(r.detail || '')) redoCheck.add(b);
+      // Caiu DEPOIS de enviar/criar a proposta (Creditas cria no 1º passo; Santander só manda ao banco no "Enviar"): confere a lista em vez de criar outra proposta.
+      else if (caiu && (b === 'CREDITAS' || /enviar|enviad|proposta criada/i.test(r.detail || ''))) redoCheck.add(b);
     }
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander', CREDIMORAR_FH: 'Credimorar (Financiamento)', INTER_FH: 'Inter (Financiamento)', ITAU_FH: 'Itaú (Financiamento)' };
     if (redo.length) {
@@ -997,7 +1019,7 @@ async function earlyStatusNotices(accountId: string, io: any) {
       pipeline: { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } },
       creditAnalyses: { some: { dryRun: false } },
     },
-    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, source: true } } },
+    select: { id: true, name: true, customFields: true, creditAnalyses: { where: { dryRun: false }, select: { bank: true, kind: true, status: true, detail: true, createdAt: true, source: true, approvedValue: true } } },
     take: 60,
   });
   for (const l of leads) {

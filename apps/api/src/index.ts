@@ -376,6 +376,13 @@ httpServer.listen(PORT, () => {
     setInterval(rodar, 2 * 60 * 1000);
   }, 3 * 60 * 1000);
 
+  // Santander em análise manual (Fabio 13/11, Claudemir): pedido de documentos segurado sai dentro do horário e, com tudo recebido, os documentos vão por e-mail à Letícia.
+  setTimeout(() => {
+    const rodar = () => (require('./services/santander-manual.service') as typeof import('./services/santander-manual.service')).processSantanderManual(io as any).catch((err: any) => console.error('[Santander manual] Poll:', err?.message));
+    rodar();
+    setInterval(rodar, 5 * 60 * 1000);
+  }, 4 * 60 * 1000);
+
   // Gênero dos participantes (Fabio 06/11): "Gênero"/"Gênero 2" vazios ganham Feminino/Masculino pela proposta ou pelo primeiro nome (nunca por cima da equipe).
   setTimeout(() => {
     const varrer = () => (require('./services/genero.service') as typeof import('./services/genero.service')).varrerGenero(io as any).catch((err: any) => console.error('[Gênero] Poll:', err?.message));
