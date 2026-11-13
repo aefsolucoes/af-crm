@@ -179,7 +179,15 @@ async function encaminharSeCompleto(accountId: string, leadId: string, io?: Io):
   const docs = validos.filter((a) => tiposPorId[a.id] !== 'IGNORAR');
   const semLeitura = novos.filter((a) => !tiposPorId[a.id]);
   const tipos = docs.map((a) => String(tiposPorId[a.id] || '').split('|')[0]).filter(Boolean);
-  const { faltando, naoConferidos } = faltandoParaSantanderManual(st.itens || [], tipos, Date.now() - ultimo > RELAXA_QTD_MS);
+  // Pedido feito antes de 13/11 (sem `itens` gravado — ex.: jorge anastacio): os itens vêm da leitura do portal ("ANÁLISE MANUAL ABERTA … DOCUMENTOS"); sem nada, a lista genérica.
+  let itens = st.itens || [];
+  if (!itens.length) {
+    const lida = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CREDIMORAR', dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+    const { parseDocumentosExigidos, docDoPortal } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
+    if (!itens.length) itens = ITENS_PADRAO;
+  }
+  const { faltando, naoConferidos } = faltandoParaSantanderManual(itens, tipos, Date.now() - ultimo > RELAXA_QTD_MS);
   if (faltando.length || (semLeitura.length && Date.now() - ultimo < ESPERA_CLASSIFICAR_MS)) {
     const sig = `${faltando.join(';')}|${novos.length}`;
     if (faltando.length && st.incompletoSig !== sig) {
