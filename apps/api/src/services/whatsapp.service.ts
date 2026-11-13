@@ -328,13 +328,36 @@ function parseGraphError(json: { error?: { message: string; code: number } }, re
   return `${friendly || errMsg} (código: ${errCode}, número: ${phone})`;
 }
 
+/** POST na Graph API com nova tentativa quando a CONEXÃO cai (Fabio 13/11, Cleci: "fetch failed / ECONNRESET" às 14h51 — a resposta da IA já pronta se perdeu
+ *  e a cliente ficou sem resposta). Só erro de rede (conexão reaproveitada que a Meta já tinha fechado, DNS, recusa); qualquer resposta da Meta, mesmo de erro,
+ *  volta na hora. Esgotadas as tentativas, lança o erro marcado com `redeGraph` (quem chama devolve `transitorio: true`). */
+const ESPERAS_GRAPH = [1_000, 3_000];
+const REDE_PASSAGEIRA = /ECONNRESET|EPIPE|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|UND_ERR_SOCKET|UND_ERR_CONNECT_TIMEOUT|other side closed/i;
+async function fetchGraph(url: string, init: RequestInit): Promise<Response> {
+  for (let i = 0; ; i++) {
+    try {
+      return await fetch(url, init);
+    } catch (e: any) {
+      const motivo = `${e?.cause?.code || ''} ${e?.cause?.message || ''} ${e?.message || ''}`;
+      const passageira = REDE_PASSAGEIRA.test(motivo);
+      if (i >= ESPERAS_GRAPH.length || !passageira) { if (passageira && e && typeof e === 'object') e.redeGraph = true; throw e; }
+      console.warn(`[WhatsApp] conexão com a Meta caiu (${(e?.cause?.code || e?.message || '').trim()}) — tento de novo em ${ESPERAS_GRAPH[i] / 1000} s`);
+      await new Promise((r) => setTimeout(r, ESPERAS_GRAPH[i]));
+    }
+  }
+}
+/** Erro da Meta que passa sozinho (instabilidade, limite de envio por minuto): vale tentar de novo daqui a pouco. */
+function erroGraphPassageiro(res: Response, json: { error?: { code: number } }): boolean {
+  return res.status >= 500 || [1, 2, 4, 80007, 130429, 131000, 131016, 131048].includes(Number(json.error?.code));
+}
+
 export async function sendWhatsAppMessage(
   to: string,
   message: string,
   accountId: string,
   departmentId?: string | null,
   replyToWamid?: string | null
-): Promise<{ success: boolean; externalId?: string; error?: string }> {
+): Promise<{ success: boolean; externalId?: string; error?: string; transitorio?: boolean }> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   console.log(`[WA Send] accountId=${accountId} config exists=${!!config} active=${config?.active} phoneNumberId=${config?.phoneNumberId}`);
 
@@ -350,7 +373,7 @@ export async function sendWhatsAppMessage(
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchGraph(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.accessToken}`,
@@ -374,13 +397,13 @@ export async function sendWhatsAppMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone, accountId) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId), transitorio: erroGraphPassageiro(res, json) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
   } catch (err) {
     console.error('[WhatsApp] Fetch error:', err);
-    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp', transitorio: !!(err as any)?.redeGraph };
   }
 }
 
@@ -411,7 +434,7 @@ export async function sendWhatsAppMedia(
     const form = new FormData();
     form.append('messaging_product', 'whatsapp');
     form.append('file', new Blob([buffer], { type: mimeType }), fileName);
-    const uploadRes = await fetch(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/media`, {
+    const uploadRes = await fetchGraph(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/media`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.accessToken}` },
       body: form as any,
@@ -427,7 +450,7 @@ export async function sendWhatsAppMedia(
     if (mediaType === 'document') mediaObj.filename = fileName;
     if (caption && mediaType !== 'audio') mediaObj.caption = caption; // áudio não aceita legenda na API
 
-    const sendRes = await fetch(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`, {
+    const sendRes = await fetchGraph(`https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${config.accessToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ messaging_product: 'whatsapp', to: phone, type: mediaType, [mediaType]: mediaObj }),
@@ -495,7 +518,7 @@ export async function sendWhatsAppButtonsMessage(
   buttons: string[],
   accountId: string,
   departmentId?: string | null
-): Promise<{ success: boolean; externalId?: string; error?: string }> {
+): Promise<{ success: boolean; externalId?: string; error?: string; transitorio?: boolean }> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   if (!config) return { success: false, error: 'WhatsApp não configurado. Acesse Configurações → API Oficial e salve suas credenciais.' };
   if (!config.active) return { success: false, error: 'WhatsApp inativo. Acesse Configurações → API Oficial e ative a integração.' };
@@ -506,7 +529,7 @@ export async function sendWhatsAppButtonsMessage(
   const trimmedButtons = buttons.slice(0, 3);
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchGraph(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.accessToken}`,
@@ -536,13 +559,13 @@ export async function sendWhatsAppButtonsMessage(
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send buttons error para "${phone}":`, json.error);
-      return { success: false, error: parseGraphError(json, res, phone, accountId) };
+      return { success: false, error: parseGraphError(json, res, phone, accountId), transitorio: erroGraphPassageiro(res, json) };
     }
 
     return { success: true, externalId: json.messages?.[0]?.id };
   } catch (err) {
     console.error('[WhatsApp] Fetch error (buttons):', err);
-    return { success: false, error: 'Falha na conexão com a API do WhatsApp' };
+    return { success: false, error: 'Falha na conexão com a API do WhatsApp', transitorio: !!(err as any)?.redeGraph };
   }
 }
 
@@ -567,7 +590,7 @@ export async function sendWhatsAppCtaUrlMessage(
   const graphUrl = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
   try {
-    const res = await fetch(graphUrl, {
+    const res = await fetchGraph(graphUrl, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.accessToken}`,
@@ -630,7 +653,7 @@ export async function sendWhatsAppTemplateMessage(
     : [];
 
   try {
-    const res = await fetch(url, {
+    const res = await fetchGraph(url, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${config.accessToken}`,
@@ -1764,13 +1787,14 @@ export async function responderClienteSeUltimo(accountId: string, leadId: string
   await maybeAiAutoReplyCloudApi(accountId, leadId, ultima.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
 }
 
-/** A cada 2 min: resposta da IA que não saiu porque a API da Anthropic estava fora/sobrecarregada (marca `_iaFalhaApi`, Fabio 13/11, Marcos). Tenta de novo a cada 3 min
- *  enquanto o cliente for o último a falar e a IA estiver ligada; depois de 30 min sem conseguir, para e avisa a equipe (nota + push) pra responder à mão. */
+/** A cada 2 min: resposta da IA que não saiu porque a API da Anthropic estava fora/sobrecarregada (marca `_iaFalhaApi`, Fabio 13/11, Marcos) ou porque o ENVIO pela
+ *  Meta falhou (origem 'whatsapp', Fabio 13/11, Cleci: ECONNRESET). Tenta de novo a cada 3 min enquanto o cliente for o último a falar e a IA estiver ligada; depois
+ *  de 30 min sem conseguir, para e avisa a equipe (nota + push) pra responder à mão. */
 const FALHA_API_MAX_MS = 30 * 60_000;
 export async function retomarRespostasSemApi(io: any): Promise<void> {
   const agora = new Date().toISOString();
-  const leads = await prisma.$queryRaw<{ id: string; accountId: string; desde: string | null }[]>`
-    SELECT id, "accountId", "customFields"->'_iaFalhaApi'->>'desde' AS desde FROM "Lead"
+  const leads = await prisma.$queryRaw<{ id: string; accountId: string; desde: string | null; origem: string | null }[]>`
+    SELECT id, "accountId", "customFields"->'_iaFalhaApi'->>'desde' AS desde, "customFields"->'_iaFalhaApi'->>'origem' AS origem FROM "Lead"
     WHERE jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi') AND COALESCE("customFields"->'_iaFalhaApi'->>'tentarEm', '') <= ${agora} LIMIT 20`;
   for (const l of leads) {
     // Pega a vez: empurra a próxima tentativa (dois servidores no ar durante um deploy não respondem em dobro).
@@ -1784,17 +1808,19 @@ export async function retomarRespostasSemApi(io: any): Promise<void> {
     const ultima = await prisma.message.findFirst({ where: { leadId: l.id, channel: 'WHATSAPP', deleted: false, callWaCallId: null }, orderBy: { createdAt: 'desc' }, select: { direction: true, content: true, createdAt: true } });
     if (ultima?.direction !== 'INBOUND') { await tira(); continue; } // alguém já respondeu
     const desde = Date.parse(l.desde || '') || Date.now();
+    const peloWhatsApp = l.origem === 'whatsapp';
     if (Date.now() - desde > FALHA_API_MAX_MS) {
       await tira();
       const hora = new Date(desde).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
-      await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ A IA não conseguiu responder o cliente: a API da IA (Anthropic) está fora do ar ou sobrecarregada desde ${hora}. Tentei de novo por 30 min — responda o cliente à mão.` } }).catch(() => {});
+      const causa = peloWhatsApp ? `o envio pelo WhatsApp (API da Meta) está falhando desde ${hora}` : `a API da IA (Anthropic) está fora do ar ou sobrecarregada desde ${hora}`;
+      await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ A IA não conseguiu responder o cliente: ${causa}. Tentei de novo por 30 min — responda o cliente à mão.` } }).catch(() => {});
       const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-      sendPushToAccount(l.accountId, { title: `⚠️ ${lead.name}: IA sem resposta`, body: `A API da IA está fora desde ${hora} — responda o cliente à mão.`, leadId: l.id }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+      sendPushToAccount(l.accountId, { title: `⚠️ ${lead.name}: IA sem resposta`, body: `${peloWhatsApp ? 'O envio pelo WhatsApp' : 'A API da IA'} está falhando desde ${hora} — responda o cliente à mão.`, leadId: l.id }, lead.userId ? [lead.userId] : undefined).catch(() => {});
       continue;
     }
     const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
     if (!phone) { await tira(); continue; }
-    console.log(`[IA] ${l.id}: resposta que a API da Anthropic recusou — tentando de novo`);
+    console.log(`[IA] ${l.id}: resposta que ${peloWhatsApp ? 'não saiu pelo WhatsApp' : 'a API da Anthropic recusou'} — tentando de novo`);
     await maybeAiAutoReplyCloudApi(l.accountId, l.id, ultima.content || '(mensagem)', phone, io, lead.pipeline?.departmentId).catch((e: any) => console.error('[IA] retomada sem API:', e?.message));
     // A API não falhou de novo (a marca não ganhou nova tentativa) mas a IA nem chegou a chamá-la (ex.: imagem sem contexto, ela espera o cliente): não insiste.
     await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${l.id} AND "customFields"->'_iaFalhaApi'->>'tentarEm' = ${proxima}`.catch(() => {});
@@ -1908,6 +1934,13 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
         : await sendWhatsAppMessage(phone, partes[i], accountId, departmentId);
       if (!result.success) {
         console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
+        // Nada chegou ao cliente e a falha passa sozinha (rede, instabilidade/limite da Meta): o card fica marcado e a resposta sai na retomada (retomarRespostasSemApi,
+        // a cada 2 min, por até 30 min — depois nota + push). Antes a resposta pronta se perdia (Fabio 13/11, Cleci: ECONNRESET às 14h51, ninguém soube).
+        if (!enviadas && result.transitorio) {
+          const { marcarFalhaApi } = require('./ai-auto-reply.service') as typeof import('./ai-auto-reply.service');
+          await marcarFalhaApi(leadId, 0, 'whatsapp');
+          console.log(`[IA] ${leadId}: envio pelo WhatsApp falhou — marcado pra tentar de novo em 3 min`);
+        }
         break;
       }
       enviadas++;

@@ -589,16 +589,19 @@ export async function chamaAnthropic(esperas: number[], init: RequestInit): Prom
     await new Promise((res) => setTimeout(res, esperas[i]));
   }
 }
-/** Marca o card pra responder quando a API voltar. `desde` fica o da 1ª falha (o prazo de 30 min conta dali); `tentarEm` = próxima tentativa. */
-async function marcarFalhaApi(leadId: string, status: number): Promise<void> {
+/** Marca o card pra responder quando a API voltar. `desde` fica o da 1ª falha (o prazo de 30 min conta dali); `tentarEm` = próxima tentativa.
+ *  `origem` 'whatsapp' = a resposta ficou pronta mas o ENVIO pela Meta falhou (Fabio 13/11, Cleci) — a retomada gera e manda de novo. */
+export async function marcarFalhaApi(leadId: string, status: number, origem: 'anthropic' | 'whatsapp' = 'anthropic'): Promise<void> {
   const agora = new Date().toISOString();
   const tentarEm = new Date(Date.now() + 3 * 60_000).toISOString();
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_iaFalhaApi}',
-    jsonb_build_object('desde', COALESCE("customFields"->'_iaFalhaApi'->>'desde', ${agora}::text), 'tentarEm', ${tentarEm}::text, 'status', ${status}::int), true) WHERE id = ${leadId}`.catch((e: any) => console.error('[AI Auto-reply] marca de falha:', e?.message));
+    jsonb_build_object('desde', COALESCE("customFields"->'_iaFalhaApi'->>'desde', ${agora}::text), 'tentarEm', ${tentarEm}::text, 'status', ${status}::int, 'origem', ${origem}::text), true) WHERE id = ${leadId}`.catch((e: any) => console.error('[AI Auto-reply] marca de falha:', e?.message));
 }
-/** A API respondeu: tira a marca (se houver). Fire-and-forget. */
+/** A API respondeu: tira a marca (se houver). Fire-and-forget. Falha no ENVIO pelo WhatsApp fica: só sai quando a resposta chega ao cliente (retomarRespostasSemApi
+ *  tira depois de mandar) — senão o prazo de 30 min recomeçaria a cada tentativa. */
 function limparFalhaApi(leadId: string): void {
-  prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${leadId} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi')`.catch(() => {});
+  prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${leadId} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi')
+    AND COALESCE("customFields"->'_iaFalhaApi'->>'origem', '') <> 'whatsapp'`.catch(() => {});
 }
 
 export async function generateAiAutoReply(
