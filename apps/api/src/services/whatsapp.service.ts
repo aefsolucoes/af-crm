@@ -1931,7 +1931,7 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
     // chooseBank/caixaPedido/caixaRota sozinhos também aplicam (Fabio 01/11: a rota da CAIXA não chegava aqui).
     if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulateFinal || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate: simulateFinal, chooseBank, caixaPedido, caixaRota, caixaConcorrente }, io);
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate: simulateFinal, chooseBank, caixaPedido, caixaRota, caixaConcorrente, aiReply: reply }, io);
     }
 
     // Cliente quer ligação num horário: abre o popup pra equipe confirmar se

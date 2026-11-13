@@ -1164,7 +1164,28 @@ export async function sendApprovalNoticeNow(p: { accountId: string; leadId: stri
 
 /** Botão "Encaminhar aprovação ao cliente" de UMA proposta (Fabio 02/11: "encaminho os dados e simulação, quando houver, daquela proposta"): manda só os dados dela, com o botão
  *  "Seguir com esta", e pede o PDF da simulação dela quando o banco tem. Não move o card nem manda a lista de documentos — é a equipe escolhendo o que encaminhar. */
-export async function forwardApprovalToClient(p: { accountId: string; leadId: string; analysisId: string; userId?: string; io?: any }): Promise<{ ok: boolean; error?: string; pdf?: 'pedido' | 'andamento' | 'outra' | null }> {
+/** A IA prometeu "os detalhes da aprovação do <banco>", mas o aviso padrão já tinha ido (Fabio 13/11, Alexandre: o aviso levou só a Creditas — a proposta maior —; ele pediu
+ *  o Santander, a IA prometeu 3 vezes e nada saiu). Encaminha a proposta aprovada mais recente de cada banco citado no texto da IA que ainda NÃO foi mostrada na conversa
+ *  (o mesmo do botão "Encaminhar aprovação ao cliente"). falhas = banco citado com aprovação que não saiu (sem parcelas, conversa fechada…): quem chama avisa a equipe. */
+export async function forwardPromisedBanks(p: { accountId: string; leadId: string; texto: string; io?: any }): Promise<{ enviados: string[]; falhas: string[] }> {
+  const bancos: string[] = [];
+  if (/santander|credimorar/i.test(p.texto)) bancos.push('CREDIMORAR');
+  if (/\binter\b/i.test(p.texto)) bancos.push('INTER');
+  if (/creditas/i.test(p.texto)) bancos.push('CREDITAS');
+  const enviados: string[] = [];
+  const falhas: string[] = [];
+  for (const bank of bancos) {
+    const r = await prisma.creditAnalysis.findFirst({ where: { leadId: p.leadId, accountId: p.accountId, bank, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { createdAt: 'desc' } });
+    if (!r) continue; // banco citado sem aprovação (ex.: "o Inter não aprovou")
+    const [opt] = await withPayoff(p.leadId, await withHolders(p.leadId, [optionFromRow(r, false)]));
+    if (await approvalAlreadyInChat(p.leadId, renderApprovalText([opt]))) continue; // essa o cliente já viu
+    const out = await forwardApprovalToClient({ accountId: p.accountId, leadId: p.leadId, analysisId: r.id, io: p.io, porIa: true });
+    if (out.ok) enviados.push(opt.instituicao); else falhas.push(`${opt.instituicao}: ${out.error}`);
+  }
+  return { enviados, falhas };
+}
+
+export async function forwardApprovalToClient(p: { accountId: string; leadId: string; analysisId: string; userId?: string; io?: any; porIa?: boolean }): Promise<{ ok: boolean; error?: string; pdf?: 'pedido' | 'andamento' | 'outra' | null }> {
   const r = await prisma.creditAnalysis.findFirst({ where: { id: p.analysisId, leadId: p.leadId, accountId: p.accountId } });
   if (!r || r.dryRun || !['APPROVED', 'CONDITIONAL'].includes(r.status)) return { ok: false, error: 'Essa proposta não está aprovada.' };
   if (r.approvedValue == null) return { ok: false, error: 'A proposta aprovou, mas ainda sem os números (a extensão está lendo): espere o valor aparecer.' };
@@ -1187,7 +1208,7 @@ export async function forwardApprovalToClient(p: { accountId: string; leadId: st
   }
   await sendOutroCanalAviso(p);
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Proposta ${opt.instituicao}${r.proposalNumber ? ` nº ${r.proposalNumber}` : ''} encaminhada ao cliente pela equipe${pdf === 'pedido' ? ', com o PDF da simulação pedido à extensão' : pdf === 'outra' ? ' (sem PDF: a extensão baixa a proposta maior/escolhida desse banco)' : ''}.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Proposta ${opt.instituicao}${r.proposalNumber ? ` nº ${r.proposalNumber}` : ''} encaminhada ao cliente ${p.porIa ? 'pela IA (ela tinha prometido os detalhes dessa proposta)' : 'pela equipe'}${pdf === 'pedido' ? ', com o PDF da simulação pedido à extensão' : pdf === 'outra' ? ' (sem PDF: a extensão baixa a proposta maior/escolhida desse banco)' : ''}.` } }).catch(() => {});
   return { ok: true, pdf };
 }
 

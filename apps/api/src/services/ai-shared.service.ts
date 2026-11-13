@@ -667,6 +667,8 @@ export interface AiExtractedAction {
   /** true (junto com caixaPedido/caixaRota) = o cliente ia seguir pela CAIXA POR FORA — "a proposta da CAIXA é imbatível", "vou pela CAIXA" (Fabio 08/11: a A&F também faz CAIXA
    *  e pede a documentação pra rodar lá). Entra na rota mesmo sem aprovação nos bancos parceiros. */
   caixaConcorrente?: boolean;
+  /** Texto que a IA mandou ao cliente nesta resposta (pra saber de qual banco ela prometeu "os detalhes" quando o aviso padrão já tinha ido — forwardPromisedBanks). */
+  aiReply?: string | null;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -690,7 +692,7 @@ export async function applyAiExtractedActions(
   try {
     const lead = await prisma.lead.findUnique({
       where: { id: leadId },
-      select: { id: true, name: true, pipelineId: true, customFields: true, tags: true, contactId: true },
+      select: { id: true, name: true, userId: true, pipelineId: true, customFields: true, tags: true, contactId: true },
     });
     if (!lead) return;
 
@@ -955,8 +957,22 @@ export async function applyAiExtractedActions(
         const { sendApprovalNoticeNow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
         await new Promise((resolve) => setTimeout(resolve, 1500)); // depois da frase curta da IA
         const r = await sendApprovalNoticeNow({ accountId, leadId, io, sendDocs: true, moveStage: true });
-        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.ok ? (r.scheduled ? '🤖 A IA quis apresentar a aprovação: o aviso padrão (resumo + documentos + PDF) ficou agendado pro próximo horário de aviso (07h–21h).' : '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).') : `🤖 A IA quis apresentar a aprovação, mas ${r.already ? 'o aviso não foi reenviado' : 'o aviso não saiu'}: ${r.error}` } }).catch(() => {});
-        if (r.ok) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: 'apresentou a aprovação ao cliente (aviso padrão)' });
+        // O aviso padrão já foi, mas a IA prometeu os detalhes de um banco que ele não trazia (Fabio 13/11, Alexandre: o aviso levou só a Creditas — a maior —; ele pediu
+        // o Santander e a IA prometeu 3 vezes sem nada sair): encaminha a proposta aprovada de cada banco citado na resposta da IA que ainda não foi mostrada na conversa.
+        const fw = !r.ok && r.already && action.aiReply
+          ? await (require('./approval-notice.service') as typeof import('./approval-notice.service')).forwardPromisedBanks({ accountId, leadId, texto: action.aiReply, io }).catch((e: any) => ({ enviados: [] as string[], falhas: [`erro: ${e?.message}`] }))
+          : { enviados: [] as string[], falhas: [] as string[] };
+        const nota = r.ok
+          ? (r.scheduled ? '🤖 A IA quis apresentar a aprovação: o aviso padrão (resumo + documentos + PDF) ficou agendado pro próximo horário de aviso (07h–21h).' : '🤖 A IA apresentou a aprovação ao cliente (aviso padrão: resumo + documentos + simulação em PDF).')
+          : fw.enviados.length
+            ? `🤖 A IA prometeu os detalhes de ${fw.enviados.join(' e ')}: o aviso padrão já tinha ido, então encaminhei só ${fw.enviados.length > 1 ? 'essas propostas' : 'essa proposta'} ao cliente.${fw.falhas.length ? ` Não saiu: ${fw.falhas.join('; ')} — mande à mão.` : ''}`
+            : `🤖 A IA prometeu ao cliente os detalhes da aprovação, mas ${r.already ? 'o aviso não foi reenviado' : 'o aviso não saiu'}: ${r.error}${fw.falhas.length ? ` · ${fw.falhas.join('; ')}` : ''}. Mande à mão o que ela prometeu.`;
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: nota } }).catch(() => {});
+        if (r.ok || fw.enviados.length) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: r.ok ? 'apresentou a aprovação ao cliente (aviso padrão)' : `encaminhou a aprovação de ${fw.enviados.join(' e ')} ao cliente` });
+        // A IA disse "já te mando os detalhes" e nada saiu (ou saiu só parte): push pra equipe — antes era só a nota e o cliente esperava (Alexandre, 13/11).
+        if ((!r.ok && !r.scheduled && !fw.enviados.length) || fw.falhas.length) {
+          (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${lead.name}: a IA prometeu os detalhes da aprovação`, body: 'Não saiu sozinho — veja a anotação no card e mande à mão.', leadId: lead.id }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+        }
       } catch (e: any) { console.error('[IA] aviso de aprovação falhou:', e?.message); }
     }
 
