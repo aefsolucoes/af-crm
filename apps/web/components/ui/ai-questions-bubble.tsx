@@ -35,7 +35,7 @@ interface AiQuestion {
   createdAt: string;
   lead: { name: string };
   /** CALL_REQUEST = cliente quer ligação — a Andreia confirma o horário ou propõe outro. */
-  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION' | 'EMAIL_QUESTION' | 'REJECTION_QUESTION' | 'BANK_EMAIL' | 'LEARN';
+  kind?: 'QUESTION' | 'CALL_REQUEST' | 'DOC_QUESTION' | 'EMAIL_QUESTION' | 'REJECTION_QUESTION' | 'BANK_EMAIL' | 'LEARN' | 'PROCESSO';
   callWhen?: string | null;
   /** DOC_QUESTION = a IA ficou em dúvida sobre um documento do cliente: o arquivo vem junto pra equipe abrir, analisar e responder. */
   attachment?: { id: string; fileName: string; mimeType: string } | null;
@@ -237,6 +237,7 @@ export function AiQuestionsBubble() {
         {q.kind === 'REJECTION_QUESTION' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 flex-shrink-0">Reprovação</span>}
         {q.kind === 'BANK_EMAIL' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-orange-100 text-orange-700 flex-shrink-0">E-mail ao banco</span>}
         {q.kind === 'LEARN' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-yellow-100 text-yellow-800 flex-shrink-0">💡 Aprender</span>}
+        {q.kind === 'PROCESSO' && <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 flex-shrink-0">🧭 Processo</span>}
         <span className={cn('ml-auto text-[10px] font-semibold px-1.5 py-0.5 rounded-full flex-shrink-0',
           q.status === 'OPEN' ? 'bg-amber-100 text-amber-700' : q.status === 'ANSWERED' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
           {q.status === 'OPEN' ? 'Aguardando' : q.status === 'ANSWERED' ? (q.kind === 'CALL_REQUEST' ? 'Resolvido' : q.kind === 'LEARN' ? 'Guardado' : 'Respondida') : q.kind === 'LEARN' ? 'Descartado' : 'Assumida'}
@@ -356,7 +357,7 @@ export function AiQuestionsBubble() {
               if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); act(q, 'answer'); }
             }}
             rows={2}
-            placeholder={q.kind === 'LEARN' ? 'Responda "sim" pra guardar a lição como está, escreva a lição certa, ou "não" pra descartar — nada vai pro cliente' : q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : q.kind === 'REJECTION_QUESTION' ? 'Responda "Venda Futura" ou "Perdidos" (e por quê) — a IA executa e aprende; nada vai pro cliente agora' : q.kind === 'BANK_EMAIL' ? 'Explique o porquê (ex.: "não envie: cliente fora da idade dos bancos") — a IA guarda como regra; nada vai ao banco sem o seu OK' : q.kind === 'EMAIL_QUESTION' ? 'Diga o que fazer (ex.: "peça o Bacen ao cliente", "avise o cliente que…", "só aguardar") — a IA executa e aprende; nada vai ao Jonatas' : 'Responda aqui — a IA passa pro cliente'}
+            placeholder={q.kind === 'PROCESSO' ? 'Diga o próximo passo — fica gravado no processo do banco e a IA usa nos próximos clientes; nada vai pro cliente' : q.kind === 'LEARN' ? 'Responda "sim" pra guardar a lição como está, escreva a lição certa, ou "não" pra descartar — nada vai pro cliente' : q.kind === 'DOC_QUESTION' ? 'Responda aqui — a IA reconfere o documento e aprende (nada vai pro cliente)' : q.kind === 'REJECTION_QUESTION' ? 'Responda "Venda Futura" ou "Perdidos" (e por quê) — a IA executa e aprende; nada vai pro cliente agora' : q.kind === 'BANK_EMAIL' ? 'Explique o porquê (ex.: "não envie: cliente fora da idade dos bancos") — a IA guarda como regra; nada vai ao banco sem o seu OK' : q.kind === 'EMAIL_QUESTION' ? 'Diga o que fazer (ex.: "peça o Bacen ao cliente", "avise o cliente que…", "só aguardar") — a IA executa e aprende; nada vai ao Jonatas' : 'Responda aqui — a IA passa pro cliente'}
             className="w-full text-sm rounded-lg border border-slate-200 px-2.5 py-1.5 resize-none focus:outline-none focus:border-[#2261a8] text-slate-800"
           />
           <div className="flex items-center justify-end gap-2 mt-1.5">
@@ -369,7 +370,7 @@ export function AiQuestionsBubble() {
             >
               <Trash2 size={12} /> Descartar
             </button>
-            {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && q.kind !== 'REJECTION_QUESTION' && q.kind !== 'BANK_EMAIL' && q.kind !== 'LEARN' && (
+            {q.kind !== 'DOC_QUESTION' && q.kind !== 'EMAIL_QUESTION' && q.kind !== 'REJECTION_QUESTION' && q.kind !== 'BANK_EMAIL' && q.kind !== 'LEARN' && q.kind !== 'PROCESSO' && (
               <button
                 onClick={() => act(q, 'dismiss')}
                 disabled={!!busy}

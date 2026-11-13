@@ -115,6 +115,11 @@ async function marca(leadId: string, id: string, resultado: string) {
 
 async function uma(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean; customFields: any; stage: { name: string } | null }, cf: Record<string, any>, done: string[], e: { id: string; subject: string | null; textBody: string | null; snippet: string | null; date: Date; fromAddress: string | null }, io: Io) {
   void done;
+  // Piloto da contratação automática depois da vistoria (Fabio 13/11): e-mail do banco sobre o cliente → pergunta ao administrador o próximo passo (uma vez por e-mail).
+  if (cf._contratacaoAuto?.on && cf._vistoriaRequestedAt && e.date && new Date(e.date).getTime() > Date.parse(cf._vistoriaRequestedAt)) {
+    await (require('./ai-team-question.service') as typeof import('./ai-team-question.service')).perguntarProximoPasso({ accountId, leadId: lead.id, evento: `chegou e-mail de ${e.fromAddress}: "${String(e.subject || '').slice(0, 120)}" — ${String(e.snippet || e.textBody || '').replace(/\s+/g, ' ').slice(0, 220)}`, ref: `email:${e.id}`, io: io as any })
+      .catch((err: any) => console.error('[Processo] próximo passo (e-mail):', err?.message));
+  }
   const limpo = cleanEmailForAi(`📧 ${e.subject || ''}\n${e.textBody || e.snippet || ''}`, 1500);
   if (limpo.body.length < 25) { await marca(lead.id, e.id, 'IGNORADO (curto)'); return; }
 

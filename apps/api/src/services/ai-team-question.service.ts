@@ -120,6 +120,71 @@ export async function createDocQuestion(params: { accountId: string; leadId: str
   return saved;
 }
 
+// ─── PROCESSO DEPOIS DA VISTORIA (Fabio 13/11, piloto do Santander: "quero que ele me envie pushes após a vistoria para eu ir orientando o que fazer e ele ir gravando como será o
+// processo"; "um a cada e-mail do banco e mudança de etapa? sim"). Card do piloto (`_contratacaoAuto`) com a vistoria já pedida: a cada e-mail do banco sobre o cliente e a cada
+// mudança de etapa, o CRM pergunta ao administrador "qual o próximo passo?" no balão (tipo PROCESSO) + push. A resposta NÃO vai ao cliente: vira nota no card, entra no contexto da IA
+// deste card e fica gravada como passo do processo do banco — a IA lê os passos gravados nos próximos clientes do mesmo banco (processoAprendidoContext).
+const NOME_BANCO_PROC: Record<string, string> = { SANTANDER: 'Santander', INTER: 'Inter', CREDITAS: 'Creditas', CAIXA: 'CAIXA' };
+export function bancoDoProcesso(cf: Record<string, any>): string {
+  if (cf._vistoriaSant || cf._vistoriaSantFh || cf._vistoriaAi?.banco === 'CREDIMORAR') return 'SANTANDER';
+  const b = String(cf._vistoriaAi?.banco || '').toUpperCase();
+  return b === 'CREDIMORAR' ? 'SANTANDER' : b || 'BANCO';
+}
+
+export async function perguntarProximoPasso(params: { accountId: string; leadId: string; evento: string; ref: string; io?: Io }) {
+  const { accountId, leadId, io } = params;
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, pipeline: { select: { departmentId: true } } } });
+  if (!lead) return null;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (!cf._contratacaoAuto?.on || !cf._vistoriaRequestedAt) return null; // só o piloto, depois da vistoria
+  const ja = await prisma.aiTeamQuestion.findFirst({ where: { accountId, leadId, kind: 'PROCESSO', payload: { path: ['ref'], equals: params.ref } }, select: { id: true } });
+  if (ja) return null;
+  const banco = bancoDoProcesso(cf);
+  const nomeBanco = NOME_BANCO_PROC[banco] || banco;
+  const question = `🧭 ${nomeBanco}, depois da vistoria — ${params.evento.trim()}\nQual o próximo passo? (fica gravado como passo do processo do ${nomeBanco}; nada vai pro cliente)`.slice(0, 1000);
+  const departmentId = lead.pipeline?.departmentId ?? null;
+  const saved = await prisma.aiTeamQuestion.create({
+    data: { accountId, leadId, departmentId, question, kind: 'PROCESSO', payload: { banco, ref: params.ref, evento: params.evento.trim().slice(0, 500) } as any },
+    select: SELECT,
+  });
+  const userIds = await recipientsFor(accountId, departmentId, true);
+  emitTo(io, userIds, 'ai_team_question', { id: saved.id, leadId, leadName: lead.name, question: saved.question, isNew: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🧭 Processo do ${nomeBanco} (piloto): ${params.evento.trim().slice(0, 300)} — perguntei ao administrador qual o próximo passo (balão "Dúvidas da IA").` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🧭 ${lead.name}: próximo passo?`, body: `${nomeBanco}: ${params.evento.trim()}`.slice(0, 160), leadId }, userIds).catch(() => {});
+  return saved;
+}
+
+async function answerProcessoQuestion(q: { id: string; accountId: string; leadId: string; departmentId: string | null; payload: any }, answer: string, userId: string, userName: string | null, io: Io) {
+  const updated = await prisma.aiTeamQuestion.update({
+    where: { id: q.id },
+    data: { status: 'ANSWERED', answer, answeredByUserId: userId, answeredByName: userName, answeredAt: new Date(), sendError: null },
+    select: SELECT,
+  });
+  const banco = NOME_BANCO_PROC[String(q.payload?.banco || '')] || String(q.payload?.banco || 'banco');
+  await prisma.note.create({ data: { leadId: q.leadId, type: 'COMMENT', content: `🧭 Passo do processo do ${banco} gravado (${userName || 'administrador'}): quando "${String(q.payload?.evento || '').slice(0, 200)}" → ${answer}` } }).catch(() => {});
+  logActivity({ accountId: q.accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: `orientou o próximo passo do processo do ${banco}` });
+  emitTo(io, await recipientsFor(q.accountId, q.departmentId, true), 'ai_team_question_updated', { id: q.id });
+  return updated;
+}
+
+/** Passos do processo do banco que o administrador já orientou (de qualquer cliente) — vai pra IA dos cards desse banco depois da vistoria. '' se não se aplica. */
+export async function processoAprendidoContext(leadId: string): Promise<string> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || !cf._vistoriaRequestedAt) return '';
+  const banco = bancoDoProcesso(cf);
+  const rows = await prisma.aiTeamQuestion.findMany({
+    where: { accountId: lead.accountId, kind: 'PROCESSO', status: 'ANSWERED', payload: { path: ['banco'], equals: banco } },
+    orderBy: { answeredAt: 'desc' }, take: 20, select: { payload: true, answer: true },
+  });
+  if (!rows.length) return '';
+  const nomeBanco = NOME_BANCO_PROC[banco] || banco;
+  return `--- PROCESSO DO ${nomeBanco.toUpperCase()} DEPOIS DA VISTORIA (como o administrador orientou, do mais recente pro mais antigo) ---
+${rows.map((r) => `- Quando: ${String((r.payload as any)?.evento || '').slice(0, 200)} → ${String(r.answer || '').slice(0, 300)}`).join('\n')}
+Use isso pra saber o que vem depois e explicar ao cliente o próximo passo, sem prometer prazo. O que não estiver aqui, a equipe orienta — não invente etapa.`;
+}
+
 /** Dúvida da IA sobre a RESPOSTA do Jonatas (Creditas) por e-mail (Fabio 16/10): quando ele responde à nossa cobrança de posição e NÃO é o pedido do SCR Bacen, a IA leva pra equipe
  *  "o que devo fazer?". A resposta da equipe NÃO vai ao Jonatas: a IA decide (pedir o SCR ao cliente, avisar o cliente ou só registrar) e guarda a regra geral na Base de Conhecimento. */
 export async function createEmailQuestion(params: { accountId: string; leadId: string; resumo: string; sugestao?: string; excerpt: string; messageId?: string; io?: Io }) {
@@ -495,7 +560,7 @@ export async function listAiTeamQuestions(accountId: string, scopeDepartmentIds:
  *  no prompt da IA pra ela não inventar nem perguntar de novo o mesmo. */
 export async function teamQuestionsContext(leadId: string): Promise<string> {
   const rows = await prisma.aiTeamQuestion.findMany({
-    where: { leadId, kind: { notIn: ['DOC_QUESTION', 'LEARN'] }, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
+    where: { leadId, kind: { notIn: ['DOC_QUESTION', 'LEARN', 'PROCESSO'] }, OR: [{ status: 'OPEN' }, { status: 'ANSWERED', answeredAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } }] },
     orderBy: { createdAt: 'desc' },
     take: 5,
     select: { status: true, question: true, answer: true, kind: true, callWhen: true },
@@ -509,7 +574,8 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     where: { leadId, kind: 'DOC_QUESTION', status: 'ANSWERED', answer: { not: null }, answeredAt: { gt: desdeDoc } },
     orderBy: { answeredAt: 'desc' }, take: 3, select: { question: true, answer: true },
   });
-  if (!rows.length && !docRows.length) return '';
+  const processo = await processoAprendidoContext(leadId).catch(() => '');
+  if (!rows.length && !docRows.length) return processo;
   const docLines = docRows.map((r) => `- Documento: ${r.question.replace(/\s+/g, ' ').slice(0, 400)}\n  Resposta da equipe: ${r.answer} (se ela pede algo do cliente — perguntar, confirmar, explicar —, faça isso na conversa, uma vez)`);
   const lines = rows.map((r) => r.kind === 'CALL_REQUEST'
     ? (r.status === 'OPEN'
@@ -520,7 +586,7 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     : `- Pergunta: ${r.question}\n  Resposta da equipe: ${r.answer}`);
   return `--- DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE ---
 ${[...lines, ...docLines].join('\n')}
-Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele ("noReply": true) — a resposta chega pelo balão; não abra outra pergunta nem invente. Se ele trouxer outro assunto, responda o outro. Respostas da equipe valem como verdade pra este cliente.`;
+Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele ("noReply": true) — a resposta chega pelo balão; não abra outra pergunta nem invente. Se ele trouxer outro assunto, responda o outro. Respostas da equipe valem como verdade pra este cliente.${processo ? `\n\n${processo}` : ''}`;
 }
 
 /** Veredito real de cada banco pro card (bankVerdict: negou / aprovou / ainda em análise). Vazio se o card não tem análise de crédito. */
@@ -619,6 +685,7 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
 
   if (q.kind === 'LEARN') return answerLearnQuestion(q as any, answer, userId, user?.name || null, io);
   if (q.kind === 'DOC_QUESTION') return answerDocQuestion(q, answer, userId, user?.name || null, io);
+  if (q.kind === 'PROCESSO') return answerProcessoQuestion(q as any, answer, userId, user?.name || null, io);
   if (q.kind === 'REJECTION_QUESTION') return answerRejectionQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'BANK_EMAIL') return answerBankEmailQuestion(q, answer, userId, user?.name || null, io);
   if (q.kind === 'EMAIL_QUESTION') {

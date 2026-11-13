@@ -134,11 +134,18 @@ export async function updateLeadStage(id: string, accountId: string, stageId: st
     ligaIa = !((atual?.customFields || {}) as Record<string, unknown>)._autoPaused;
   }
   const estava = ligaIa ? (await prisma.lead.findUnique({ where: { id }, select: { aiAutoReplyActive: true, accountId: true } })) : null;
+  // Piloto da contratação automática depois da vistoria (Fabio 13/11): mudança de etapa → pergunta ao administrador o próximo passo (ai-team-question.perguntarProximoPasso).
+  const antes = await prisma.lead.findUnique({ where: { id }, select: { stageId: true, customFields: true, stage: { select: { name: true } } } });
   const atualizado = await prisma.lead.update({
     where: { id },
     data: { stageId, pipelineId: stage.pipelineId, ...(ligaIa ? { aiAutoReplyActive: true } : {}) },
     include: { stage: true },
   });
+  const cfAntes = (antes?.customFields || {}) as Record<string, any>;
+  if (antes && antes.stageId !== stageId && cfAntes._contratacaoAuto?.on && cfAntes._vistoriaRequestedAt) {
+    (require('./ai-team-question.service') as typeof import('./ai-team-question.service')).perguntarProximoPasso({ accountId, leadId: id, evento: `o card foi de "${antes.stage?.name || '?'}" para "${stage.name}"`, ref: `etapa:${stageId}:${new Date().toISOString().slice(0, 16)}` })
+      .catch((e: any) => console.error('[Processo] próximo passo (etapa):', e?.message));
+  }
   // Ligou a IA agora (Fabio 05/11): ela retoma o que ficou parado — 2 min depois, pra quem moveu o card (aviso de aprovação…) falar primeiro.
   if (estava && !estava.aiAutoReplyActive) setTimeout(() => { (require('./whatsapp.service') as typeof import('./whatsapp.service')).retomarComIa(estava.accountId, id, null).catch((e: any) => console.error('[IA ligada] retomar:', e?.message)); }, 120_000);
   return atualizado;
