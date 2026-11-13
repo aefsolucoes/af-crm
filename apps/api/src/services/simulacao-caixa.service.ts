@@ -130,8 +130,8 @@ export async function proximaSimulacaoCaixa(accountId: string): Promise<any | nu
       dados: {
         cpf: d.cpf, nascimento: d.nascimento, renda: brl(d.renda), maisDeUm: d.maisDeUm, fgts3anos: d.fgts,
         valorFinanciamento: brl(num(cf.valor_credito)),
+        // Prazo: o da aprovação liberada na PRICE (360) ou o que o cliente pediu; sem pedido = máximo (vem DEPOIS — antes um campo vazio do card apagava o 360, 12/11).
         ...condicoesDaAprovacao(cf),
-        prazoMeses: num(cf._fhPrazo || cf.prazo_meses || cf.prazo) || null,
         ...imovelDoCard(cf, he),
       },
     };
