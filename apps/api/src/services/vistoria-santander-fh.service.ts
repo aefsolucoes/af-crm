@@ -29,7 +29,7 @@ type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; v
   contaComprador?: { agencia?: string; conta?: string; digito?: string; naoTem?: boolean };
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
 type St = { status?: string; autAskedAt?: string; saudeSentAt?: string;
-  autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string;
+  autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string;
   sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[]; semLocalNoteAt?: string };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
@@ -339,7 +339,12 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
         await note(leadId, `🏦 Santander: declaração de saúde ASSINADA de volta (${a.fileName}).`);
       }
     }
-    if (!st.autSignedAt || !st.saudeSignedAt) return false;
+    if (!st.autSignedAt || !st.saudeSignedAt) {
+      // "Já assinou?" antes da conversa fechar, no horário de atendimento (Fabio 13/11).
+      const falta = !st.autSignedAt && !st.saudeSignedAt ? 'a autorização e a declaração de saúde' : !st.autSignedAt ? 'a autorização' : 'a declaração de saúde';
+      await (require('./assinatura-lembrete.service') as typeof import('./assinatura-lembrete.service')).lembrarAssinaturaGovBr({ accountId, leadId, leadName: lead.name, nome: primeiroNome, pedidoAt: st.autAskedAt!, oQue: falta, estado: { lembreteDe: st.lembreteDe, lembretes: st.lembretes }, salvar: (patch) => salvaSt(leadId, patch), io }).catch((e: any) => console.warn('[Vistoria Santander FH] lembrete da assinatura:', e?.message));
+      return false;
+    }
     await salvaSt(leadId, { status: 'ASSINADA' });
   }
 
@@ -355,6 +360,19 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   if (!cat.venCivil.length) faltam.push('certidão de estado civil do vendedor');
   // Documento faltando NÃO trava o pedido (Fabio 06/11: "não travar, por falta de documento, o envio à Letícia"): sai com o que tem; o e-mail e a nota dizem o que vai depois.
   const pendente = faltam.length ? `\n⚠️ Ainda não está na pasta (mande à Letícia depois, por e-mail): ${faltam.join('; ')}.` : '';
+
+  // Só a CND de IPTU pode ir depois (Fabio 13/11: "certidão de ônus do cliente é algo essencial; creio que o único que pode ser encaminhado depois seria a CND de IPTU"):
+  // faltando qualquer outro documento, o pedido NÃO sai — nota + push pra equipe (o CRM não pede documento ao cliente sem a equipe). Revoga o "não travar" de 06/11 pra esses.
+  const travam = faltam.filter((f) => !/^CND de IPTU/.test(f));
+  if (travam.length) {
+    const sig = travam.join('|');
+    if (st.status !== 'AGUARDA_DOCS' || st.docsFaltaSig !== sig || faz(st.docsFaltaNoteAt) > AVISO_REPETIR_MS) {
+      await salvaSt(leadId, { status: 'AGUARDA_DOCS', docsFaltaSig: sig, docsFaltaNoteAt: new Date().toISOString() });
+      await note(leadId, `🏦 Santander: o pedido de vistoria NÃO saiu — falta na pasta do Drive: ${travam.join('; ')} (só a CND de IPTU pode ir depois). Suba na pasta (ou combine com o cliente) e o CRM envia sozinho.`);
+      push(accountId, '🏦 Vistoria Santander parada: falta documento', `${lead.name}: ${travam.join('; ')}`.slice(0, 160), leadId);
+    }
+    return false;
+  }
 
   // 5) ficha (Word)
   const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
@@ -431,12 +449,11 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     ...(faltam.length ? [`Segue depois, assim que tivermos: ${faltam.map((f) => f.replace(/\s*\(a A&F emite\)/, '')).join('; ')}.`, ''] : []),
     'Qualquer dúvida, estou à disposição.', 'Obrigado!',
   ].join('\n');
-  const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
-  const acc = await prisma.emailAccount.findFirst({ where: { accountId, userId: null }, orderBy: { createdAt: 'asc' } });
-  if (!dono || !acc) { await note(leadId, '⚠️ Santander: a caixa de e-mail comercial não está configurada; não consegui enviar o pedido de vistoria.'); return false; }
+  let enviadoDe = '';
   try {
-    const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    await sendEmailFrom({ acc, userId: dono.id, to: [VISTORIA_SANTANDER_TO], cc: [], subject: `Solicitação de vistoria - financiamento - ${nomeCliente.toUpperCase()}${proposta ? ` - proposta ${proposta}` : ''}`, body: corpo, replyToId: null, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments: anexos });
+    const env = await (require('./vistoria-santander.service') as typeof import('./vistoria-santander.service')).enviarComReserva(accountId, { to: [VISTORIA_SANTANDER_TO], cc: [], subject: `Solicitação de vistoria - financiamento - ${nomeCliente.toUpperCase()}${proposta ? ` - proposta ${proposta}` : ''}`, body: corpo, replyToId: null, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments: anexos });
+    enviadoDe = env.de;
+    if (env.falhas.length) await note(leadId, `⚠️ Santander (Financiamento): a caixa ${env.falhas.map((f) => f.split(':')[0]).join(' e ')} não conseguiu enviar (${env.falhas.join(' | ')}); o pedido saiu pela ${env.de}.`);
   } catch (e: any) {
     await salvaSt(leadId, { status: 'ERRO', erro: String(e?.message || e).slice(0, 200) });
     await note(leadId, `⚠️ Santander (Financiamento): tentei enviar o pedido de vistoria à Letícia e não consegui: ${e?.message || e}. Envie à mão.`);
@@ -445,7 +462,7 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
   }
   await patchCf(leadId, (c) => { c._vistoriaRequestedAt = new Date().toISOString(); });
   await salvaSt(leadId, { status: 'ENVIADA', sentAt: new Date().toISOString(), to: VISTORIA_SANTANDER_TO, pendentes: faltam });
-  await note(leadId, `📨 Vistoria do Santander (Financiamento) solicitada: e-mail para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${ficha.faltando.length ? `\nFicaram em branco na ficha: ${ficha.faltando.join('; ')}.` : ''}${pendente}`);
+  await note(leadId, `📨 Vistoria do Santander (Financiamento) solicitada: e-mail (de ${enviadoDe}) para ${VISTORIA_SANTANDER_TO} com ${anexos.length} anexo(s): ${anexos.map((a) => a.filename).join('; ')}.${ficha.faltando.length ? `\nFicaram em branco na ficha: ${ficha.faltando.join('; ')}.` : ''}${pendente}`);
   push(accountId, faltam.length ? '📨 Vistoria Santander pedida — falta documento' : '📨 Vistoria solicitada ao Santander', faltam.length ? `${lead.name}: mandar à Letícia depois: ${faltam.join('; ')}`.slice(0, 160) : lead.name, leadId);
   // Vistoria solicitada = "Vistoria do Imóvel" (mesmo caminho dos outros bancos).
   await (require('./vistoria-inter.service') as typeof import('./vistoria-inter.service')).moverParaVistoria(accountId, leadId, 'vistoria solicitada ao Santander (Financiamento)', io as any);
