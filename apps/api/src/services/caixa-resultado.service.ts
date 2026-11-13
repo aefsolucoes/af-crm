@@ -449,7 +449,7 @@ export async function processPvAvisos(accountId: string, io?: any): Promise<void
 }
 
 // ─── Aprovada (Fabio 12/11): "sempre que aprovar o crédito, encaminha a simulação na SAC para o cliente" ───
-// Financiamento de imóvel (não construção, não Home Equity — esses simuladores ainda não estão mapeados): o aviso de aprovação padrão (renderApprovalText com os
+// Financiamento de imóvel, construção e Home Equity (mapeados 12/11): o aviso de aprovação padrão (renderApprovalText com os
 // números do simulador oficial da CAIXA) vai junto com o PDF da simulação no nosso modelo. Mesmas travas do aviso de sempre: IA do card ligada, 07h–21h, conversa
 // fechada → template de atualização e o aviso sai quando o cliente responder. A condicionada (PRICE com a parcela possível) segue pelo caminho dela.
 async function marcarAvisoAprovada(accountId: string, leadId: string, nome: string, texto: string): Promise<void> {
@@ -461,12 +461,8 @@ async function marcarAvisoAprovada(accountId: string, leadId: string, nome: stri
   const he = /home|garantia/i.test(lead?.pipeline?.department?.name || '') || /garantia|EGI/i.test(String(cf._caixaCadastro?.avaliacao?.produto || ''));
   const construcao = !he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf);
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  if (he || construcao) {
-    await salvar(leadId, (x) => { x.aprovadaAviso = { status: 'EQUIPE', proposta, motivo: he ? 'home equity' : 'construção', at: new Date().toISOString() }; });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA aprovou (proposta ${proposta}). A simulação automática da CAIXA ainda não faz ${he ? 'Home Equity' : 'construção'} — o aviso ao cliente fica com a equipe.` } }).catch(() => {});
-    sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou`, body: `Avisar o cliente (${he ? 'Home Equity' : 'construção'}: simulação ainda manual).`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
-    return;
-  }
+  // Construção e Home Equity mapeados no simulador (Fabio 12/11: "mapeia e pode encaminhar a simulação após a aprovação") — seguem o mesmo aviso.
+  void he; void construcao; void sendPushToAccount; void nome;
   await salvar(leadId, (x) => { x.aprovadaAviso = { status: 'PENDING', proposta, at: new Date().toISOString() }; });
 }
 

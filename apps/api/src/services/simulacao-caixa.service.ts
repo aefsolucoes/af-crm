@@ -92,10 +92,19 @@ function imovelDoCard(cf: Record<string, any>, he: boolean) {
  *  dá o financiamento do card (imóvel − crédito). Sem o detalhe: SAC no prazo máximo (Fabio 12/11: "o padrão vai ser SAC para todas na CAIXA"). */
 function condicoesDaAprovacao(cf: Record<string, any>) {
   const tela = String(cf._caixaResultado?.ultimaTela || '');
-  const sistema = /\bPRICE\b/i.test(tela) && !/\bSAC\b/i.test(tela) ? 'PRICE' : 'SAC'; // SAC é o padrão da CAIXA (Fabio 12/11); PRICE só se a aprovação foi na PRICE
+  // Aprovada na PRICE depois da condicionada (Isidro, 12/11): simula como a CAIXA liberou — PRICE, o valor que a parcela possível paga e o prazo da refeita.
+  const lib = cf._caixaResultado?.condicionada?.tipo === 'liberado' ? cf._caixaResultado.condicionada : null;
+  const amortAv = String(cf._caixaCadastro?.avaliacao?.amortizacao || '').toUpperCase();
+  const sistema = lib ? 'PRICE' : amortAv === 'PRICE' || (/\bPRICE\b/i.test(tela) && !/\bSAC\b/i.test(tela)) ? 'PRICE' : 'SAC'; // SAC é o padrão da CAIXA (Fabio 12/11)
   const modalidade = /SBPE/i.test(tela) ? 'sbpe' : /MCMV|minha casa/i.test(tela) ? 'mcmv' : '';
-  const imovel = num(cf.valor_imovel), credito = num(cf.valor_credito);
-  return { sistema, modalidade, entradaDesejada: imovel && credito && imovel > credito ? brl(imovel - credito) : '' };
+  const imovel = num(cf.valor_imovel);
+  const credito = lib && Number(lib.valor) > 0 ? Math.min(Number(lib.valor), num(cf.valor_credito) || Infinity) : num(cf.valor_credito);
+  return {
+    sistema, modalidade, indexador: 'TR',
+    entradaDesejada: imovel && credito && imovel > credito ? brl(imovel - credito) : '',
+    // Prazo pedido: o da aprovada na PRICE (360) ou o que o cliente pediu (`_caixaSimulacao.prazoPedido` — Fabio 12/11: "se o cliente quiser alterar o prazo… só faz uma nova simulação").
+    prazoMeses: Number(cf._caixaSimulacao?.prazoPedido) || (lib ? Number(lib.prazo) || null : null),
+  };
 }
 
 /** Fila da extensão. */
@@ -203,6 +212,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   });
   const sistema = /price/i.test(r.sistema || '') ? 'PRICE' : 'SAC';
   const indexador = (/\/\s*([A-Z]{2,5})\b/.exec(r.sistema || '') || [])[1] || 'TR';
+  const he = /garantia|empr[eé]stimo/i.test(r.modalidade || '');
   // A tabela "Todas as Parcelas" do simulador é paginada (10 por página): com a 1ª página o resto sai da conta, igual à da CAIXA — taxa mensal = nominal/12,
   // PRICE (parcela fixa) ou SAC (amortização fixa), MIP = % do saldo anterior (tirado da 1ª linha), DFI e taxa de administração fixos (12/11: conferido no PDF
   // oficial do Windson de 06/11 — R$ 200 mil, 0,68% a.m., 420 meses → R$ 1.443,82).
@@ -233,9 +243,9 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     if (!rows.length) throw new Error('a tabela de parcelas veio vazia');
     if (!fin || !pct(r.jurosNominais)) throw new Error('faltou o valor financiado ou a taxa (o painel de condições não foi lido) — não montei o PDF');
     const pdf = await renderSimulationSheet({
-      clientName: nome, bank: 'CAIXA', titulo: 'Financiamento Imobiliário | Evolução das parcelas',
+      clientName: nome, bank: 'CAIXA', titulo: he ? 'Home Equity | Evolução das parcelas' : 'Financiamento Imobiliário | Evolução das parcelas',
       summary: {
-        tipoImovel: 'Residencial', prazoMeses: rows.length, sistema, valorImovel: num(r.valorImovel), valorEmprestimo: fin, indexador, valorEntrada: num(r.entrada),
+        tipoImovel: 'Residencial', prazoMeses: rows.length, sistema, valorImovel: num(r.valorImovel), valorEmprestimo: fin, ...(he ? {} : { indexador, valorEntrada: num(r.entrada) }),
         taxaMensal: taxas.taxaMensal, taxaNominal: `${taxas.taxaNominal}${bonif}`, taxaEfetiva: `${taxas.taxaEfetiva}${bonif}`,
       },
       rows,
@@ -245,7 +255,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     const pasta = String(cf.link_pasta_drive || '').trim();
     if (!pasta) throw new Error('o card não tem "Pasta no Drive"');
     const google = await import('./google.service');
-    const arquivo = `SIMULACAO CAIXA ${String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
+    const arquivo = `SIMULACAO CAIXA ${he ? 'HE' : String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
     const velho = (cf._caixaSimulacao || {}).pdf?.driveId;
     if (velho) await google.trashDriveItem(accountId, velho).catch(() => {});
     const up = await google.uploadFile(accountId, { name: arquivo, mimeType: 'application/pdf', parentId: google.extractFolderId(pasta), data: pdf });
@@ -263,7 +273,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     if (avisoProposta && pdfPronto && !erroPdf && rows.length) {
       const { renderApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
       const taxaNom = pct(r.jurosNominais);
-      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: false, prazo: `${rows.length} meses`, taxa: taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—', primeiraParcela: `R$ ${brl(rows[0].parcela)}` } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
+      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: he, prazo: `${rows.length} meses`, taxa: taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—', primeiraParcela: `R$ ${brl(rows[0].parcela)}` } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
       await prisma.simulationDocRequest.update({ where: { id: docId }, data: { caption: legenda.slice(0, 1000) } }).catch(() => {});
     }
     if (pdfPronto && !erroPdf) {
