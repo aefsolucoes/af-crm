@@ -239,13 +239,18 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   const bonif = r.bonificada ? ' (bonificada)' : '';
   let link: string | null = null, driveId: string | null = null, erroPdf = '';
   let pdfPronto: Buffer | null = null;
+  let construcao = false;
   try {
     if (!rows.length) throw new Error('a tabela de parcelas veio vazia');
     if (!fin || !pct(r.jurosNominais)) throw new Error('faltou o valor financiado ou a taxa (o painel de condições não foi lido) — não montei o PDF');
+    // Tipo do imóvel como foi simulado (Fabio 13/11, Isidro: "quando for construção colocar no lugar de residencial construção") — a mesma escolha da etapa 2 do simulador.
+    const cfIm = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+    const im = imovelDoCard(cfIm, he);
+    construcao = !he && im.deseja === 'construir';
     const pdf = await renderSimulationSheet({
       clientName: nome, bank: 'CAIXA', titulo: he ? 'Home Equity | Evolução das parcelas' : 'Financiamento Imobiliário | Evolução das parcelas',
       summary: {
-        tipoImovel: 'Residencial', prazoMeses: rows.length, sistema, valorImovel: num(r.valorImovel), valorEmprestimo: fin, ...(he ? {} : { indexador, valorEntrada: num(r.entrada) }),
+        tipoImovel: construcao ? 'Construção' : im.tipoImovel === 'comercial' ? 'Comercial' : 'Residencial', prazoMeses: rows.length, sistema, valorImovel: num(r.valorImovel), valorEmprestimo: fin, ...(he ? {} : { indexador, valorEntrada: num(r.entrada) }),
         taxaMensal: taxas.taxaMensal, taxaNominal: `${taxas.taxaNominal}${bonif}`, taxaEfetiva: `${taxas.taxaEfetiva}${bonif}`,
       },
       rows,
@@ -255,7 +260,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     const pasta = String(cf.link_pasta_drive || '').trim();
     if (!pasta) throw new Error('o card não tem "Pasta no Drive"');
     const google = await import('./google.service');
-    const arquivo = `SIMULACAO CAIXA ${he ? 'HE' : String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
+    const arquivo = `SIMULACAO CAIXA ${he ? 'HE' : `${construcao ? 'CONSTRUCAO ' : ''}${String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'}`} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
     const up = await google.uploadFile(accountId, { name: arquivo, mimeType: 'application/pdf', parentId: google.extractFolderId(pasta), data: pdf });
     link = up.webViewLink; driveId = up.id;
     // Uma simulação só na pasta (Fabio 12/11): a anterior (outro prazo, outra tabela, outro banco) vai pra DESNECESSARIO — antes a da CAIXA ia pra lixeira.
@@ -271,10 +276,18 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     // Aviso da aprovação (Fabio 12/11: "sempre que aprovar o crédito, encaminha a simulação na SAC"): a legenda do PDF é a mensagem de aprovação padrão com os números da CAIXA.
     const cfA = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any);
     const avisoProposta = cfA._caixaSimulacao?.avisoAprovacao;
+    // Aprovada na PRICE depois da condicionada (Fabio 13/11, Isidro: "deveria ter encaminhado a simulação a ele"): o aviso dela é ESTE PDF com a mensagem de aprovação.
+    const condA = cfA._caixaResultado?.condicionada;
+    const lib = condA?.tipo === 'liberado' && condA?.simDocId === docId ? condA : null;
+    const taxaNom = pct(r.jurosNominais);
+    const taxaTxt = taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—';
     if (avisoProposta && pdfPronto && !erroPdf && rows.length) {
       const { renderApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-      const taxaNom = pct(r.jurosNominais);
-      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: he, prazo: `${rows.length} meses`, taxa: taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—', primeiraParcela: `R$ ${brl(rows[0].parcela)}` } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
+      // Como no aviso de 11/11: "valor menor que o solicitado" e "aprovado no nome de" quando o tomador não é o 1º participante.
+      const desejado = lib ? Number(lib.desejado) || 0 : 0;
+      const tomador = lib ? (() => { const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); return cc.participantesDaAvaliacao(cc.participantesDa(cfA)).tomador; })() : null;
+      const extra = { ...(desejado > fin ? { pedido: `R$ ${brl(desejado)}` } : {}), ...(tomador && Number(tomador.ordem) !== 1 && tomador.nome ? { nome: String(tomador.nome) } : {}) };
+      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: he, prazo: `${rows.length} meses`, taxa: taxaTxt, primeiraParcela: `R$ ${brl(rows[0].parcela)}`, ...extra } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
       await prisma.simulationDocRequest.update({ where: { id: docId }, data: { caption: legenda.slice(0, 1000) } }).catch(() => {});
     }
     if (pdfPronto && !erroPdf) {
@@ -282,11 +295,20 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
       if (avisoProposta) {
         const ok = !!(ent && (ent as any).ok);
         const fresh = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any);
-        const res = { ...(fresh._caixaResultado || {}), aprovadaAviso: { ...((fresh._caixaResultado || {}).aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? new Date().toISOString() : undefined } };
+        const fr = fresh._caixaResultado || {};
+        const agora = new Date().toISOString();
+        // Aprovada na PRICE: enviado → a IA passa a falar com os números da CAIXA (`oficial`); não saiu → o pedido fica FAILED e o aviso sai em texto (avisarCondicionadaCliente).
+        const res = lib
+          ? (ok ? { ...fr, condicionada: { ...(fr.condicionada || {}), status: 'ENVIADO', enviadoAt: agora, oficial: { valor: fin, prazo: rows.length, taxa: taxaTxt, parcela: rows[0]?.parcela || null } } } : fr)
+          : { ...fr, aprovadaAviso: { ...(fr.aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? agora : undefined } };
         await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaResultado: res, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), avisoAprovacao: null } } } });
+        if (lib && ok) await nota(leadId, `📨 Avisei o cliente que a CAIXA aprovou R$ ${brl(fin)}: mensagem de aprovação com os números da simulação oficial da CAIXA (${rows.length} meses, ${taxaTxt}, 1ª parcela R$ ${brl(rows[0].parcela)}) e o PDF.`);
       }
     }
-    else await sd.failSimulationDoc(prisma as any, { accountId, id: docId, reason: erroPdf || 'a simulação da CAIXA não gerou o PDF' }).catch(() => {});
+    else {
+      await sd.failSimulationDoc(prisma as any, { accountId, id: docId, reason: erroPdf || 'a simulação da CAIXA não gerou o PDF' }).catch(() => {});
+      if (avisoProposta) await gravar(leadId, { avisoAprovacao: null }); // o próximo botão "PDF" não herda a legenda de aprovação
+    }
   }
   const linhasNota = [
     `🧮 Simulação da CAIXA${erroPdf ? ' feita, mas o PDF NÃO saiu' : ' pronta'} — ${r.modalidade || '—'}${bonif}`,

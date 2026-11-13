@@ -279,7 +279,7 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
   // simulador do nosso site. Não é uma simulação oficial e também não precisa informar isso ao cliente." — o aviso vai pra fila (avisarCondicionadaCliente) com o
   // valor da conta do simulador do site, sem dizer que é estimativa.
   await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'PENDING', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso de aprovação (resumo da proposta com valor, prazo, taxa e 1ª parcela pelo simulador do site) vai ao cliente (Fabio 11/11: sem esperar simulação oficial e sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso de aprovação vai ao cliente com o PDF da simulação oficial da CAIXA e os números dela (Fabio 13/11); se a simulação não sair, vai só o resumo com os números do simulador do site (Fabio 11/11, sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Uns ${brl(valor)} pelo simulador do site · aviso ao cliente na fila`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
 }
@@ -324,6 +324,9 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   if (!inNoticeWindow()) return;
   const msg = require('./message.service') as typeof import('./message.service');
   if (await whatsappWindowOpen(leadId)) {
+    // Aprovada na PRICE (Fabio 13/11, Isidro: "deveria ter encaminhado a simulação a ele" — saiu só o texto): a mensagem de aprovação vai com o PDF da simulação
+    // oficial da CAIXA, pelo caminho do botão "PDF" (números do simulador da CAIXA). Simulação que não sair → o texto de 11/11 (simulador do site), sem PDF.
+    if (liberado && !c.semSimulacao && (await avisoComSimulacao(accountId, leadId, c)) === 'ESPERA') return;
     const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
     if (!env.success) return; // tenta no próximo minuto
     await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'ENVIADO', enviadoAt: new Date().toISOString() }; });
@@ -340,6 +343,38 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   if (c.templateAt && Date.now() - Date.parse(c.templateAt) > 48 * 3600_000) return falhou('o cliente não respondeu ao template em 48 h');
 }
 
+/** Aprovada na PRICE com a conversa aberta: pede a simulação oficial (FH_CAIXA, IA) e o PDF sai com a mensagem de aprovação (simulacao-caixa.prontaComPdf marca
+ *  ENVIADO). 'ESPERA' = pedida ou rodando (o poller volta no próximo minuto); 'TEXTO' = não deu (QR desconectado, simulador parou, mais de 20 min) → manda o texto. */
+async function avisoComSimulacao(accountId: string, leadId: string, c: Cf): Promise<'ESPERA' | 'TEXTO'> {
+  const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+  const semPdf = async (porque: string) => {
+    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), semSimulacao: true }; });
+    await nota(`⚠️ CAIXA aprovada na PRICE: a simulação oficial da CAIXA não saiu (${porque}) — o aviso de aprovação vai sem o PDF, com os números do simulador do site.`);
+    return 'TEXTO' as const;
+  };
+  if (c.simDocId) {
+    const r = await prisma.simulationDocRequest.findUnique({ where: { id: String(c.simDocId) }, select: { status: true, createdAt: true, detail: true } });
+    if (r?.status === 'DONE') { // o PDF já foi com a mensagem (prontaComPdf grava ENVIADO + os números); garante o status pra o poller largar
+      await salvar(leadId, (x) => { if (x.condicionada?.status !== 'ENVIADO') x.condicionada = { ...(x.condicionada || {}), status: 'ENVIADO', enviadoAt: x.condicionada?.enviadoAt || new Date().toISOString() }; });
+      return 'ESPERA';
+    }
+    if (r && ['REQUESTED', 'RUNNING', 'READY'].includes(r.status) && Date.now() - r.createdAt.getTime() < 20 * 60_000) return 'ESPERA';
+    return semPdf(r?.status === 'FAILED' ? String(r.detail || 'falhou').slice(0, 200) : 'demorou mais de 20 min');
+  }
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  const out = await sd.requestSimulationDocs(prisma as any, { accountId, leadId, institutions: ['FH_CAIXA'], source: 'AI' }).catch((e: any) => ({ created: [] as { id: string }[], erro: e?.message }));
+  const docId = out.created[0]?.id;
+  if (!docId) return semPdf((out as any).erro || 'já havia um PDF da CAIXA sendo gerado pra este card');
+  // Uma gravação só (corrida no customFields): o pedido do aviso + qual pedido é o dele.
+  const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+  const fr = fresh._caixaResultado || {};
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), avisoAprovacao: String(c.proposta || '?') }, _caixaResultado: { ...fr, condicionada: { ...(fr.condicionada || {}), simDocId: docId } } } as any } });
+  const st = (await prisma.simulationDocRequest.findUnique({ where: { id: docId }, select: { status: true, detail: true } }));
+  if (st?.status === 'FAILED') return semPdf(String(st.detail || 'falhou').slice(0, 200)); // ex.: WhatsApp do código (QR) desconectado
+  await nota(`✅ CAIXA aprovada na PRICE (proposta ${c.proposta || '?'}): pedi a simulação no simulador da CAIXA — a mensagem de aprovação vai ao cliente junto com o PDF.`);
+  return 'ESPERA';
+}
+
 /** Bloco pra IA da conversa: aviso da condicionada/do valor liberado esperando o template, ou enviado há até 3 dias. '' se não houver. Pura. */
 export function aiCondicionadaContext(cf: Cf): string {
   const c = cf._caixaResultado?.condicionada as Cf | undefined;
@@ -351,8 +386,15 @@ A conversa estava fechada e o CRM chamou o cliente pelo template de atualizaçã
   const dias = (Date.now() - Date.parse(c.enviadoAt)) / 86_400_000;
   if (c.tipo === 'liberado') {
     if (dias > 30) return ''; // o "simulei no site" pode vir dias depois (Fabio 11/11)
+    // Com a simulação oficial (Fabio 13/11): os números que foram ao cliente são os do PDF da CAIXA; sem ela, os do simulador do site (11/11).
+    const of = c.oficial as Cf | undefined;
+    const site = simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0);
+    const valorTxt = brl(Number(of?.valor) || Number(c.valor));
+    const prazoTxt = Number(of?.prazo) || Math.min(Number(c.prazo) || 999, c.he ? 240 : 360);
+    const taxaTxt = of?.taxa ? String(of.taxa) : `${site.taxaAnual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + TR`;
+    const parcelaTxt = brl(Number(of?.parcela) || site.parcela);
     return `--- CAIXA APROVOU (aviso enviado ao cliente; Fabio 03/11 e 11/11) ---
-O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${brl(Number(c.valor))}, no resumo de aprovação de sempre (prazo de ${Math.min(Number(c.prazo) || 999, c.he ? 240 : 360)} meses, taxa de ${simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0).taxaAnual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + TR, 1ª parcela de ${brl(simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0).parcela)}). Esses são os números APROVADOS: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
+O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${valorTxt}, no resumo de aprovação de sempre${of ? ', junto com o PDF da simulação da CAIXA' : ''} (prazo de ${prazoTxt} meses, taxa de ${taxaTxt}, 1ª parcela de ${parcelaTxt}). Esses são os números APROVADOS: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
 SIMULOU NO SITE (Fabio 11/11): se o cliente disser que fez uma simulação direto no site (da CAIXA ou outro) e conseguiu um valor MAIOR ou uma parcela MAIOR que a aprovada, NÃO responda NADA a ele ("noReply": true, "reply": "", sem "askTeam") e preencha "pushColaborador" com o que ele disse (o valor/a parcela que ele citou, entre aspas) — o CRM avisa o colaborador do card, que fala com ele.`;
   }
   if (dias > 3) return '';
