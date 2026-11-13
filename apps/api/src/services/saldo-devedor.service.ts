@@ -11,11 +11,23 @@ import { roundUpToThousand } from '../lib/text';
  *  pediu e rodada uma análise nesses valores. Informa ao cliente."
  *  1) Na conferência de documentos, a leitura da matrícula/ônus achou gravame vigente (`gravame`) E a proposta diz "Imóvel quitado: Não" → pede o print do saldo (1 vez).
  *  2) Poller (1 min): quando o cliente manda o print, lê o saldo, soma ao crédito pedido, grava o valor novo no card e pede a análise de novo.
- *  Estado no card: customFields._saldoDevedor = { askedAt, base (crédito pedido), declared (saldo que a proposta disse), doneAt, saldo, total, scanned[] }. */
+ *  Estado no card: customFields._saldoDevedor = { askedAt, base (crédito pedido), declared (saldo que a proposta disse), doneAt, saldo, total, scanned[] }.
+ *
+ *  REGRA NOVA (Fabio 13/11, Fabricio Ferreira — o CRM disse que "o saldo é somado ao troco e eu refaço a análise"): "quando tem saldo devedor o CRM apenas subtrai o valor aprovado sobre o
+ *  valor do saldo devedor para obter o troco do cliente e repassar para ele esse valor de troco e alterar o valor no card." Depois da aprovação: TROCO = APROVADO − SALDO, sem refazer a
+ *  análise, sem somar e sem perguntar se o troco está correto; o print do saldo e o descritivo da parcela continuam sendo pedidos (o banco exige); "Valor do crédito" fica o aprovado.
+ *  Saldo do print MAIOR que o aprovado: avisa o cliente que com esse saldo não dá pra seguir e marca o card como Perdido. */
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'] | null;
 
 const brl = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/** Grava SÓ estas chaves do customFields, por SQL (corrida no customFields: nunca regravar o card inteiro). */
+async function setCfKeys(leadId: string, keys: Record<string, unknown>): Promise<void> {
+  for (const [k, v] of Object.entries(keys)) {
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), ARRAY[${k}]::text[], ${JSON.stringify(v)}::jsonb, true) WHERE id = ${leadId}`;
+  }
+}
 
 /** "R$ 88.000,00" / "88000" / "88.000" → 88000 */
 export function parseBrl(raw: string | undefined | null): number {
@@ -36,31 +48,37 @@ export async function proposalFinancing(leadId: string): Promise<{ quitado: bool
 
 /** SALDO REAL ACIMA DO LIMITE (Fabio 05/11, Fernanda Karita: declarou R$ 100 mil de saldo, o print mostrou R$ 139,4 mil num imóvel de R$ 200 mil — passa dos 60% — e o Inter
  *  aprovou a menor R$ 110 mil, que nem quitava; a IA estava desligada e ninguém avisou a cliente). O crédito primeiro QUITA o financiamento e o banco libera no máximo 60% do
- *  valor do imóvel: saldo acima disso, ou acima do aprovado a menor (o banco não aprova mais), não tem como seguir com este imóvel. Pura (testável). null = dá pra seguir. */
-export function saldoBloqueia(saldo: number, valorImovel: number, aprovadoAMenor: number | null): { motivo: 'LIMITE_60' | 'APROVADO_NAO_COBRE'; limite: number } | null {
+ *  valor do imóvel: saldo acima disso, ou acima do valor APROVADO (Fabio 13/11: vale pra qualquer aprovação, não só a menor — o troco é aprovado − saldo e não se refaz a análise), não
+ *  tem como seguir com este imóvel. Pura (testável). null = dá pra seguir. */
+export function saldoBloqueia(saldo: number, valorImovel: number, aprovado: number | null): { motivo: 'LIMITE_60' | 'APROVADO_NAO_COBRE'; limite: number } | null {
   if (!(saldo > 0)) return null;
   const limite = valorImovel > 0 ? Math.round(valorImovel * 0.6 * 100) / 100 : 0;
   if (limite > 0 && saldo > limite) return { motivo: 'LIMITE_60', limite };
-  if (aprovadoAMenor && aprovadoAMenor > 0 && saldo > aprovadoAMenor) return { motivo: 'APROVADO_NAO_COBRE', limite };
+  if (aprovado && aprovado > 0 && saldo > aprovado) return { motivo: 'APROVADO_NAO_COBRE', limite };
   return null;
 }
 
+/** Troco do cliente (Fabio 13/11): valor APROVADO − saldo devedor, em centavos. Pura (testável). */
+export function trocoDoAprovado(aprovado: number, saldo: number): number {
+  return Math.round((aprovado - saldo) * 100) / 100;
+}
+
 /** O aviso ao cliente (gentil, com a conta). Pura (testável). */
-export function mensagemSaldoBloqueado(nome: string, saldo: number, valorImovel: number, b: { motivo: 'LIMITE_60' | 'APROVADO_NAO_COBRE'; limite: number }, aprovado: number | null): string {
+export function mensagemSaldoBloqueado(nome: string, saldo: number, valorImovel: number, b: { motivo: 'LIMITE_60' | 'APROVADO_NAO_COBRE'; limite: number }, aprovado: number | null, aMenor = false): string {
   const oi = `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 Conferi aqui: o saldo pra quitar o financiamento é de ${brl(saldo)}.`;
   const porque = b.motivo === 'LIMITE_60'
     ? ` No crédito com garantia de imóvel, o banco libera no máximo 60% do valor do imóvel — no seu caso, até ${brl(b.limite)} (imóvel de ${brl(valorImovel)}). Como o crédito precisa primeiro quitar o financiamento e o saldo já passa desse limite, infelizmente com esse imóvel não é possível seguir agora.`
-    : ` O valor aprovado foi de ${brl(aprovado || 0)}, que não chega a quitar o financiamento (faltariam ${brl(saldo - (aprovado || 0))}), e o banco não aprova um valor maior — então, infelizmente, com essa aprovação não é possível seguir.`;
+    : ` O valor aprovado foi de ${brl(aprovado || 0)}, que não chega a quitar o financiamento (faltariam ${brl(saldo - (aprovado || 0))})${aMenor ? ', e o banco não aprova um valor maior' : ''} — então, infelizmente, com esse saldo não é possível seguir.`;
   return `${oi}${porque} Se você tiver outro imóvel pra colocar em garantia, me avisa que eu vejo por ele.`;
 }
 
 /** Grava o bloqueio, avisa o cliente (só com `podeMandar`, IA ligada e janela aberta) e deixa nota + push pro responsável do card. */
-async function avisarSaldoBloqueado(accountId: string, leadId: string, p: { saldo: number; valorImovel: number; aprovado: number | null; bloq: NonNullable<ReturnType<typeof saldoBloqueia>>; podeMandar: boolean; io: Io }): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, aiAutoReplyActive: true, customFields: true } });
+async function avisarSaldoBloqueado(accountId: string, leadId: string, p: { saldo: number; valorImovel: number; aprovado: number | null; aMenor?: boolean; bloq: NonNullable<ReturnType<typeof saldoBloqueia>>; podeMandar: boolean; io: Io }): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, aiAutoReplyActive: true, customFields: true, status: true, pipeline: { select: { departmentId: true } } } });
   if (!lead) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const nome = String(cf.falando_com || cf.nome_social_1 || cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-  const texto = mensagemSaldoBloqueado(nome.charAt(0).toUpperCase() + nome.slice(1).toLowerCase(), p.saldo, p.valorImovel, p.bloq, p.aprovado);
+  const texto = mensagemSaldoBloqueado(nome.charAt(0).toUpperCase() + nome.slice(1).toLowerCase(), p.saldo, p.valorImovel, p.bloq, p.aprovado, !!p.aMenor);
   let enviado = false;
   let porQueNao = 'IA desligada neste card';
   if (p.podeMandar && lead.aiAutoReplyActive && !cf._autoPaused) {
@@ -72,12 +90,27 @@ async function avisarSaldoBloqueado(accountId: string, leadId: string, p: { sald
     } else porQueNao = 'janela de 24 h fechada';
   } else if (!p.podeMandar) porQueNao = 'o saldo foi lido antes desta regra';
   else if (cf._autoPaused) porQueNao = 'card pausado';
-  const bloqueio = { motivo: p.bloq.motivo, limite: p.bloq.limite, saldo: p.saldo, valorImovel: p.valorImovel, aprovado: p.aprovado, em: new Date().toISOString(), avisado: enviado };
+  const bloqueio = { motivo: p.bloq.motivo, limite: p.bloq.limite, saldo: p.saldo, valorImovel: p.valorImovel, aprovado: p.aprovado, aMenor: !!p.aMenor, em: new Date().toISOString(), avisado: enviado };
+  // Saldo MAIOR que o aprovado (Fabio 13/11: "diz ao cliente que com esse saldo não dá pra seguir… marca como perdido pois não tem como seguir"): avisado o cliente, o card vai pra Perdidos.
+  // Sem aviso (IA desligada/janela fechada) quem fala com o cliente é a equipe — a nota pede pra avisar e marcar Perdido.
+  const naoCobre = !!p.aprovado && p.aprovado > 0 && p.saldo > p.aprovado;
   if (!enviado && !lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoBloqueio', `avisar com jeito que com esse saldo não dá pra seguir — "${texto}"`);
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_saldoDevedor,bloqueio}', ${JSON.stringify(bloqueio)}::jsonb, true) WHERE id = ${leadId}`;
-  const conta = p.bloq.motivo === 'LIMITE_60' ? `${brl(p.saldo)} passa de 60% do imóvel (${brl(p.valorImovel)} → limite ${brl(p.bloq.limite)})` : `${brl(p.saldo)} é maior que o aprovado a menor (${brl(p.aprovado || 0)})`;
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 Saldo devedor acima do limite: ${conta}. Com este imóvel não dá pra seguir — a cobrança de documentos parou. ${enviado ? `Cliente avisado: "${texto}"` : `Cliente NÃO avisado (${porQueNao}). Mande: "${texto}"`}` } }).catch(() => {});
-  try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `🚫 ${lead.name}`.slice(0, 90), body: `Saldo devedor acima do limite — não dá pra seguir${enviado ? ' (cliente avisado)' : '. Avise o cliente'}`, leadId }, [lead.userId]).catch(() => {}); } catch { /* push opcional */ }
+  const conta = p.bloq.motivo === 'LIMITE_60' ? `${brl(p.saldo)} passa de 60% do imóvel (${brl(p.valorImovel)} → limite ${brl(p.bloq.limite)})` : `${brl(p.saldo)} é maior que o aprovado${p.aMenor ? ' a menor' : ''} (${brl(p.aprovado || 0)})`;
+  let perdido = false;
+  if (enviado && naoCobre && lead.status === 'OPEN') {
+    const lostReason = 'Saldo devedor do financiamento maior que o valor aprovado';
+    try {
+      const { updateLead } = require('./lead.service') as typeof import('./lead.service');
+      const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
+      await updateLead(leadId, accountId, { status: 'LOST', lostReason } as any, p.io as any);
+      await moveLeadToPerdidos({ accountId, leadId, departmentId: lead.pipeline?.departmentId, byName: 'Assistente IA', userId: null, motivo: lostReason, io: p.io as any });
+      perdido = true;
+    } catch (e: any) { console.error('[Saldo] não consegui marcar Perdido:', e?.message || e); }
+  }
+  const fim = perdido ? ' Card marcado como Perdido.' : naoCobre ? ' Depois de avisar, marque o card como Perdido.' : '';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🚫 Saldo devedor acima do limite: ${conta}. Com este imóvel não dá pra seguir — a cobrança de documentos parou. ${enviado ? `Cliente avisado: "${texto}"` : `Cliente NÃO avisado (${porQueNao}). Mande: "${texto}"`}${fim}` } }).catch(() => {});
+  try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `🚫 ${lead.name}`.slice(0, 90), body: `Saldo devedor acima do limite — não dá pra seguir${enviado ? ` (cliente avisado${perdido ? ', card Perdido' : ''})` : '. Avise o cliente'}`, leadId }, [lead.userId]).catch(() => {}); } catch { /* push opcional */ }
 }
 
 const BRT = -3 * 3_600_000;
@@ -100,7 +133,7 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   if (prop.quitado !== false) {
     // A matrícula mostra financiamento ativo mas a proposta diz quitado (ou não diz): a equipe decide — não incomoda o cliente.
     if (gravame) {
-      await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoNoteAt: new Date().toISOString() } as any } });
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_saldoNoteAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A matrícula mostra gravame vigente (${gravame}), mas a proposta diz que o imóvel está quitado/não informa saldo. Confirme com o cliente se ainda há saldo devedor — se houver, peça o print do saldo e some ao crédito pedido.` } }).catch(() => {});
     }
     return false;
@@ -109,7 +142,7 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   // Aprovação A MENOR (Fabio 26/10): o banco não aprova mais, então o saldo devedor é só informativo — não peço o print nem refaço a análise; o aviso de aprovação já traz quitação e troco (valor aprovado − saldo informado).
   const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
   if (am.aMenor) {
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoNoteAt: new Date().toISOString() } as any } });
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_saldoNoteAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `ℹ️ Aprovação A MENOR (${brl(am.valor)}): o banco não aprova mais, então o saldo devedor (${declared ? brl(declared) : 'informado na proposta'}) é só informativo — não pedi o print nem refiz a análise. O aviso de aprovação já mostra a quitação e o troco calculados (valor aprovado − saldo).` } }).catch(() => {});
     return false;
   }
@@ -119,20 +152,22 @@ export async function maybeAskSaldoDevedor(accountId: string, leadId: string, io
   if (!lastIn || Date.now() - lastIn.createdAt.getTime() > 23 * 3_600_000) return false;
   if (opts.respectHours) { const h = new Date(Date.now() + BRT).getUTCHours(); if (h < 7 || h >= 21) return false; }
 
-  // Quanto o cliente PRECISA receber (líquido): se o crédito pedido é maior que o saldo que ele disse dever, o pedido já incluía a quitação (João Henrique: pediu R$ 270 mil = R$ 240 mil de saldo + R$ 30 mil) —
-  // o líquido é a diferença; senão o pedido já é o líquido (Maria: pediu R$ 50 mil com R$ 88 mil de saldo). O valor novo é sempre SALDO REAL (print) + LÍQUIDO.
-  const trocoCard = Number(cf.troco) || 0; // "Troco" do card (veio da proposta nova ou foi digitado): vale mais que a dedução abaixo
-  const liquido = trocoCard > 0 ? trocoCard : (declared > 0 && base > declared ? Math.round((base - declared) * 100) / 100 : base);
+  // TROCO = APROVADO − SALDO (Fabio 13/11): nada de somar o saldo, refazer a análise ou perguntar se o troco está certo — o print só confirma o saldo (e o banco exige o print e o descritivo).
+  const aprovado = (await (require('./approval-notice.service') as typeof import('./approval-notice.service')).valorAprovadoParaTroco(leadId)).valor;
+  const troco = aprovado > 0 && declared > 0 && aprovado > declared ? trocoDoAprovado(aprovado, declared) : 0;
   const nome = String(cf.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
   const { conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const abertura = opts.docsReceived ? `Recebi a documentação${nome ? `, ${nome}` : ''}, obrigada! 🙏\n\n` : ((await conversationActive(leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `);
   // Fabio 30/10: além do print do saldo, o banco pede o DESCRITIVO DA PARCELA — o PDF com as últimas prestações que o próprio app do banco do financiamento gera.
-  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de dois documentos do banco do financiamento:\n• um *print do saldo devedor atualizado* (no app ou no site do banco);\n• o *descritivo da parcela* em PDF — o extrato das prestações, que o próprio app do banco gera.\n\nO saldo é *somado* ao troco que você precisa receber${liquido ? ` (${brl(liquido)})` : ''} e eu refaço a análise com o total — então o valor final da operação muda. ${liquido ? `O troco de ${brl(liquido)} está correto? Se não, me diz quanto você precisa receber.` : 'Quanto de troco você precisa receber, depois de quitar o financiamento?'} Assim que você mandar o print do saldo, te aviso do resultado.`;
-  const marker = { askedAt: new Date().toISOString(), base, liquido, declared, gravame };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _saldoDevedor: marker, ...(liquido > 0 ? { troco: String(liquido) } : {}) } as any } }); // "Troco" = o que sobra pro cliente depois de quitar
+  const texto = `${abertura}Como o imóvel ainda tem financiamento${declared ? ` (você informou que faltam ${brl(declared)} pra quitar)` : ''}, preciso de dois documentos do banco do financiamento:\n• um *print do saldo devedor atualizado* (no app ou no site do banco);\n• o *descritivo da parcela* em PDF — o extrato das prestações, que o próprio app do banco gera.\n\n${troco > 0 ? `O valor aprovado quita o financiamento e o que sobra é o seu troco: pelo saldo que você informou, ${brl(troco)}. Com o print eu confirmo o valor certinho.` : 'Com o print eu confiro o saldo e te aviso como fica o seu troco.'}`;
+  const marker = { askedAt: new Date().toISOString(), base, liquido: troco || undefined, aprovado: aprovado || undefined, declared, gravame };
+  // Só as chaves (corrida no customFields): o marcador e o "Troco" (= o que sobra pro cliente depois de quitar).
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_saldoDevedor}', ${JSON.stringify(marker)}::jsonb, true) WHERE id = ${leadId}`;
+  if (troco > 0) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{troco}', ${JSON.stringify(String(troco))}::jsonb, true) WHERE id = ${leadId}`;
   const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
   if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorPedido', `pedir o print do saldo devedor e o descritivo da parcela — "${texto}"`);
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor e o descritivo da parcela (PDF do app do banco): o saldo será somado ao valor líquido que ele precisa' + (liquido ? ` (${brl(liquido)})` : '') + ' e a análise refeita com o total.' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor.' : 'IA desligada: peça ao cliente o print do saldo devedor (será somado ao crédito pedido e a análise refeita).'}` } }).catch(() => {});
+  const conta = troco > 0 ? ` Troco = aprovado ${brl(aprovado)} − saldo informado ${brl(declared)} = ${brl(troco)} (gravado no card; a análise NÃO é refeita).` : aprovado > 0 ? ` O saldo informado não deixa troco com o aprovado de ${brl(aprovado)}: confiro quando o print chegar.` : ' Não achei o valor aprovado pra calcular o troco.';
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Crédito aprovado e o imóvel tem financiamento ativo (proposta: faltam ${declared ? brl(declared) : '—'}${gravame ? `; matrícula: ${gravame}` : ''}). ${sent.success ? 'Pedi ao cliente o print do saldo devedor e o descritivo da parcela (PDF do app do banco).' : lead.aiAutoReplyActive ? 'O pedido ao cliente não saiu — peça o print do saldo devedor e o descritivo da parcela.' : 'IA desligada: peça ao cliente o print do saldo devedor e o descritivo da parcela.'}${conta}` } }).catch(() => {});
   return !!sent.success;
 }
 
@@ -209,10 +244,10 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
   for (const c of semLimite) {
     try {
       await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_saldoDevedor,limiteVisto}', 'true'::jsonb, true) WHERE id = ${c.id}`;
-      const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(c.id);
+      const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).valorAprovadoParaTroco(c.id);
       const saldo = Number(c.saldo) || 0, valorImovel = parseBrl(c.valor_imovel);
-      const bloq = saldoBloqueia(saldo, valorImovel, am.aMenor ? am.valor : null);
-      if (bloq) await avisarSaldoBloqueado(accountId, c.id, { saldo, valorImovel, aprovado: am.aMenor ? am.valor : null, bloq, podeMandar: false, io });
+      const bloq = saldoBloqueia(saldo, valorImovel, am.valor || null);
+      if (bloq) await avisarSaldoBloqueado(accountId, c.id, { saldo, valorImovel, aprovado: am.valor || null, aMenor: am.aMenor, bloq, podeMandar: false, io });
     } catch (e: any) { console.error(`[Saldo] limite ${c.id}:`, e?.message || e); }
   }
   // 1d) Bloqueio revisto (Fabio 05/11, Fernanda Karita: o imóvel passou de R$ 200 mil pra R$ 300 mil e o card continuava "não dá pra seguir"): com o valor do imóvel ou a
@@ -220,11 +255,11 @@ export async function processSaldoDevedor(accountId: string, io: Io): Promise<vo
   const bloqueados = await prisma.$queryRaw<{ id: string; saldo: string; valor_imovel: string | null }[]>`SELECT id, "customFields"->'_saldoDevedor'->'bloqueio'->>'saldo' AS saldo, "customFields"->>'valor_imovel' AS valor_imovel FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->'_saldoDevedor'->'bloqueio') IS NOT NULL LIMIT 20`;
   for (const c of bloqueados) {
     try {
-      const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(c.id);
+      const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).valorAprovadoParaTroco(c.id);
       const saldo = Number(c.saldo) || 0, valorImovel = parseBrl(c.valor_imovel);
-      if (saldoBloqueia(saldo, valorImovel, am.aMenor ? am.valor : null)) continue;
+      if (saldoBloqueia(saldo, valorImovel, am.valor || null)) continue;
       await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" #- '{_saldoDevedor,bloqueio}' WHERE id = ${c.id}`;
-      await prisma.note.create({ data: { leadId: c.id, type: 'COMMENT', content: `🔓 Saldo devedor voltou a caber: ${brl(saldo)}${valorImovel ? ` com o imóvel de ${brl(valorImovel)} (limite de 60% = ${brl(Math.round(valorImovel * 0.6 * 100) / 100)})` : ''}${am.aMenor ? ` e o aprovado de ${brl(am.valor)}` : ''}. O bloqueio saiu: a cobrança de documentos e a IA voltam ao normal.` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId: c.id, type: 'COMMENT', content: `🔓 Saldo devedor voltou a caber: ${brl(saldo)}${valorImovel ? ` com o imóvel de ${brl(valorImovel)} (limite de 60% = ${brl(Math.round(valorImovel * 0.6 * 100) / 100)})` : ''}${am.valor ? ` e o aprovado de ${brl(am.valor)}` : ''}. O bloqueio saiu: a cobrança de documentos e a IA voltam ao normal.` } }).catch(() => {});
     } catch (e: any) { console.error(`[Saldo] rever bloqueio ${c.id}:`, e?.message || e); }
   }
   // 2) Quem já foi pedido: lê o print que chegar.
@@ -241,7 +276,8 @@ export function creditoComTroco(saldo: number, troco: number, jaLeuPrint: boolea
   return jaLeuPrint ? roundUpToThousand(bruto) : Math.ceil(bruto / 1000) * 1000;
 }
 
-/** O cliente CORRIGIU o troco na conversa (a IA gravou `troco` no card): ajusta o valor do crédito (saldo + troco) e, se a análise já rodou com o valor antigo, refaz nos bancos. */
+/** O cliente CORRIGIU o troco na conversa (a IA gravou `troco` no card). ANTES da aprovação: ajusta o valor do crédito (saldo + troco) e, se a análise já rodou com o valor antigo, refaz
+ *  nos bancos. DEPOIS da aprovação (Fabio 13/11): o troco é sempre aprovado − saldo — volta o card pra essa conta, não refaz nada e avisa a equipe (mais troco = nova proposta, a equipe decide). */
 export async function aplicarTrocoCorrigido(accountId: string, leadId: string, novoTroco: number, io: Io): Promise<void> {
   if (!(novoTroco > 0)) return;
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true } });
@@ -251,10 +287,13 @@ export async function aplicarTrocoCorrigido(accountId: string, leadId: string, n
   const st = cf._saldoDevedor as (Record<string, any> | undefined);
   const saldo = Number(st?.saldo) || Number(cf.saldo_devedor) || 0;
   const trocoAntes = Number(st?.liquido) || 0;
-  // Aprovação A MENOR: pedir mais não adianta (o banco não aprova mais) — não refaz a análise; o troco real é valor aprovado − saldo.
-  const amT = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
-  if (amT.aMenor) {
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente disse que precisa de ${brl(novoTroco)} de troco, mas a aprovação é A MENOR (${brl(amT.valor)}) e o banco não aprova mais: não refiz a análise.${saldo > 0 ? ` Troco possível: ${brl(amT.valor)} − saldo ${brl(saldo)} = ${brl(Math.round((amT.valor - saldo) * 100) / 100)}.` : ''} A equipe decide como seguir.` } }).catch(() => {});
+  // Já APROVADO (Fabio 13/11): o troco é aprovado − saldo — não refaz a análise nem mexe no "Valor do crédito"; o card volta pro troco da conta.
+  const amT = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).valorAprovadoParaTroco(leadId);
+  if (amT.valor > 0) {
+    const trocoCerto = saldo > 0 ? trocoDoAprovado(amT.valor, saldo) : 0;
+    if (trocoCerto > 0 && Math.abs(trocoCerto - novoTroco) >= 0.01) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{troco}', ${JSON.stringify(String(trocoCerto))}::jsonb, true) WHERE id = ${leadId}`;
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente disse que precisa de ${brl(novoTroco)} de troco. Com o crédito já aprovado, o troco é o aprovado − saldo${saldo > 0 ? `: ${brl(amT.valor)} − ${brl(saldo)} = ${brl(trocoCerto)} (é o que fica no card)` : ' (o card ainda não tem o saldo devedor)'}. Não refiz a análise nem mudei o "Valor do crédito"${amT.aMenor ? ' — a aprovação é a menor e o banco não aprova mais' : ''}. Mais troco seria uma nova proposta: a equipe decide.` } }).catch(() => {});
+    try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `💸 ${lead.name}`.slice(0, 90), body: `Cliente quer ${brl(novoTroco)} de troco — o aprovado dá ${trocoCerto > 0 ? brl(trocoCerto) : 'outro valor'}. A equipe decide.`, leadId }).catch(() => {}); } catch { /* push opcional */ }
     return;
   }
   if (!(saldo > 0)) {
@@ -263,8 +302,9 @@ export async function aplicarTrocoCorrigido(accountId: string, leadId: string, n
   }
   const total = creditoComTroco(saldo, novoTroco, !!st?.doneAt);
   const antes = Number(cf.valor_credito) || 0;
-  const novoCf: Record<string, any> = { ...cf, troco: String(novoTroco), valor_credito: String(total), ...(st ? { _saldoDevedor: { ...st, liquido: novoTroco } } : {}) };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: novoCf as any } });
+  // Só as chaves (corrida no customFields).
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{troco}', ${JSON.stringify(String(novoTroco))}::jsonb, true), '{valor_credito}', ${JSON.stringify(String(total))}::jsonb, true) WHERE id = ${leadId}`;
+  if (st) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_saldoDevedor,liquido}', ${JSON.stringify(novoTroco)}::jsonb, true) WHERE id = ${leadId}`;
   const linhaValor = Math.abs(total - antes) < 1 ? `o crédito segue ${brl(total)}` : `crédito a analisar ${antes ? brl(antes) : '—'} → ${brl(total)} (saldo ${brl(saldo)} + troco ${brl(novoTroco)}${st?.doneAt ? ' + folga' : ''})`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `💸 O cliente corrigiu o troco${trocoAntes ? ` (${brl(trocoAntes)} → ${brl(novoTroco)})` : ` para ${brl(novoTroco)}`}: ${linhaValor}.` } }).catch(() => {});
   if (Math.abs(total - antes) < 1) return;
@@ -285,31 +325,6 @@ export async function refazAnaliseComValorNovo(accountId: string, leadId: string
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 Refiz a análise com o valor novo (${brl(total)}): o resultado antigo não vale pro troco corrigido. ${r.created ? `${r.created} pedido(s) na fila das extensões.` : 'Nada novo foi pedido (já havia análise em andamento).'}` } }).catch(() => {});
     io?.to?.(`account_${accountId}`)?.emit?.('new_conversation', { leadId });
   } catch (e: any) { console.error('[Troco] não consegui refazer a análise:', e?.message); }
-}
-
-/** Respostas em texto do cliente à pergunta do troco: confirmou? corrigiu o valor? (uma chamada barata, só quando o print chega). */
-async function lerTrocoCorrigido(leadId: string, since: string, trocoAtual: number): Promise<{ confirmou: boolean; novoTroco: number | null } | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return null;
-  const msgs = await prisma.message.findMany({ where: { leadId, direction: 'INBOUND', createdAt: { gt: new Date(since) }, content: { not: '' }, attachments: { none: {} } }, orderBy: { createdAt: 'asc' }, take: 8, select: { content: true } });
-  const textos = msgs.map((m) => String(m.content || '').trim()).filter((t) => t && t.length <= 300);
-  if (!textos.length) return null;
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-5', max_tokens: 1000,
-      system: 'Perguntamos ao cliente se o TROCO que ele precisa receber (o que sobra pra ele depois de quitar o financiamento do imóvel) está correto e citamos o valor. Leia as respostas dele e responda SÓ JSON: {"confirmou": <true se disse que o valor está certo>, "novoTroco": <número em reais se ele disse quanto precisa receber de troco (valor DIFERENTE do citado), senão null>}. Se as mensagens não falam do troco, {"confirmou": false, "novoTroco": null}. Valores como "50 mil" = 50000.',
-      messages: [{ role: 'user', content: `Troco citado: R$ ${trocoAtual}\nRESPOSTAS DO CLIENTE:\n${textos.map((t) => `- ${t}`).join('\n')}` }],
-    }),
-  }).catch(() => null);
-  if (!res?.ok) return null;
-  const d: any = await res.json().catch(() => null);
-  try {
-    const j = JSON.parse(String(d?.content?.find((b: any) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}');
-    const n = Number(j.novoTroco);
-    return { confirmou: j.confirmou === true, novoTroco: Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null };
-  } catch { return null; }
 }
 
 /** Rótulo do arquivo de onde saiu o saldo: o DESCRITIVO DA PARCELA que também mostra o saldo continua DESCRITIVO (a conferência cobra os dois — Fabio 30/10). */
@@ -347,68 +362,38 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
   if (!achou) {
     if (lidos.length && !st.warnedAt) {
       st.warnedAt = new Date().toISOString();
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ O cliente mandou ${lidos.length > 1 ? 'arquivos' : 'um arquivo'} depois do pedido do saldo devedor, mas a IA não achou o saldo. Abra a conversa, veja o valor, atualize "Valor do crédito" (= saldo + ${st.liquido || st.base ? brl(st.liquido || st.base) : 'valor líquido que ele precisa'}) e peça a análise de novo.` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ O cliente mandou ${lidos.length > 1 ? 'arquivos' : 'um arquivo'} depois do pedido do saldo devedor, mas a IA não achou o saldo. Abra a conversa, veja o valor e atualize "Saldo devedor" e "Troco" no card (troco = valor aprovado − saldo; a análise não é refeita).` } }).catch(() => {});
       try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: lead.name, body: 'Conferir o print do saldo devedor', leadId }).catch(() => {}); } catch { /* push opcional */ }
     }
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, _saldoDevedor: st } as any } });
+    await setCfKeys(leadId, { _saldoDevedor: st });
     return;
   }
 
-  // Saldo REAL acima do limite (Fabio 05/11): nada de refazer análise nem calcular troco — com este imóvel não dá pra seguir, e o cliente é avisado.
-  const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).aprovacaoAMenor(leadId);
+  // TROCO = APROVADO − SALDO DO PRINT (Fabio 13/11): nunca soma o saldo nem refaz a análise; o "Valor do crédito" fica o aprovado. Saldo acima do limite de 60% ou do aprovado
+  // (Fabio 05/11 e 13/11): com este imóvel não dá pra seguir — o cliente é avisado (e, saldo maior que o aprovado, o card vai pra Perdidos).
+  const am = await (require('./approval-notice.service') as typeof import('./approval-notice.service')).valorAprovadoParaTroco(leadId);
   const valorImovel = parseBrl(String(cf2.valor_imovel ?? ''));
-  const bloq = saldoBloqueia(achou.saldo, valorImovel, am.aMenor ? am.valor : null);
-  if (bloq) {
-    st.doneAt = new Date().toISOString();
-    Object.assign(st, { saldo: achou.saldo, attachmentId: achouAtt, limiteVisto: true, ...(am.aMenor ? { aMenor: true, trocoReal: Math.round((am.valor - achou.saldo) * 100) / 100 } : {}) });
-    const docInfoB = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: rotuloSaldo(cf2._docInfo?.[achouAtt]) } : {}) };
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), _docInfo: docInfoB, _saldoDevedor: st } as any } });
-    if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
-    await avisarSaldoBloqueado(accountId, leadId, { saldo: achou.saldo, valorImovel, aprovado: am.aMenor ? am.valor : null, bloq, podeMandar: true, io });
-    return;
-  }
-  // Sem troco gravado, o crédito pedido que já é maior que o saldo declarado JÁ INCLUÍA a quitação (mesma regra do pedido lá em cima): o líquido é a diferença — nunca somar o saldo duas vezes.
-  const pedido = st.base || Number(cf2.valor_credito) || 0;
-  const liquidoDoPedido = st.declared > 0 && pedido > st.declared ? Math.round((pedido - st.declared) * 100) / 100 : pedido;
-  // O cliente pode ter corrigido o TROCO na conversa depois da pergunta (Fabio 21/10: sempre confirmar o troco): lê as respostas dele em texto antes de somar.
-  const corrigido = await lerTrocoCorrigido(leadId, st.askedAt, Number(cf2.troco) || st.liquido || liquidoDoPedido || 0).catch(() => null);
-  const base = corrigido?.novoTroco || Number(cf2.troco) || st.liquido || liquidoDoPedido || 0; // valor LÍQUIDO que o cliente precisa receber
-  // Aprovação A MENOR (Fabio 26/10): não adianta somar saldo + troco e refazer — o banco não aprova mais. O CRM só CALCULA o troco (aprovado − saldo do print) e passa ao cliente.
-  if (am.aMenor && am.valor > 0) {
-    const trocoReal = Math.round((am.valor - achou.saldo) * 100) / 100;
-    st.doneAt = new Date().toISOString();
-    (st as any).saldo = achou.saldo; (st as any).aMenor = true; (st as any).trocoReal = trocoReal; (st as any).attachmentId = achouAtt; (st as any).limiteVisto = true;
-    const docInfoAM = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: rotuloSaldo(cf2._docInfo?.[achouAtt]) } : {}) };
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), ...(trocoReal > 0 ? { troco: String(trocoReal) } : {}), _docInfo: docInfoAM, _saldoDevedor: st } as any } });
-    if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}. Aprovação A MENOR (${brl(am.valor)}): o banco não aprova mais, então NÃO refiz a análise — só calculei o troco: ${brl(am.valor)} − ${brl(achou.saldo)} = ${brl(trocoReal)}.${trocoReal < 0 ? ' O valor aprovado NÃO cobre o saldo devedor: a equipe decide como seguir.' : ''}` } }).catch(() => {});
-    if (trocoReal < 0) {
-      try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Valor aprovado a menor não cobre o saldo devedor — decidir como seguir', leadId }).catch(() => {}); } catch { /* push opcional */ }
-      return;
-    }
-    if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo: quitação de ${brl(achou.saldo)}; com o aprovado de ${brl(am.valor)}, o troco fica em ${brl(trocoReal)} (aproximado)`);
-    if (lead.aiAutoReplyActive) {
-      const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-      await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo para quitação do financiamento é ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o troco pra você fica em ${brl(trocoReal)} (valor aproximado — o final é confirmado na formalização).${aindaSemDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined });
-    }
-    return;
-  }
-  const total = roundUpToThousand(Math.round((achou.saldo + base) * 100) / 100); // saldo + troco, arredondado pra cima pro milhar inteiro
+  const bloq = saldoBloqueia(achou.saldo, valorImovel, am.valor || null);
+  const troco = am.valor > 0 ? trocoDoAprovado(am.valor, achou.saldo) : 0;
   st.doneAt = new Date().toISOString();
-  (st as any).saldo = achou.saldo; (st as any).total = total; (st as any).attachmentId = achouAtt; (st as any).limiteVisto = true;
+  Object.assign(st, { saldo: achou.saldo, attachmentId: achouAtt, limiteVisto: true, ...(am.valor > 0 ? { aprovado: am.valor, trocoReal: troco } : {}), ...(am.aMenor ? { aMenor: true } : {}) });
+  await setCfKeys(leadId, { saldo_devedor: String(achou.saldo), ...(!bloq && troco > 0 ? { troco: String(troco) } : {}), _saldoDevedor: st });
   // O print fica na PASTA DO CLIENTE com o nome "SALDO DEVEDOR" (única captura de tela que vai pra lá).
-  const docInfo = { ...(cf2._docInfo || {}), ...(achouAtt ? { [achouAtt]: rotuloSaldo(cf2._docInfo?.[achouAtt]) } : {}) };
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf2, saldo_devedor: String(achou.saldo), troco: String(base), valor_credito: String(total), _docInfo: docInfo, _saldoDevedor: st } as any } });
+  if (achouAtt) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_docInfo}', COALESCE("customFields"->'_docInfo', '{}'::jsonb) || jsonb_build_object(${achouAtt}::text, ${rotuloSaldo(cf2._docInfo?.[achouAtt])}::text), true) WHERE id = ${leadId}`;
   if (cf2._driveOrganizedAt) { try { const { organizeLeadDocsNow } = require('./received-docs.service') as typeof import('./received-docs.service'); await organizeLeadDocsNow(leadId); } catch (e: any) { console.error('[Saldo] não reorganizei a pasta:', e?.message || e); } }
-  let r: { created?: number } = {};
-  try {
-    const { createRequests } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    r = await createRequests(prisma as any, { accountId, leadIds: [leadId], banks: ['INTER', 'CREDITAS', 'CREDIMORAR'], dryRun: false, kind: 'RUN', force: true, alignApproval: true });
-  } catch (e: any) { console.error('[Saldo] não consegui pedir a análise:', e?.message); }
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}. Valor líquido que o cliente precisa ${base ? brl(base) : '—'} + saldo (${brl(achou.saldo)}) = ${brl(Math.round((achou.saldo + base) * 100) / 100)}, arredondado pra cima (milhar inteiro) = ${brl(total)}: "Valor do crédito" atualizado e ${r.created ? `análise pedida de novo (${r.created} banco${r.created > 1 ? 's' : ''})` : 'análise já em andamento'}. O resultado anterior não vale pro valor novo.` } }).catch(() => {});
-  if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo (${brl(achou.saldo)}) e que refez a análise com o valor novo de ${brl(total)} (saldo + o que ele precisa receber)`);
-  if (lead.aiAutoReplyActive) {
-    const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-    await sendOutboundWhatsApp({ accountId, leadId, content: `Recebi o saldo, ${nome ? nome : 'obrigada'}! 🙏 Saldo de ${brl(achou.saldo)}${base ? ` + ${brl(base)} que você precisa receber` : ''}, ou seja, ${brl(total)}.${corrigido?.novoTroco ? ' Usei o troco que você me passou.' : corrigido?.confirmou ? '' : ' Se o troco não for esse, me avisa que eu ajusto.'} Já refiz o pedido de análise com esse valor e te aviso o resultado por aqui.${aindaSemDocs ? ' Enquanto a análise roda, já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`, io: io || undefined }).catch(() => {});
+  if (bloq) {
+    await avisarSaldoBloqueado(accountId, leadId, { saldo: achou.saldo, valorImovel, aprovado: am.valor || null, aMenor: am.aMenor, bloq, podeMandar: true, io });
+    return;
   }
+  const lido = `🏦 Saldo devedor lido no print: ${brl(achou.saldo)}${achou.banco ? ` (${achou.banco})` : ''}${achou.data ? `, ref. ${achou.data}` : ''}.`;
+  if (!(am.valor > 0)) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${lido} Não achei o valor aprovado pra calcular o troco (aprovado − saldo): confira, atualize "Troco" no card e passe o valor ao cliente.` } }).catch(() => {});
+    try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(accountId, { title: lead.name, body: 'Saldo devedor lido — calcular o troco (aprovado − saldo)', leadId }).catch(() => {}); } catch { /* push opcional */ }
+    return;
+  }
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${lido} Troco = aprovado ${brl(am.valor)} − saldo ${brl(achou.saldo)} = ${brl(troco)}: "Saldo devedor" e "Troco" atualizados no card; o "Valor do crédito" segue o aprovado e a análise NÃO foi refeita (Fabio 13/11).` } }).catch(() => {});
+  const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
+  const texto = `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo pra quitar o financiamento é de ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o seu troco fica em ${brl(troco)} (valor aproximado — o final é confirmado na formalização).${aindaSemDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`;
+  if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo e qual é o troco — "${texto}"`);
+  else await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }).catch(() => {});
 }

@@ -148,10 +148,15 @@ async function ultimosAvisos(leadId: string): Promise<{ ultimo: { createdAt: Dat
  *  Card em Aguardando Documentação que recebeu um template de aprovação (QUALQUER status: o que a Meta bloqueou também conta — Adriana, 27/10) e não respondeu nada
  *  no WhatsApp depois do último: reenvia 2 dias depois (no calendário) do último, sem limite de vezes. Para quando ele responde, o card sai da etapa ou 3 avisos seguidos falham. */
 export async function planApprovalReminders(): Promise<ReminderPlanItem[]> {
-  const leads = await prisma.lead.findMany({
+  const leadsDocs = await prisma.lead.findMany({
     where: { status: 'OPEN', archived: false, isGroup: false, stage: { name: { startsWith: 'Aguardando Document', mode: 'insensitive' } }, NOT: { tags: { has: 'Pediu pra parar lembretes' } } },
     select: { id: true, accountId: true, name: true, customFields: true },
   });
+  // Financiamento avisado por template com a conversa fechada e ainda sem as propostas (Fabio 13/11): também reenvia dia sim, dia não até ele responder.
+  const idsFh = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE status = 'OPEN' AND archived = false AND "isGroup" = false
+    AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_fhNoticeTemplateAt') AND COALESCE("customFields"->'_fhNotice'->>'sentAt', '') = '' AND NOT ('Pediu pra parar lembretes' = ANY(tags))`;
+  const leadsFh = idsFh.length ? await prisma.lead.findMany({ where: { id: { in: idsFh.map((x) => x.id) } }, select: { id: true, accountId: true, name: true, customFields: true } }) : [];
+  const leads = [...leadsDocs, ...leadsFh.filter((f) => !leadsDocs.some((d) => d.id === f.id))];
   const plan: ReminderPlanItem[] = [];
   const now = Date.now();
   for (const l of leads) {
@@ -606,6 +611,18 @@ export async function aprovacaoAMenor(leadId: string): Promise<{ aMenor: boolean
   return { aMenor: opts.every((o) => o.aMenor), valor: Math.max(...opts.map((o) => parseBrl(o.valor))) };
 }
 
+/** O valor APROVADO de onde sai o troco (Fabio 13/11: "quando tem saldo devedor o CRM apenas subtrai o valor aprovado sobre o valor do saldo devedor para obter o troco"): a proposta
+ *  ESCOLHIDA (⭐) do Home Equity; sem escolha, a MAIOR do aviso (líquido na Creditas). 0 = não achou aprovação com valor. */
+export async function valorAprovadoParaTroco(leadId: string): Promise<{ valor: number; aMenor: boolean }> {
+  const esc = await prisma.creditAnalysis.findFirst({
+    where: { leadId, chosen: true, dryRun: false, bank: { in: ['INTER', 'CREDITAS', 'CREDIMORAR'] }, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } },
+    orderBy: { createdAt: 'desc' }, select: { approvedValue: true, netValue: true, detail: true },
+  }).catch(() => null);
+  if (esc && (esc.netValue || esc.approvedValue)) return { valor: Number(esc.netValue || esc.approvedValue) || 0, aMenor: /aprovad[oa] a menor/i.test(esc.detail || '') };
+  const am = await aprovacaoAMenor(leadId);
+  return { valor: am.valor > 0 ? am.valor : 0, aMenor: am.aMenor };
+}
+
 /** Bancos que APROVARAM (último veredito de cada banco+participante) mas ainda sem os números gravados — o aviso espera, senão sai só a outra opção (Alexandre/Larissa, 14/10). */
 export async function aprovadasSemNumeros(leadId: string): Promise<string[]> {
   const rows = await prisma.creditAnalysis.findMany({
@@ -794,8 +811,18 @@ export async function aiEscolhaPendenteContext(leadId: string): Promise<string> 
 /** Cliente tocou em "Sim, quero saber" no template de aprovação. true = tratou. */
 export async function maybeSendApprovalOnYes(accountId: string, leadId: string, text: string, io: any): Promise<boolean> {
   if (!YES_RE.test(text.trim())) return false;
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, userId: true } });
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, userId: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!lead) return false;
+  // Financiamento (Fabio 13/11): as condições são as propostas do FH, uma por banco com "Seguir com esta" (fh-approval) — não o aviso do Home Equity.
+  if (/habita/i.test(lead.pipeline?.department?.name || '')) {
+    const ok = await (require('./fh-approval.service') as typeof import('./fh-approval.service')).avisoFhAgora(accountId, leadId, io).catch((e: any) => { console.error('[Financiamento] Ver as condições:', e?.message); return false; });
+    if (!ok) {
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ O cliente pediu as condições no botão do aviso (Financiamento), mas não achei proposta aprovada pra mandar. Mande à mão — a conversa está aberta.' } }).catch(() => {});
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(accountId, { title: `${lead.name}: quer saber as condições`, body: 'Financiamento: pediu as condições no botão do aviso — mande à mão.', leadId }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+    }
+    return true;
+  }
   const built = await buildApprovalText(leadId);
   if (!built) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '⚠️ O cliente pediu as condições no botão do aviso (crédito aprovado), mas não achei as condições de aprovação nas notas nem na aba Financiamento. Mande as condições à mão — a conversa está aberta.' } }).catch(() => {});

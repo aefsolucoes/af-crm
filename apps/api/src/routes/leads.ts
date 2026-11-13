@@ -1010,7 +1010,15 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
       const creditoDigitado = 'valor_credito' in customFields && Math.abs(num(customFields.valor_credito) - num(before.valor_credito)) >= 1;
       const imovel = num('valor_imovel' in customFields ? customFields.valor_imovel : before.valor_imovel);
       const plausivel = !imovel || saldo <= imovel * 1.5;
-      if (mudou && saldo > 0 && troco > 0 && !creditoDigitado && plausivel) {
+      // Crédito JÁ APROVADO (Fabio 13/11): o troco é aprovado − saldo — mudou o saldo, o CRM recalcula o troco; o "Valor do crédito" fica o aprovado e nada é refeito.
+      const aprovado = mudou && plausivel ? (await (require('../services/approval-notice.service') as typeof import('../services/approval-notice.service')).valorAprovadoParaTroco(req.params.id).catch(() => ({ valor: 0 }))).valor : 0;
+      if (aprovado > 0) {
+        const trocoDigitado = 'troco' in customFields && Math.abs(num(customFields.troco) - num(before.troco)) >= 0.01;
+        if (saldo > 0 && !trocoDigitado && saldo < aprovado) {
+          const { trocoDoAprovado } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
+          customFields.troco = String(trocoDoAprovado(aprovado, saldo));
+        }
+      } else if (mudou && saldo > 0 && troco > 0 && !creditoDigitado && plausivel) {
         // Mesma conta do ajuste pela IA (saldo-devedor.service): antes do print = saldo declarado + troco no milhar acima (sem folga); depois do print = saldo real + troco + folga.
         const { creditoComTroco } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
         const total = creditoComTroco(saldo, troco, !!(before as any)._saldoDevedor?.doneAt);

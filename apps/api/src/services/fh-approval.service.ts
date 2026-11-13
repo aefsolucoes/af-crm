@@ -243,8 +243,25 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     if (emAnalise.length && Date.now() - (primeira || Date.now()) < MAX_WAIT_OTHERS_MS) continue; // os outros ainda analisam: espera um pouco (no máximo 12 h)
     if (!inNoticeWindow()) continue;
     const bancos = aprovadas.map((o) => o.banco).join(', ');
-    // Sem IA no card ou com a conversa fechada (24 h do WhatsApp): quem avisa é a equipe — o CRM avisa UMA vez.
+    // Conversa fechada com a IA ligada (Fabio 13/11, Elizangela: aprovada no Inter e no Itaú e nunca avisada — "faz"): vai o template de aprovação de UTILIDADE do Financiamento
+    // (o mesmo do Home Equity, versão habitacional — approvalTemplateFor); as propostas com "Seguir com esta" saem quando ele tocar em "Ver as condições" ou responder (a conversa abre).
+    if (l.aiAutoReplyActive && !(await whatsappWindowOpen(l.id)) && !cf._fhNoticeTemplateAt) {
+      const { approvalTemplateFor } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      const nomeT = firstName(cf.falando_com || cf.participante_1 || l.name) || 'cliente';
+      const tpl = await approvalTemplateFor(accountId, l.id, nomeT);
+      const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+      const r = tpl ? await sendOutboundWhatsAppTemplate({ accountId, leadId: l.id, ...tpl, io }) : null;
+      if (r?.success) {
+        await saveCf(l.id, { _fhNoticeTemplateAt: new Date().toISOString() });
+        await note(l.id, `📣 Financiamento APROVADO no ${bancos}: a conversa estava fechada, mandei o template de aprovação ("${tpl!.templateName}"). As propostas, com o botão "Seguir com esta", saem quando ele tocar em "Ver as condições" ou responder; sem resposta, o aviso é reenviado dia sim, dia não.`);
+        continue;
+      }
+      // Template não saiu: cai no aviso à equipe abaixo (uma vez).
+      if (!cf._fhNoticeTeamAt) console.warn(`[Financiamento] ${l.name}: template de aprovação não saiu (${tpl ? (r as any)?.error : 'template não aprovado na Meta'})`);
+    }
+    // Sem IA no card, conversa fechada esperando o cliente responder ao template, ou o template não saiu: quem avisa é a equipe — o CRM avisa UMA vez (o template já avisou o cliente).
     if (!l.aiAutoReplyActive || !(await whatsappWindowOpen(l.id))) {
+      if (cf._fhNoticeTemplateAt) continue; // template enviado: espera ele responder
       if (cf._fhNoticeTeamAt) continue;
       await saveCf(l.id, { _fhNoticeTeamAt: new Date().toISOString() });
       await note(l.id, `🏠 Financiamento APROVADO no ${bancos}. Não avisei o cliente sozinho (${!l.aiAutoReplyActive ? 'IA do card desligada' : 'conversa fechada há mais de 24 h no WhatsApp'}): avise ele e mande as propostas.`);
@@ -257,6 +274,23 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
       push(accountId, `🏠 ${l.name}: financiamento aprovado`, `Cliente avisado: ${bancos}`, l.id);
     }
   }
+}
+
+/** O cliente tocou em "Ver as condições" no template de aprovação do Financiamento (Fabio 13/11): manda agora as propostas aprovadas, uma por banco, com "Seguir com esta".
+ *  true = mandou (ou já tinha mandado); false = não há aprovação pra mandar. */
+export async function avisoFhAgora(accountId: string, leadId: string, io?: any): Promise<boolean> {
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  if (!l || cf._autoPaused || !cf._fhResumo) return false;
+  if (cf._fhNotice?.sentAt) return true;
+  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+  const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
+  const aprovadas = await enriquecer(leadId, cf, op.aprovadas);
+  if (!aprovadas.length) return false;
+  const out = await sendFhNotice(accountId, leadId, l.name, aprovadas, op.emAnalise, io);
+  if (out) await note(leadId, `📣 O cliente tocou em "Ver as condições": mandei o Financiamento aprovado (${aprovadas.map((o) => o.banco).join(', ')}), uma mensagem por banco com o botão "Seguir com esta".`);
+  return out;
 }
 
 async function sendFhNotice(accountId: string, leadId: string, leadName: string, aprovadas: FhOption[], emAnalise: string[], io?: any): Promise<boolean> {
