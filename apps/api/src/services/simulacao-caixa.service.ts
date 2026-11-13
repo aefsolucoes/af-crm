@@ -256,10 +256,11 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     if (!pasta) throw new Error('o card não tem "Pasta no Drive"');
     const google = await import('./google.service');
     const arquivo = `SIMULACAO CAIXA ${he ? 'HE' : String(r.modalidade || '').match(/minha casa/i) ? 'MCMV' : 'SBPE'} ${sistema} - ${nome}.pdf`.replace(/[\\/]/g, '-');
-    const velho = (cf._caixaSimulacao || {}).pdf?.driveId;
-    if (velho) await google.trashDriveItem(accountId, velho).catch(() => {});
     const up = await google.uploadFile(accountId, { name: arquivo, mimeType: 'application/pdf', parentId: google.extractFolderId(pasta), data: pdf });
     link = up.webViewLink; driveId = up.id;
+    // Uma simulação só na pasta (Fabio 12/11): a anterior (outro prazo, outra tabela, outro banco) vai pra DESNECESSARIO — antes a da CAIXA ia pra lixeira.
+    const sp = await import('./simulacao-pasta.service');
+    await sp.manterUmaSimulacao(accountId, leadId, { nova: up.id }).catch((e: any) => console.error('[Simulação CAIXA] uma simulação na pasta:', e?.message));
   } catch (e: any) { erroPdf = e?.message || String(e); }
   const { linhas: _l, ...resumo } = r;
   const docId = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._caixaSimulacao?.docRequestId || null;

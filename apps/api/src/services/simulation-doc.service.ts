@@ -190,6 +190,12 @@ async function deliver(db: Db, r: { id: string; accountId: string; leadId: strin
     return { ok: false as const, error: sent.error };
   }
   await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'DONE', finishedAt: new Date(), messageId: sent.message?.id || null, detail: `Enviado: ${fileName}` } });
+  // Uma simulação só na pasta (Fabio 12/11): o PDF que foi ao cliente vai pra raiz da pasta dele e as outras simulações saem. A CAIXA já salvou o dela lá (simulacao-caixa).
+  const attId = (sent.message as any)?.attachments?.[0]?.id as string | undefined;
+  if (attId && r.institution !== 'FH_CAIXA') {
+    const sp = require('./simulacao-pasta.service') as typeof import('./simulacao-pasta.service');
+    sp.levarSimulacaoPraPasta(r.accountId, r.leadId, attId).catch((e: any) => console.error('[Simulação] PDF pra pasta do cliente:', e?.message));
+  }
   return { ok: true as const, messageId: sent.message?.id as string | undefined };
 }
 

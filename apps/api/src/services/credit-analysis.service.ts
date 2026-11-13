@@ -1503,6 +1503,8 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
       content: `⭐ Proposta escolhida: ${b?.label || row.bank}${row.approvedValue ? ` — ${brl(row.approvedValue)}` : ''}${(await holderIfSecond(db, row.leadId, row.holderName)) ? `, no nome de ${row.holderName} (2º participante)` : ''}${p.userName ? ` (por ${p.userName})` : ''}. A aba Financiamento do card foi preenchida com ela (${campos}).${before.valor && row.approvedValue && Number(before.valor) !== row.approvedValue ? ` Valor pedido antes: ${brl(Number(before.valor))}.` : ''}`,
     },
   });
+  // Uma simulação só na pasta (Fabio 12/11: "a que o cliente irá seguir"): escolheu o banco → as simulações dos outros bancos saem da raiz (vão pra DESNECESSARIO).
+  (require('./simulacao-pasta.service') as typeof import('./simulacao-pasta.service')).manterUmaSimulacao(p.accountId, lead.id).catch((e: any) => console.error('[⭐] uma simulação na pasta:', e?.message));
   return { ok: true, filled: Object.keys(fill).filter((k) => !k.startsWith('_')) };
 }
 

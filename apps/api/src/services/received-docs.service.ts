@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { organizeReceivedDocsFolder, downloadDriveFileForVision, isStickerAttachment, isScreenshotAttachment, getDrive, extractFolderId, findFolder, listFolderContents } from './google.service';
 export { isStickerAttachment, isScreenshotAttachment };
 import { logActivity } from './activity.service';
+import { SIMULACAO_ARQUIVO_RE, manterUmaSimulacao, nomeForaDaPasta, type Motivo } from './simulacao-pasta.service';
 
 
 /* Card entrou em "Documentação Recebida" (qualquer setor que tenha a pasta
@@ -198,7 +199,8 @@ export function isPropertyDocType(type: string): boolean {
 
 // Arquivo de simulação que a equipe manda pro cliente ("simulacao CAIXA.pdf",
 // "EVOLUCAO_PARCELAS_INTER_...pdf") — vai pra pasta principal, nome original.
-const SIMULATION_FILE_RE = /simula|evolu[cç][aã]o[ _-]*(das[ _-]*)?parcelas/i;
+// "AeF_…" = PDF do botão/aviso (simulation-doc.service) — antes ficava só na pasta técnica do WhatsApp. Uma simulação só na raiz: simulacao-pasta.service.
+const SIMULATION_FILE_RE = SIMULACAO_ARQUIVO_RE;
 
 // VENDEDOR só recebe documento pessoal (identificação, estado civil,
 // residência, certidões/procuração) — renda é sempre do comprador — e nunca
@@ -404,6 +406,8 @@ async function organizeLead(lead: {
   // Documentos do IMÓVEL ANTIGO (Fabio 10/11, cliente trocou de imóvel): `_docsImovelAntigo` = { [attachmentId]: … } — ficam em DESNECESSARIO com "ANTIGO - "
   // no nome e não voltam pra IMOVEL a cada reorganização (sem isso a matrícula antiga voltava a ser "MATRICULA DO IMOVEL" e a nova virava "… 2").
   const antigos = (cf._docsImovelAntigo || {}) as Record<string, unknown>;
+  // Simulação que já saiu da raiz pela regra "uma simulação só na pasta" (Fabio 12/11): fica na DESNECESSARIO, não volta.
+  const simForaDaPasta = (cf._simulacoesForaDaPasta || {}) as Record<string, Motivo>;
 
   const clientFolderName = folderNameFor(lead);
   const result = await organizeReceivedDocsFolder(lead.accountId, {
@@ -411,6 +415,7 @@ async function organizeLead(lead: {
     clientFolderName,
     activeLeadsFolderId: lead.activeLeadsFolderId,
     nameFor: async (f) => {
+      if (simForaDaPasta[f.driveFileId]) return nomeForaDaPasta(String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, ''), simForaDaPasta[f.driveFileId]);
       const attId = attIdByDriveId.get(f.driveFileId) || '';
       if (antigos[attId]) { const i = docInfo[attId]; return `ANTIGO - ${i ? docLabel(i) : String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, '').slice(0, 40)}`; }
       const prot = ((cf._docsProtegidos || {}) as Record<string, { fileName?: string; guess?: string }>)[attId];
@@ -421,6 +426,7 @@ async function organizeLead(lead: {
       return info ? docLabel(info) : '';
     },
     folderFor: async (f) => {
+      if (simForaDaPasta[f.driveFileId]) return 'DESNECESSARIO';
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return 'RAIZ';
       const attId0 = attIdByDriveId.get(f.driveFileId) || '';
       if (antigos[attId0]) return 'DESNECESSARIO';
@@ -440,6 +446,7 @@ async function organizeLead(lead: {
   });
 
   await gravarChaves(lead.id, { link_pasta_drive: result.folderUrl, _driveOrganizedAt: new Date().toISOString() }, true);
+  const simulacoesSairam = await manterUmaSimulacao(lead.accountId, lead.id, { nota: false }).catch((e: any) => { console.error('[DocsRecebidos] uma simulação na pasta:', e?.message); return [] as string[]; });
 
   const lines = [
     `📁 Pasta organizada no Drive: ${clientFolderName} (em LEADS ATIVOS)`,
@@ -453,6 +460,7 @@ async function organizeLead(lead: {
     }),
   ];
   if (result.ignored.length) lines.push('', `Não são documentos (foram pra DESNECESSARIO): ${result.ignored.join(', ')}`);
+  if (simulacoesSairam.length) lines.push('', `Uma simulação só na pasta — as outras foram pra DESNECESSARIO: ${simulacoesSairam.join(', ')}`);
   await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
   logActivity({
     accountId: lead.accountId, userId: null, userName: 'Organizador de documentos', action: 'lead_edited', leadId: lead.id, leadName: lead.name,
