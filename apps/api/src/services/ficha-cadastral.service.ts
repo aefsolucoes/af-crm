@@ -525,6 +525,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaCadastral: registro } as any } });
     // A renda bruta lida dos comprovantes vai pro card (Fabio 05/11).
     await (require('./renda-comprovante.service') as typeof import('./renda-comprovante.service')).atualizarRendaPeloComprovante(leadId).catch((e: any) => console.error('[Renda comprovante]', e?.message || e));
+    // Nome certo pelos documentos (Fabio 13/11): participantes, card e pasta do Drive com o nome completo do documento — só quando é a mesma pessoa (CPF ou nome que contém o do card).
+    await (require('./nome-pelo-documento.service') as typeof import('./nome-pelo-documento.service')).renomearPelosDocumentos(accountId, leadId).catch((e: any) => console.error('[Nome pelo documento]', e?.message || e));
 
     const quando = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }).slice(0, 17);
     const blocos = ficha.participantes.map((p: any, i: number) => {
