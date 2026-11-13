@@ -561,6 +561,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
   const learned = await learnedDocRules(accountId).catch(() => '');
   const novas: ReviewSummary['novas'] = [];
   const leituraFalhou: { id: string; nome: string }[] = [];
+  const duvidasNovas: { attId: string; arquivo: string; r: DocReview }[] = [];
   // O leitor completo (com raciocínio) acerta mais que o classificador barato: documento do IMÓVEL que o classificador tratou como pessoal
   // (capa de IPTU lida como "comprovante de residência" em nome de empresa — Maria Antônia, 15/10) passa a valer pelo que o leitor disse.
   const infoFix: Record<string, string> = {};
@@ -576,6 +577,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
       cache[a.id] = guardada.r;
       novas.push({ arquivo: a.fileName || a.id, r: guardada.r, attId: a.id });
       if (guardada.info) infoFix[a.id] = guardada.info;
+      if (guardada.r.resultado === 'DUVIDA') duvidasNovas.push({ attId: a.id, arquivo: a.fileName || 'documento', r: guardada.r }); // lida antes de um reinício: também passa pela documentação toda
       continue;
     }
     const reler = !corrigida && (releDono || (!!donoDito && !cache[a.id]?.leuDonoDito)) && (cache[a.id]?.donoSituacao === 'OUTRO_SEM_RELACAO' || cache[a.id]?.donoSituacao === 'EMPRESA');
@@ -599,15 +601,36 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
     novas.push({ arquivo: a.fileName || a.id, r, attId: a.id });
     const tipoLido = r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim().toUpperCase();
     if (tipoLido && r.resultado !== 'NAO_DOCUMENTO' && isPropertyDocType(tipoLido) && !isPropertyDocType(info[a.id]!.type)) infoFix[a.id] = `${tipoLido}|`;
-    if (r.resultado === 'DUVIDA') {
-      // Não chuta: leva o documento e a pergunta pra equipe (balão "Dúvidas da IA"); uma pergunta por arquivo.
-      const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
-      await createDocQuestion({ accountId, leadId, attachmentId: a.id, fileName: a.fileName || 'documento', docType: r.tipo, question: r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
-    }
-    // Depois da pergunta à equipe (a retomada não abre a dúvida de novo). Só a chave, por SQL — ver customfields-write-race.
+    // Dúvida: NÃO vai pra equipe agora (Fabio 13/11: "antes de mandar dúvida para nós … analise toda a documentação antes" — Vicente: a CNIB e a ônus no nome da antiga dona viraram
+    // dúvida arquivo por arquivo). Depois que TODOS os arquivos foram lidos, cada dúvida é conferida contra a documentação inteira (consolidarDuvidas, abaixo).
+    if (r.resultado === 'DUVIDA') duvidasNovas.push({ attId: a.id, arquivo: a.fileName || 'documento', r });
+    // Leitura guardada já (reinício no meio não lê de novo; a dúvida que não chegou a abrir é aberta pela conferência — docs-checker.separarDuvidas). Só a chave, por SQL — ver customfields-write-race.
     const guardar = { [a.id]: { r, ...(infoFix[a.id] ? { info: infoFix[a.id] } : {}) } };
     await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docReviewParcial}', COALESCE("customFields"->'_docReviewParcial', '{}'::jsonb) || ${JSON.stringify(guardar)}::jsonb, true) WHERE id = ${leadId}`
       .catch((e: any) => console.warn('[DocReview] leitura parcial:', e?.message || e));
+  }
+  // OLHA A DOCUMENTAÇÃO TODA antes de levar dúvida pra equipe (Fabio 13/11): a dúvida que outro documento já responde não sobe — a leitura vira OK com a explicação; a que continua
+  // sobe com a pergunta refeita dizendo o que os outros documentos mostram (a equipe responde com o quadro inteiro). Sem a IA (erro/sem chave): sobe como antes.
+  if (duvidasNovas.length) {
+    const quadro = situacaoDosDocumentos(atts, cache, cf0).ordered;
+    const vered = await consolidarDuvidas(quadro, duvidasNovas, context).catch((e: any) => { console.error('[DocReview] consolidação das dúvidas:', e?.message || e); return [] as Awaited<ReturnType<typeof consolidarDuvidas>>; });
+    const resolvidas: string[] = [];
+    const { createDocQuestion } = require('./ai-team-question.service') as typeof import('./ai-team-question.service');
+    for (const [i, d] of duvidasNovas.entries()) {
+      const v = vered.find((x) => x.n === i + 1);
+      // Dono MENOR de idade barra todos os bancos (Fabio 12/11): essa dúvida nunca é "resolvida" pela consolidação — vai pra equipe como foi lida.
+      if (v?.resolvida && v.por && !d.r.donoMenor) {
+        const r2: DocReview = { ...d.r, resultado: 'OK', problemas: [], duvida: '', observacao: `${d.r.observacao ? `${d.r.observacao} ` : ''}(Dúvida resolvida olhando a documentação toda: ${v.conclusao} — ${v.por}.)`.trim() };
+        cache[d.attId] = r2;
+        const nv = novas.find((x) => x.attId === d.attId);
+        if (nv) nv.r = r2;
+        resolvidas.push(`• ${d.r.tipo} (${d.arquivo}): ${v.conclusao} — conferido em ${v.por}`);
+        continue;
+      }
+      // Não chuta: leva o documento e a pergunta pra equipe (balão "Dúvidas da IA"); uma pergunta por arquivo.
+      await createDocQuestion({ accountId, leadId, attachmentId: d.attId, fileName: d.arquivo, docType: d.r.tipo, question: v?.pergunta || d.r.duvida || 'Não tenho segurança se este documento serve.' }).catch((e) => console.error('[DocReview] não abriu a dúvida:', e?.message || e));
+    }
+    if (resolvidas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Olhando a documentação inteira, NÃO levei estas dúvidas pra equipe (outro documento já responde):\n${resolvidas.join('\n')}` } }).catch(() => {});
   }
   if (leituraFalhou.length) {
     try {
@@ -689,6 +712,45 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
   const atendidosKey = atendidos.map((a) => ({ doc: a.doc, texto: a.texto, por: a.por }));
   if (JSON.stringify(atendidosKey) !== JSON.stringify(cf0._docsAtendidos || [])) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsAtendidos}', ${JSON.stringify(atendidosKey)}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});
   return { novas, problemas, duvidas, donoPendente, ok, atendidos };
+}
+
+/** Dúvidas nascidas da leitura de UM arquivo, conferidas contra TODOS os documentos recebidos e o que já se sabe do cliente (Fabio 13/11: "antes de mandar dúvida para nós …
+ *  analise toda a documentação antes"). Por dúvida: resolvida (outro DOCUMENTO responde — diz qual e a conclusão) ou continua (com a pergunta refeita pra equipe, dizendo o que os
+ *  outros documentos mostram). Na dúvida, continua. Vazio = não deu pra consultar (todas sobem como antes). */
+export async function consolidarDuvidas(docs: DocReview[], duvidas: { arquivo: string; r: DocReview }[], contexto: string): Promise<{ n: number; resolvida: boolean; por?: string; conclusao?: string; pergunta?: string }[]> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !duvidas.length) return [];
+  const lista = docs.map((r, i) => `${i + 1}. ${r.tipo}${r.titular ? ` — ${r.titular}` : ''}${r.dono ? ` — donos: ${r.dono}` : ''}${r.lado ? ` — lado: ${r.lado}` : ''} — ${r.resultado}${r.problemas.length ? ` (${r.problemas.join('; ')})` : ''}${r.observacao ? ` [${r.observacao}]` : ''}${r.duvida ? ` {dúvida: ${r.duvida}}` : ''}`).join('\n');
+  // Dono menor sempre sobe pra equipe (quem chama trata): fica fora da consulta, mas a numeração continua a da lista recebida.
+  const elegiveis = duvidas.map((d, i) => ({ d, n: i + 1 })).filter((x) => !x.d.r.donoMenor);
+  if (!elegiveis.length) return [];
+  const duvTxt = elegiveis.map(({ d, n }) => `${n}. ${d.r.tipo} (arquivo ${d.arquivo}): ${d.r.duvida || 'sem segurança se o documento serve'}`).join('\n');
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 6000,
+      system: `Você confere a documentação de um cliente como um TODO (crédito com garantia de imóvel / financiamento habitacional). Cada arquivo foi lido SOZINHO e algumas leituras ficaram em DÚVIDA — a dúvida iria pra equipe responder. Antes disso, veja se OUTRO documento da lista já responde a dúvida. Ex.: certidão de indisponibilidade (CNIB) em nome de uma pessoa que é a DONA na matrícula/ônus da lista → é a certidão da dona do imóvel, não há dúvida; "falta o verso" quando outro arquivo é o verso; data ilegível quando outro arquivo do mesmo documento mostra a data.
+Regras: só marque "resolvida": true quando um DOCUMENTO da lista responde de forma clara — o que o cliente DIZ na conversa sozinho não resolve (ex.: "comprei a casa" sem escritura registrada/matrícula no nome dele). Na dúvida, "resolvida": false. Quando continuar, reescreva a pergunta pra equipe em até 500 caracteres, em português, dizendo o que a dúvida é E o que os outros documentos mostram sobre ela (a equipe precisa do quadro inteiro pra responder de uma vez); sem CPF.
+Responda SÓ JSON: {"duvidas":[{"n":<nº da dúvida>,"resolvida":true|false,"atendidoPor":<nº do documento da lista que responde, ou 0>,"conclusao":"<se resolvida: em 1 frase o que o outro documento mostra>","pergunta":"<se continua: a pergunta refeita pra equipe>"}]}`,
+      messages: [{ role: 'user', content: `O QUE SE SABE DO CLIENTE:\n${contexto.slice(0, 6000)}\n\nDOCUMENTOS RECEBIDOS (leitura de cada um):\n${lista}\n\nDÚVIDAS:\n${duvTxt}` }],
+    }),
+  }).catch(() => null);
+  if (!res || !res.ok) { console.warn('[DocReview] consolidação das dúvidas: API', res?.status, '— as dúvidas sobem como foram lidas'); return []; }
+  const data = (await res.json()) as { content: { type: string; text?: string }[]; stop_reason?: string };
+  const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text || '').join('\n');
+  let j: any = {};
+  try { j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { console.warn('[DocReview] consolidação das dúvidas: resposta fora do formato', data.stop_reason); return []; }
+  const out: { n: number; resolvida: boolean; por?: string; conclusao?: string; pergunta?: string }[] = [];
+  for (const v of Array.isArray(j.duvidas) ? j.duvidas : []) {
+    const n = Number(v?.n);
+    if (!elegiveis.some((x) => x.n === n)) continue;
+    const doc = docs[Number(v?.atendidoPor) - 1];
+    const resolvida = v?.resolvida === true && !!doc && !!String(v?.conclusao || '').trim();
+    out.push({ n, resolvida, ...(resolvida ? { por: `${doc!.tipo}${doc!.titular ? ` (${doc!.titular})` : ''}`, conclusao: String(v.conclusao).trim().slice(0, 300) } : {}), ...(!resolvida && String(v?.pergunta || '').trim() ? { pergunta: String(v.pergunta).trim().slice(0, 600) } : {}) });
+  }
+  return out;
 }
 
 /** Confere os pedidos contra TODOS os documentos já recebidos: devolve os que outro arquivo já atende. Na dúvida, o pedido continua. */

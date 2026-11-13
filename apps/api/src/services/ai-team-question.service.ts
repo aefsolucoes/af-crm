@@ -500,7 +500,17 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     take: 5,
     select: { status: true, question: true, answer: true, kind: true, callWhen: true },
   });
-  if (!rows.length) return '';
+  // Dúvidas de DOCUMENTO respondidas pela equipe (Fabio 13/11, Vicente: a resposta "veja com o cliente se ele já registrou a escritura e pagou o ITBI…" nunca chegou à IA —
+  // ficava só na releitura do arquivo — e o cliente ficou sem resposta). As abertas continuam fora: a conferência cuida delas.
+  // Uma vez só: só as respostas que chegaram DEPOIS da última resposta da IA (as anteriores ela já teve a chance de passar ao cliente).
+  const ultimaIa = await prisma.note.findFirst({ where: { leadId, content: { startsWith: 'Resposta automática da IA' } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const desdeDoc = new Date(Math.max(Date.now() - 7 * 24 * 60 * 60 * 1000, ultimaIa?.createdAt.getTime() || 0));
+  const docRows = await prisma.aiTeamQuestion.findMany({
+    where: { leadId, kind: 'DOC_QUESTION', status: 'ANSWERED', answer: { not: null }, answeredAt: { gt: desdeDoc } },
+    orderBy: { answeredAt: 'desc' }, take: 3, select: { question: true, answer: true },
+  });
+  if (!rows.length && !docRows.length) return '';
+  const docLines = docRows.map((r) => `- Documento: ${r.question.replace(/\s+/g, ' ').slice(0, 400)}\n  Resposta da equipe: ${r.answer} (se ela pede algo do cliente — perguntar, confirmar, explicar —, faça isso na conversa, uma vez)`);
   const lines = rows.map((r) => r.kind === 'CALL_REQUEST'
     ? (r.status === 'OPEN'
       ? `- LIGAÇÃO: o cliente pediu ligação${/^a\s+definir$/i.test(String(r.callWhen || '')) ? ' e a equipe ainda vai definir o horário' : ` (${r.callWhen}) e você ainda está confirmando o horário`} — se ele perguntar, diga que já já confirma; não prometa nem sugira horário.`
@@ -509,7 +519,7 @@ export async function teamQuestionsContext(leadId: string): Promise<string> {
     ? `- AINDA SEM RESPOSTA: ${r.question}`
     : `- Pergunta: ${r.question}\n  Resposta da equipe: ${r.answer}`);
   return `--- DÚVIDAS DESTE CLIENTE QUE VOCÊ JÁ LEVOU PRA EQUIPE ---
-${lines.join('\n')}
+${[...lines, ...docLines].join('\n')}
 Se o cliente voltar num assunto ainda sem resposta, não responda nada sobre ele ("noReply": true) — a resposta chega pelo balão; não abra outra pergunta nem invente. Se ele trouxer outro assunto, responda o outro. Respostas da equipe valem como verdade pra este cliente.`;
 }
 
@@ -714,10 +724,16 @@ async function answerDocQuestion(q: { id: string; accountId: string; leadId: str
   // Retoma a conferência (se o card ainda está em "Aguardando Documentação"): sem mais dúvida, segue o fluxo normal (problema → avisa o cliente; tudo certo → avança).
   // Cliente ainda mandando arquivo (últimos 5 min): espera ele terminar, como na conferência normal (Fabio 27/10, Fernanda Karita: a resposta da equipe disparou a conferência
   // na hora, 15 s depois de um arquivo novo, e o cliente foi cobrado do que já tinha mandado).
-  const { checkDocsComplete, scheduleDocsCheck } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+  const { checkDocsComplete, scheduleDocsCheck, depoisDaConferencia } = require('./docs-checker.service') as typeof import('./docs-checker.service');
   const mandando = await prisma.message.count({ where: { leadId: q.leadId, direction: 'INBOUND', attachments: { some: {} }, createdAt: { gte: new Date(Date.now() - 5 * 60_000) } } }).catch(() => 0);
   if (mandando) scheduleDocsCheck(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
-  else checkDocsComplete(q.accountId, q.leadId, io as any).catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
+  // Conferência sem nada a dizer ao cliente e a IA calada esperando por ela (Fabio 13/11, Vicente): a IA responde o que ficou parado, já com a resposta da equipe no contexto.
+  else {
+    const inicio = new Date().toISOString();
+    checkDocsComplete(q.accountId, q.leadId, io as any)
+    .then((falou) => depoisDaConferencia(q.accountId, q.leadId, falou, io as any, inicio))
+    .catch((e) => console.error('[Docs] reconferência após a dúvida:', e?.message || e));
+  }
   return updated;
 }
 

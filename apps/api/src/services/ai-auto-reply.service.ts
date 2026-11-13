@@ -546,8 +546,12 @@ async function docsStillArriving(leadId: string): Promise<boolean> {
   // A conferência também é reagendada por TEXTO (resposta de "de quem é o imóvel" — maybeRecheckOwnerAnswer): conferência agendada sem arquivo recente não é cliente mandando
   // documento (Fabio 03/11, Eva: com a pergunta do dono em aberto, todo texto dela reagendava a conferência e a IA ficava muda — "acho que ano que vem" ficou sem resposta).
   const janelaMin = (lead.customFields as any)?._docsCheckDue ? 15 : 5;
+  // Arquivo que a conferência JÁ conferiu não conta como "ainda mandando" (Fabio 13/11, Vicente: a conferência rodou, não falou nada, e a foto de 10 min antes continuava
+  // calando a IA — o cliente respondeu a pergunta dela e ficou sem resposta).
+  const conferidoAt = Date.parse(String((lead.customFields as any)?._docsConferidoAt || '')) || 0;
+  const desde = new Date(Math.max(Date.now() - janelaMin * 60_000, conferidoAt));
   const recent = await prisma.messageAttachment.findMany({
-    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(Date.now() - janelaMin * 60_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
+    where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: desde }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }] },
     select: { fileName: true, mimeType: true }, take: 10,
   });
   const { isStickerAttachment } = require('./google.service') as typeof import('./google.service');
@@ -658,6 +662,8 @@ export async function generateAiAutoReply(
     const chegando = await medir('docsChegando', docsStillArriving(leadId).catch(() => false));
     if (chegando && !opts.sugestao && !incomingText.includes('?')) {
       console.log(`[AI Auto-reply] cliente ainda mandando documentos ("${incomingText.trim().slice(0, 40)}") — sem resposta, a conferência avisa depois`);
+      // A conferência PROMETE falar depois: se ela terminar sem dizer nada ao cliente, a IA responde o que ficou parado (docs-checker.depoisDaConferencia — Fabio 13/11, Vicente).
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_iaEsperaConferencia}', to_jsonb(${new Date().toISOString()}::text), true) WHERE id = ${leadId}`.catch(() => {});
       return { reply: '', handoff: false, noReply: true };
     }
 

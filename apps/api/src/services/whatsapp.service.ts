@@ -1751,6 +1751,19 @@ export async function retomarRespostasInterrompidas(io: any): Promise<void> {
   }
 }
 
+/** A IA responde agora o que o cliente mandou e ficou sem resposta (ex.: ela calou esperando a conferência de documentos, que terminou sem falar — Fabio 13/11, Vicente).
+ *  Só com a IA ligada e o cliente como o último a falar no WhatsApp; a resposta junta todas as mensagens dele que ficaram paradas (como uma resposta normal). */
+export async function responderClienteSeUltimo(accountId: string, leadId: string, io: any, motivo: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, isGroup: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } } } });
+  if (!lead?.aiAutoReplyActive || lead.isGroup || (lead.customFields as any)?._autoPaused) return;
+  const ultima = await prisma.message.findFirst({ where: { leadId, channel: 'WHATSAPP', deleted: false, callWaCallId: null }, orderBy: { createdAt: 'desc' }, select: { direction: true, content: true } });
+  if (ultima?.direction !== 'INBOUND') return; // alguém já respondeu
+  const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
+  if (!phone) return;
+  console.log(`[IA] ${leadId}: respondendo o que ficou parado — ${motivo}`);
+  await maybeAiAutoReplyCloudApi(accountId, leadId, ultima.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
+}
+
 /** A cada 2 min: resposta da IA que não saiu porque a API da Anthropic estava fora/sobrecarregada (marca `_iaFalhaApi`, Fabio 13/11, Marcos). Tenta de novo a cada 3 min
  *  enquanto o cliente for o último a falar e a IA estiver ligada; depois de 30 min sem conseguir, para e avisa a equipe (nota + push) pra responder à mão. */
 const FALHA_API_MAX_MS = 30 * 60_000;

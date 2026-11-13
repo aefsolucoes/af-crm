@@ -64,7 +64,10 @@ export async function retomarConferenciasInterrompidas(io: any): Promise<void> {
           const fresh = await prisma.lead.findUnique({ where: { id: l.id }, select: { status: true, customFields: true } });
           if (fresh?.status !== 'OPEN' || (fresh.customFields as any)?._docsCheckDue) continue;
           const at = await marcarConferencia(l.id, 'auto', { n: n + 1 });
-          try { await docs.checkDocsComplete(l.accountId, l.id, io); } finally { await desmarcarConferencia(l.id, 'auto', at); }
+          let falou = false;
+          const inicio = new Date().toISOString();
+          try { falou = await docs.checkDocsComplete(l.accountId, l.id, io); } finally { await desmarcarConferencia(l.id, 'auto', at); }
+          await docs.depoisDaConferencia(l.accountId, l.id, falou, io, inicio).catch((e: any) => console.error('[Docs] depois da conferência retomada:', e?.message || e));
         } else {
           await docs.conferirDocumentosAgora(l.accountId, l.id, l.marca?.por || 'CRM', io, { tentativa: n + 1 });
         }

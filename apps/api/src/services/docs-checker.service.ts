@@ -220,23 +220,51 @@ export async function scheduleDocsCheck(accountId: string, leadId: string, io: I
     if (cf0._docsFaltando || cf0._docProblemsTold) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsRelerDue}', ${JSON.stringify(new Date(Date.now() + CHECK_DELAY_MS).toISOString())}::jsonb, true) WHERE id = ${leadId}`;
     return;
   }
-  const cf: Record<string, unknown> = { ...((lead.customFields || {}) as Record<string, unknown>), _docsCheckDue: new Date(Date.now() + CHECK_DELAY_MS).toISOString() };
-  delete cf._docsLater; // mandou documento: a cobrança do "te mando depois" não é mais necessária
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
+  // Só as chaves, por SQL (customfields-write-race): regravar o objeto inteiro apagava marcas gravadas no meio (ex.: `_iaEsperaConferencia` da IA, Fabio 13/11).
+  // `_docsLater` sai: mandou documento, a cobrança do "te mando depois" não é mais necessária.
+  const due = JSON.stringify(new Date(Date.now() + CHECK_DELAY_MS).toISOString());
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsCheckDue}', ${due}::jsonb, true) - '_docsLater' WHERE id = ${leadId}`;
+}
+
+/** Fim de uma conferência (Fabio 13/11, Vicente: a IA calou porque "o cliente ainda está mandando documento — a conferência avisa depois"; a conferência rodou, não falou
+ *  nada, e a resposta dele à pergunta da IA ficou no vácuo). Grava `_docsConferidoAt` (os arquivos até aqui não calam mais a IA) e, se a IA tinha calado esperando a
+ *  conferência (`_iaEsperaConferencia`) e a conferência NÃO falou com o cliente, a IA responde agora o que ele mandou — se ele ainda for o último a falar. */
+export async function depoisDaConferencia(accountId: string, leadId: string, falou: boolean, io: Io, inicio?: string): Promise<void> {
+  // Corte = INÍCIO da conferência: arquivo que chegou enquanto ela rodava (a leitura leva minutos) ainda cala a IA — a próxima conferência é que confere ele.
+  if (inicio) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsConferidoAt}', to_jsonb(${inicio}::text), true) WHERE id = ${leadId}`;
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const espera = String(((l?.customFields || {}) as Record<string, any>)._iaEsperaConferencia || '');
+  if (!espera) return;
+  const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaEsperaConferencia' WHERE id = ${leadId} AND "customFields"->>'_iaEsperaConferencia' = ${espera}`;
+  if (!pegou) return;
+  // Não confia só no "falou": a conferência às vezes devolve true sem mandar nada novo (ex.: a pergunta do dono já tinha sido feita). Quem decide é a conversa — se o cliente
+  // ainda é o último a falar, a IA responde (responderClienteSeUltimo confere).
+  await (require('./whatsapp.service') as typeof import('./whatsapp.service')).responderClienteSeUltimo(accountId, leadId, io, `a conferência de documentos terminou${falou ? '' : ' sem falar com o cliente'}`);
 }
 
 /** Poller (1 min, junto com a análise automática): confere os cards cujo prazo de 10 min sem documento novo venceu. */
 export async function processDocsChecks(accountId: string, io: Io): Promise<void> {
   const due = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->>'_docsCheckDue') IS NOT NULL AND ("customFields"->>'_docsCheckDue')::timestamptz <= now() LIMIT 10`;
   for (const { id } of due) {
-    const fresh = await prisma.lead.findUnique({ where: { id }, select: { customFields: true } });
-    const cf = { ...((fresh?.customFields || {}) as Record<string, unknown>) };
-    delete cf._docsCheckDue;
-    await prisma.lead.update({ where: { id }, data: { customFields: cf as any } });
+    // Só a chave (customfields-write-race) — e só quem tirou a marca confere (dois servidores durante um deploy).
+    const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_docsCheckDue' WHERE id = ${id} AND ("customFields"->>'_docsCheckDue') IS NOT NULL`;
+    if (!pegou) continue;
     // Marca de "conferindo" (Fabio 12/11): reinício do servidor no meio → a conferência roda de novo ao subir (docs-check-resume.service).
+    const inicio = new Date().toISOString();
     const marca = await marcarConferencia(id, 'auto');
-    await checkDocsComplete(accountId, id, io).catch((err) => console.error(`[Docs] Falha ao conferir documentação do lead ${id}:`, err?.message || err));
+    const falou = await checkDocsComplete(accountId, id, io).catch((err) => { console.error(`[Docs] Falha ao conferir documentação do lead ${id}:`, err?.message || err); return false; });
     await desmarcarConferencia(id, 'auto', marca);
+    await depoisDaConferencia(accountId, id, falou, io, inicio).catch((e: any) => console.error('[Docs] depois da conferência:', e?.message || e));
+  }
+  // IA calada esperando a conferência que não veio (sem conferência agendada há 20 min — ex.: a etapa não confere, a conferência caiu): a IA responde o que ficou parado.
+  // Marca de mais de 6 h: só sai (responder agora uma conversa de horas atrás seria fora de hora).
+  const esperando = await prisma.$queryRaw<{ id: string; velha: boolean }[]>`SELECT id, ("customFields"->>'_iaEsperaConferencia')::timestamptz < now() - interval '6 hours' AS velha FROM "Lead"
+    WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+    AND ("customFields"->>'_iaEsperaConferencia') IS NOT NULL AND ("customFields"->>'_iaEsperaConferencia')::timestamptz <= now() - interval '20 minutes'
+    AND ("customFields"->>'_docsCheckDue') IS NULL LIMIT 5`;
+  for (const { id, velha } of esperando) {
+    if (velha) { await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaEsperaConferencia' WHERE id = ${id}`.catch(() => {}); continue; }
+    await depoisDaConferencia(accountId, id, false, io).catch((e: any) => console.error('[Docs] IA esperando a conferência:', e?.message || e));
   }
   // Documento novo depois da Aguardando Documentação com pendência anotada (05/11): conferência silenciosa, igual à do botão.
   const reler = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND ("customFields"->>'_docsRelerDue') IS NOT NULL AND ("customFields"->>'_docsRelerDue')::timestamptz <= now() LIMIT 5`;
