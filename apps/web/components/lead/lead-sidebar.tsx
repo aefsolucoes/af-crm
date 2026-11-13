@@ -34,7 +34,12 @@ function maskPhone(value: string): string {
 
 /** Converte string em número suportando formato BR (1.000.000,50) e EN (1000000.50) */
 function parseBRNumber(raw: string): number {
-  const clean = raw.trim()
+  const t = raw.trim();
+  // Valor cru do card ("10786.94", gravado pelo leitor de comprovante/cálculos): ponto com 1–2 casas no fim é DECIMAL, não milhar.
+  // Sem isso, abrir o campo Renda e só clicar fora salvava 1078694 (Fabio 13/11, Deborah: renda virou R$ 1.078.694). A máscara de digitação
+  // só põe ponto em grupos de 3 dígitos, então não colide.
+  if (/^-?\d+\.\d{1,2}$/.test(t)) return parseFloat(t);
+  const clean = t
     .replace(/\./g, '')   // remove pontos de milhar
     .replace(',', '.');   // vírgula decimal → ponto
   const n = parseFloat(clean);
