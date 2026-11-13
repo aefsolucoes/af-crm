@@ -561,6 +561,42 @@ async function docsStillArriving(leadId: string): Promise<boolean> {
  * (não responde) se faltar configuração ou algo der errado — nunca lança erro
  * pro chamador, pra não travar o fluxo de recebimento de mensagem.
  */
+// ─── API da Anthropic fora do ar ou sobrecarregada (Fabio 13/11, Marcos: 503 "overloaded" às 07:22, a IA desistiu na hora e o cliente ficou sem resposta até a
+// equipe ver às 09:01). Erro passageiro → espera e tenta de novo (5 s, 15 s, 40 s); se ainda assim falhar, o card ganha a marca `_iaFalhaApi` e a resposta sai sozinha
+// quando a API voltar (whatsapp.service.retomarRespostasSemApi, a cada 2 min, por até 30 min — depois disso nota + push pra equipe responder à mão).
+const ESPERAS_ANTHROPIC = [5_000, 15_000, 40_000];
+const ESPERAS_ANTHROPIC_BOTAO = [3_000]; // botão "Sugerir resposta": alguém da equipe está esperando na tela
+export const ERRO_PASSAGEIRO = (status: number) => status === 429 || status === 500 || status === 502 || status === 503 || status === 504 || status === 529;
+/** fetch na API de mensagens com novas tentativas pra erro passageiro (sobrecarga, instabilidade, rede). Erro de verdade (400, 401…) volta na hora. */
+export async function chamaAnthropic(esperas: number[], init: RequestInit): Promise<Response> {
+  for (let i = 0; ; i++) {
+    let r: Response;
+    try {
+      r = await fetch('https://api.anthropic.com/v1/messages', init);
+    } catch (e: any) { // rede: vira um 503 pra quem chama
+      if (i >= esperas.length) return new Response(JSON.stringify({ error: { message: e?.message || 'falha de rede' } }), { status: 503 });
+      console.warn(`[AI Auto-reply] falha de rede na Anthropic (${e?.message}) — tento de novo em ${esperas[i] / 1000} s`);
+      await new Promise((res) => setTimeout(res, esperas[i]));
+      continue;
+    }
+    if (r.ok || i >= esperas.length || !ERRO_PASSAGEIRO(r.status)) return r;
+    console.warn(`[AI Auto-reply] Anthropic ${r.status} (passageiro) — tento de novo em ${esperas[i] / 1000} s`);
+    await r.text().catch(() => '');
+    await new Promise((res) => setTimeout(res, esperas[i]));
+  }
+}
+/** Marca o card pra responder quando a API voltar. `desde` fica o da 1ª falha (o prazo de 30 min conta dali); `tentarEm` = próxima tentativa. */
+async function marcarFalhaApi(leadId: string, status: number): Promise<void> {
+  const agora = new Date().toISOString();
+  const tentarEm = new Date(Date.now() + 3 * 60_000).toISOString();
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_iaFalhaApi}',
+    jsonb_build_object('desde', COALESCE("customFields"->'_iaFalhaApi'->>'desde', ${agora}::text), 'tentarEm', ${tentarEm}::text, 'status', ${status}::int), true) WHERE id = ${leadId}`.catch((e: any) => console.error('[AI Auto-reply] marca de falha:', e?.message));
+}
+/** A API respondeu: tira a marca (se houver). Fire-and-forget. */
+function limparFalhaApi(leadId: string): void {
+  prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${leadId} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi')`.catch(() => {});
+}
+
 export async function generateAiAutoReply(
   accountId: string, leadId: string, incomingText: string,
   // Fotos/prints que o cliente mandou junto (Fabio 08/10, Marta: print do
@@ -754,7 +790,7 @@ ${conversasPorTelefone}` : ''}`;
     for (let tentativa = 0; tentativa < 2; tentativa++) {
       const lembrete = tentativa && estourou ? '\n\n[ATENÇÃO: a tentativa anterior gastou todo o limite raciocinando e não chegou a escrever a resposta. Pense pouco e responda direto, SOMENTE com o objeto JSON pedido.]' : tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
       const tChamada = Date.now();
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await chamaAnthropic(opts.botaoSugerir || opts.teste ? ESPERAS_ANTHROPIC_BOTAO : ESPERAS_ANTHROPIC, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({
@@ -779,10 +815,13 @@ ${conversasPorTelefone}` : ''}`;
         }),
       });
       if (!response.ok) {
-        console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text()).slice(0, 300));
+        console.error('[AI Auto-reply] Erro Anthropic:', response.status, (await response.text().catch(() => '')).slice(0, 300));
         if (!semCorte && tentativa === 0 && !opts.teste) { semCorte = true; continue; }
+        // API fora/sobrecarregada mesmo depois das esperas: a resposta ao cliente fica marcada pra sair sozinha quando a API voltar (retomarRespostasSemApi).
+        if (!opts.sugestao && !opts.teste && ERRO_PASSAGEIRO(response.status)) await marcarFalhaApi(leadId, response.status);
         return null;
       }
+      if (!opts.sugestao && !opts.teste) limparFalhaApi(leadId);
       const data = await response.json() as { content: { type: string; text?: string }[]; stop_reason?: string; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } };
       const u = data.usage || {};
       tempos.push(`anthropic${tentativa + 1}=${Date.now() - tChamada}(entrada ${u.input_tokens ?? '?'}+cache ${u.cache_read_input_tokens ?? 0}/${u.cache_creation_input_tokens ?? 0}, saída ${u.output_tokens ?? '?'}, ${data.stop_reason || '?'})`);

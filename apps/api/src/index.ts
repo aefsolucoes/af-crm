@@ -347,6 +347,13 @@ httpServer.listen(PORT, () => {
     (require('./services/whatsapp.service') as typeof import('./services/whatsapp.service')).retomarRespostasInterrompidas(io).catch((err: any) => console.error('[IA] Retomada após reinício:', err?.message));
   }, 90 * 1000);
 
+  // Resposta da IA que a API da Anthropic recusou (fora/sobrecarregada — Fabio 13/11, Marcos): tenta de novo a cada 3 min, por até 30 min.
+  setTimeout(() => {
+    setInterval(() => {
+      (require('./services/whatsapp.service') as typeof import('./services/whatsapp.service')).retomarRespostasSemApi(io).catch((err: any) => console.error('[IA] Retomada sem API:', err?.message));
+    }, 2 * 60 * 1000);
+  }, 2 * 60 * 1000);
+
   // .zip do cliente aberto pela metade quando o servidor reiniciou (Fabio 12/11): 2 min depois de subir, abre de novo — não duplica o que já foi anexado.
   setTimeout(() => {
     (require('./services/zip-attachment.service') as typeof import('./services/zip-attachment.service')).retomarZipsInterrompidos(io).catch((err: any) => console.error('[Zip] Retomada após reinício:', err?.message));

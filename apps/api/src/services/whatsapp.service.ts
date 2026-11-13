@@ -1751,6 +1751,43 @@ export async function retomarRespostasInterrompidas(io: any): Promise<void> {
   }
 }
 
+/** A cada 2 min: resposta da IA que não saiu porque a API da Anthropic estava fora/sobrecarregada (marca `_iaFalhaApi`, Fabio 13/11, Marcos). Tenta de novo a cada 3 min
+ *  enquanto o cliente for o último a falar e a IA estiver ligada; depois de 30 min sem conseguir, para e avisa a equipe (nota + push) pra responder à mão. */
+const FALHA_API_MAX_MS = 30 * 60_000;
+export async function retomarRespostasSemApi(io: any): Promise<void> {
+  const agora = new Date().toISOString();
+  const leads = await prisma.$queryRaw<{ id: string; accountId: string; desde: string | null }[]>`
+    SELECT id, "accountId", "customFields"->'_iaFalhaApi'->>'desde' AS desde FROM "Lead"
+    WHERE jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi') AND COALESCE("customFields"->'_iaFalhaApi'->>'tentarEm', '') <= ${agora} LIMIT 20`;
+  for (const l of leads) {
+    // Pega a vez: empurra a próxima tentativa (dois servidores no ar durante um deploy não respondem em dobro).
+    const proxima = new Date(Date.now() + 3 * 60_000).toISOString();
+    const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_iaFalhaApi,tentarEm}', to_jsonb(${proxima}::text), true)
+      WHERE id = ${l.id} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_iaFalhaApi') AND COALESCE("customFields"->'_iaFalhaApi'->>'tentarEm', '') <= ${agora}`;
+    if (!pegou) continue;
+    const tira = () => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${l.id}`.catch(() => {});
+    const lead = await prisma.lead.findUnique({ where: { id: l.id }, select: { name: true, userId: true, aiAutoReplyActive: true, isGroup: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } }, pipeline: { select: { departmentId: true } } } });
+    if (!lead?.aiAutoReplyActive || lead.isGroup || (lead.customFields as any)?._autoPaused) { await tira(); continue; } // IA desligada: a equipe cuida
+    const ultima = await prisma.message.findFirst({ where: { leadId: l.id, channel: 'WHATSAPP', deleted: false, callWaCallId: null }, orderBy: { createdAt: 'desc' }, select: { direction: true, content: true, createdAt: true } });
+    if (ultima?.direction !== 'INBOUND') { await tira(); continue; } // alguém já respondeu
+    const desde = Date.parse(l.desde || '') || Date.now();
+    if (Date.now() - desde > FALHA_API_MAX_MS) {
+      await tira();
+      const hora = new Date(desde).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Sao_Paulo' });
+      await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `⚠️ A IA não conseguiu responder o cliente: a API da IA (Anthropic) está fora do ar ou sobrecarregada desde ${hora}. Tentei de novo por 30 min — responda o cliente à mão.` } }).catch(() => {});
+      const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+      sendPushToAccount(l.accountId, { title: `⚠️ ${lead.name}: IA sem resposta`, body: `A API da IA está fora desde ${hora} — responda o cliente à mão.`, leadId: l.id }, lead.userId ? [lead.userId] : undefined).catch(() => {});
+      continue;
+    }
+    const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
+    if (!phone) { await tira(); continue; }
+    console.log(`[IA] ${l.id}: resposta que a API da Anthropic recusou — tentando de novo`);
+    await maybeAiAutoReplyCloudApi(l.accountId, l.id, ultima.content || '(mensagem)', phone, io, lead.pipeline?.departmentId).catch((e: any) => console.error('[IA] retomada sem API:', e?.message));
+    // A API não falhou de novo (a marca não ganhou nova tentativa) mas a IA nem chegou a chamá-la (ex.: imagem sem contexto, ela espera o cliente): não insiste.
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaFalhaApi' WHERE id = ${l.id} AND "customFields"->'_iaFalhaApi'->>'tentarEm' = ${proxima}`.catch(() => {});
+  }
+}
+
 async function respostaIaCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
