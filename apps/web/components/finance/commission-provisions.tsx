@@ -210,12 +210,16 @@ function ProvisionRow({ p, onEdit, onChanged }: { p: CommissionProvision; onEdit
   }
 
   return (
-    <div className="px-4 py-3 rounded-xl border border-af-border bg-white">
+    <div className={cn('px-4 py-3 rounded-xl border border-af-border bg-white', p.leadSituacao === 'PERDIDO' && 'opacity-60')}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
         <div className="flex-1 min-w-0">
-          <button onClick={() => router.push(`/inbox?leadId=${p.leadId}`)} className="text-sm font-medium text-slate-800 hover:text-af-mid hover:underline truncate block max-w-full text-left">
-            {p.leadName}
-          </button>
+          <div className="flex items-center gap-2 min-w-0">
+            <button onClick={() => router.push(`/inbox?leadId=${p.leadId}`)} className="text-sm font-medium text-slate-800 hover:text-af-mid hover:underline truncate block max-w-full text-left">
+              {p.leadName}
+            </button>
+            {p.leadSituacao === 'PERDIDO' && <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">Perdido · fora do total</span>}
+            {p.leadSituacao === 'CONCLUIDO' && <span className="flex-shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-amber-50 text-amber-700">Concluído · falta receber</span>}
+          </div>
           <p className="text-[11px] text-slate-500 truncate">
             {p.leadStage}{p.payer ? ` · paga: ${p.payer}` : ''}{p.note ? ` · ${p.note}` : ''}
           </p>
@@ -267,12 +271,23 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
     queryKey: ['commission-provisions'],
     queryFn: async () => (await api.get<CommissionProvision[]>('/api/finance/provisions')).data,
   });
-  const open = (data || []).filter((p) => p.status === 'OPEN');
+  // Ordem: em contratação → concluído (falta receber) → perdido (não paga) — Fabio 14/11.
+  const ORDEM: Record<string, number> = { CONTRATACAO: 0, CONCLUIDO: 1, REMOVIDO: 2, PERDIDO: 3 };
+  const open = (data || []).filter((p) => p.status === 'OPEN').sort((a, b) => (ORDEM[a.leadSituacao || 'CONTRATACAO'] ?? 0) - (ORDEM[b.leadSituacao || 'CONTRATACAO'] ?? 0));
   const received = (data || []).filter((p) => p.status === 'RECEIVED');
-  const totalOpen = open.reduce((s, p) => s + p.amount, 0);
-  const inPeriod = open.filter((p) => p.expectedDate && dayOf(p.expectedDate) >= from && dayOf(p.expectedDate) <= to);
+  // "A soma de todos os processos pra receber" (Fabio 14/11): tudo em aberto, menos quem foi pra Perdidos (não paga). Separado por produto.
+  const aReceber = open.filter((p) => p.leadSituacao !== 'PERDIDO');
+  const perdidos = open.filter((p) => p.leadSituacao === 'PERDIDO');
+  const soma = (xs: CommissionProvision[]) => xs.reduce((s, p) => s + p.amount, 0);
+  const totalOpen = soma(aReceber);
+  const he = aReceber.filter((p) => /home equity/i.test(p.product || ''));
+  const fh = aReceber.filter((p) => /financiamento/i.test(p.product || ''));
+  const outros = aReceber.filter((p) => !he.includes(p) && !fh.includes(p));
+  const concluidos = aReceber.filter((p) => p.leadSituacao === 'CONCLUIDO');
+  const semBanco = aReceber.filter((p) => !p.payer);
+  const inPeriod = aReceber.filter((p) => p.expectedDate && dayOf(p.expectedDate) >= from && dayOf(p.expectedDate) <= to);
   const totalInPeriod = inPeriod.reduce((s, p) => s + p.amount, 0);
-  const lateCount = open.filter((p) => p.expectedDate && dayOf(p.expectedDate) < todayISO()).length;
+  const lateCount = aReceber.filter((p) => p.expectedDate && dayOf(p.expectedDate) < todayISO()).length;
 
   function refresh() {
     queryClient.invalidateQueries({ queryKey: ['commission-provisions'] });
@@ -295,7 +310,6 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
             <span className="text-xs font-normal text-slate-400">(a receber dos processos — não entra no saldo)</span>
           </h3>
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-slate-500">
-            <span>Em aberto: <b className="text-emerald-600">{formatCurrency(totalOpen)}</b> ({open.length})</span>
             <span>Previsto no período: <b className="text-slate-700">{formatCurrency(totalInPeriod)}</b> ({inPeriod.length})</span>
             {lateCount > 0 && <span className="text-red-500 font-medium">{lateCount} atrasada{lateCount > 1 ? 's' : ''}</span>}
           </div>
@@ -310,6 +324,40 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
         )}
       </div>
 
+      {open.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mb-4">
+          <div className="sm:col-span-2 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <p className="text-[11px] font-medium text-emerald-700 uppercase tracking-wide">Total a receber</p>
+            <p className="text-2xl font-bold text-emerald-700">{formatCurrency(totalOpen)}</p>
+            <p className="text-[11px] text-emerald-700/80">
+              {aReceber.length} processo{aReceber.length === 1 ? '' : 's'}
+              {concluidos.length > 0 && ` · ${concluidos.length} concluído${concluidos.length === 1 ? '' : 's'} aguardando o pagamento (${formatCurrency(soma(concluidos))})`}
+            </p>
+          </div>
+          <div className="rounded-xl border border-af-border bg-white px-4 py-3">
+            <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Home Equity</p>
+            <p className="text-lg font-bold text-slate-800">{formatCurrency(soma(he))}</p>
+            <p className="text-[11px] text-slate-400">{he.length} processo{he.length === 1 ? '' : 's'}</p>
+          </div>
+          <div className="rounded-xl border border-af-border bg-white px-4 py-3">
+            <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide">Financiamento</p>
+            <p className="text-lg font-bold text-slate-800">{formatCurrency(soma(fh))}</p>
+            <p className="text-[11px] text-slate-400">{fh.length} processo{fh.length === 1 ? '' : 's'}</p>
+          </div>
+          {(outros.length > 0 || perdidos.length > 0 || semBanco.length > 0) && (
+            <div className="sm:col-span-4 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 -mt-1">
+              {outros.length > 0 && <span>Outros produtos: <b className="text-slate-700">{formatCurrency(soma(outros))}</b> ({outros.length})</span>}
+              {semBanco.length > 0 && (
+                <span title="Sem banco no card, a taxa é a padrão do produto (Home Equity 5%, Financiamento 0,8%) — pode ser menor">
+                  {semBanco.length} sem banco identificado (taxa padrão): <b className="text-amber-600">{formatCurrency(soma(semBanco))}</b>
+                </span>
+              )}
+              {perdidos.length > 0 && <span>Fora do total — em Perdidos: <b className="text-slate-500 line-through">{formatCurrency(soma(perdidos))}</b> ({perdidos.length})</span>}
+            </div>
+          )}
+        </div>
+      )}
+
       {formOpen && (
         <ProvisionForm key={editing?.id || 'new'} editing={editing} onClose={closeForm} onSaved={() => { closeForm(); refresh(); }} />
       )}
@@ -317,9 +365,24 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
       {open.length === 0 && !formOpen ? (
         <p className="text-xs text-slate-400">Nenhuma provisão em aberto. Use "Nova provisão" para lançar a comissão prevista de um processo.</p>
       ) : (
-        <div className="space-y-2">
-          {open.map((p) => (
-            <ProvisionRow key={p.id} p={p} onChanged={refresh} onEdit={() => { setEditing(p); setFormOpen(true); }} />
+        // Lista separada por produto (Fabio 14/11: "separa FH e HE"), cada grupo com o seu total a receber.
+        <div className="space-y-5">
+          {[
+            { titulo: 'Home Equity', itens: open.filter((p) => he.includes(p) || (p.leadSituacao === 'PERDIDO' && /home equity/i.test(p.product || ''))), total: soma(he) },
+            { titulo: 'Financiamento', itens: open.filter((p) => fh.includes(p) || (p.leadSituacao === 'PERDIDO' && /financiamento/i.test(p.product || ''))), total: soma(fh) },
+            { titulo: 'Outros produtos', itens: open.filter((p) => !/home equity|financiamento/i.test(p.product || '')), total: soma(outros) },
+          ].filter((g) => g.itens.length > 0).map((g) => (
+            <div key={g.titulo}>
+              <div className="flex items-baseline justify-between gap-3 mb-2 px-1">
+                <h4 className="text-xs font-semibold text-slate-600 uppercase tracking-wide">{g.titulo}</h4>
+                <span className="text-xs text-slate-500">a receber: <b className="text-emerald-600">{formatCurrency(g.total)}</b></span>
+              </div>
+              <div className="space-y-2">
+                {g.itens.map((p) => (
+                  <ProvisionRow key={p.id} p={p} onChanged={refresh} onEdit={() => { setEditing(p); setFormOpen(true); }} />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}

@@ -278,10 +278,12 @@ router.get('/provisions', async (req: AuthRequest, res: Response) => {
     });
     const leads = await prisma.lead.findMany({
       where: { id: { in: [...new Set(provisions.map((p) => p.leadId))] } },
-      select: { id: true, pipeline: { select: { name: true } }, stage: { select: { name: true } } },
+      select: { id: true, status: true, pipeline: { select: { name: true } }, stage: { select: { name: true } } },
     });
     const where = new Map(leads.map((l) => [l.id, `${l.pipeline.name} · ${l.stage.name}`]));
-    res.json(provisions.map((p) => ({ ...p, leadStage: where.get(p.leadId) || 'Card removido' })));
+    // Situação do processo (Fabio 14/11: "a soma de todos os processos pra receber"): card em Perdidos não paga — sai do total a receber; Concluído ainda entra até ser marcado "Recebido".
+    const situacao = new Map(leads.map((l) => [l.id, l.status === 'LOST' || /perdid/i.test(l.pipeline.name) ? 'PERDIDO' : l.status === 'WON' || /conclu/i.test(l.pipeline.name) ? 'CONCLUIDO' : 'CONTRATACAO']));
+    res.json(provisions.map((p) => ({ ...p, leadStage: where.get(p.leadId) || 'Card removido', leadSituacao: situacao.get(p.leadId) || 'REMOVIDO' })));
   } catch {
     res.status(500).json({ error: 'Erro ao buscar provisões' });
   }

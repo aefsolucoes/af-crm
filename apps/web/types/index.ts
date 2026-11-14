@@ -151,6 +151,8 @@ export interface CommissionProvision {
   leadName: string;
   /** funil · etapa atual do card */
   leadStage: string;
+  /** onde o processo está: em contratação, concluído (falta receber), perdido (não paga) ou card removido */
+  leadSituacao?: 'CONTRATACAO' | 'CONCLUIDO' | 'PERDIDO' | 'REMOVIDO';
   product?: string | null;
   payer?: string | null;
   baseAmount: number;
