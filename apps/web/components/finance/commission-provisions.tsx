@@ -392,7 +392,7 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
           {porBanco.length > 0 && (
             <div className="sm:col-span-4">
               <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1.5">Por banco</p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                 {porBanco.map((b) => (
                   <div key={b.nome} className="flex items-center gap-2 rounded-xl border border-af-border bg-white px-3 py-2 min-w-0" title={b.he && b.fh ? `Home Equity ${formatCurrency(b.he)} · Financiamento ${formatCurrency(b.fh)}` : undefined}>
                     <ProvisionBankIcon payer={b.nome === 'Sem banco' ? null : b.exemplo.payer} product={b.exemplo.product} />
