@@ -25,6 +25,8 @@ interface Estado {
   podeConsultarAprovacao?: boolean;
   consultaAprov?: { status: string; pedidoEm: string | null; fim: string | null; por: string | null; foraDoCrm: boolean } | null;
   pedido?: { em: string | null; por: string | null; resultado: 'andamento' | 'limpo' | 'ocorrencia' } | null;
+  /** Cliente em OUTRO correspondente (Fabio 14/11): aviso + link pra anotação com os dados de renda; a análise de crédito fica segurada. */
+  outroCorrespondente?: { codigos: { codigo: string; tipo: string }[]; desde: string | null; nota: { id: string; titulo: string; texto: string; em: string } | null } | null;
   produto: 'HE' | 'FH';
   fechado: string | null;
   temFicha: boolean;
@@ -92,6 +94,18 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
   const [analiseDepois, setAnaliseDepois] = useState(true);
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
+  // Anotação com a renda aberta aqui mesmo (aviso de outro correspondente — no celular a conversa fica escondida atrás do card).
+  const [notaAberta, setNotaAberta] = useState<string | null>(null);
+  /** "Ver os dados de renda nas anotações": sobe a conversa até a anotação e pisca; mostra também o texto aqui no bloco. */
+  function verNotaRenda(n: { id: string; texto: string }) {
+    const el = typeof document !== 'undefined' ? document.getElementById(`note-${n.id}`) : null;
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      el.classList.add('ring-2', 'ring-amber-400');
+      setTimeout(() => el.classList.remove('ring-2', 'ring-amber-400'), 2500);
+    }
+    setNotaAberta((v) => (v ? null : n.texto));
+  }
   const { data: estado, refetch } = useQuery<Estado>({
     queryKey: ['caixa-card', leadId],
     queryFn: async () => (await api.get(`/api/caixa-cadastro/${leadId}/card`)).data,
@@ -242,6 +256,20 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
         {consultandoAprov && <p className="truncate text-slate-600"><span className="text-slate-400">Aprovação:</span> {linhaAprov}</p>}
         {estado.fechado && <p className="text-[11px] text-amber-700">{estado.fechado}</p>}
       </div>
+      {estado.outroCorrespondente && (
+        <div className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-900">
+          <p className="font-semibold">⚠️ Cliente em outro correspondente</p>
+          <p>{estado.outroCorrespondente.codigos.map((x) => `${x.tipo} (convênio ${x.codigo})`).join('; ')}. A análise de crédito não é encaminhada.</p>
+          {estado.outroCorrespondente.nota ? (
+            <button type="button" className="mt-1 font-semibold text-amber-800 underline" title={estado.outroCorrespondente.nota.titulo} onClick={() => verNotaRenda(estado.outroCorrespondente!.nota!)}>
+              {notaAberta ? 'Esconder os dados de renda' : 'Ver os dados de renda nas anotações'}
+            </button>
+          ) : (
+            <p className="mt-1 text-amber-700">Os dados de renda aparecem nas anotações quando a extensão passar pela renda do cadastro.</p>
+          )}
+          {notaAberta && <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap rounded bg-white p-2 text-[10px] text-slate-700">{notaAberta}</pre>}
+        </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-2">
         {estado.podeConsultar && botaoConsulta}
         {botaoAprovacao}

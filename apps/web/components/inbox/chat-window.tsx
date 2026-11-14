@@ -1851,7 +1851,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                 // STAGE_CHANGE e DATA_EDIT: label centralizada discreta
                 if (note.type === 'STAGE_CHANGE' || note.type === 'DATA_EDIT') {
                   return (
-                    <div key={note.id} className="flex justify-center my-2">
+                    <div key={note.id} id={`note-${note.id}`} className="flex justify-center my-2 rounded-full">
                       <div className={cn('flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium shadow-sm', style.bg, style.text)}>
                         <span>{style.icon}</span>
                         <span>{note.content}</span>
@@ -1863,7 +1863,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
 
                 // COMMENT, CALL, EMAIL: bolha à esquerda com autor
                 return (
-                  <div key={note.id} className="flex justify-start mb-1">
+                  <div key={note.id} id={`note-${note.id}`} className="flex justify-start mb-1 rounded-2xl">
                     <div className={cn('max-w-xs lg:max-w-md px-3 py-2 rounded-2xl rounded-bl-sm shadow-sm', style.bg)}>
                       {note.user && (
                         <p className={cn('text-xs font-semibold mb-0.5', style.text)}>

@@ -221,6 +221,66 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
 }
 
 /** Resultado da consulta de um participante → anotação; todos consultados → CONSULTADO + push pra equipe cadastrar. */
+/* ── OUTRO CORRESPONDENTE (Fabio 14/11, Fernando Souza: "sempre que um cliente já tiver cadastro na CAIXA feito por outro correspondente, um push deve ser
+ * encaminhado à equipe e um aviso no card da CAIXA desse cliente também, com um link para ir para notas com os dados de renda desse cliente" + "não encaminha para
+ * análise de crédito"). A consulta de Oportunidades de Negócios mostra a avaliação de risco / proposta em andamento com o CÓDIGO DO CONVÊNIO de quem a fez
+ * ("Cliente possui avaliação de risco em andamento 00067671 - 3"); o nosso aparece no rodapé ("Código do Convênio 00077001-9"). Código diferente = outro correspondente.
+ * Lido do texto da consulta atual (`outroCcaDe` — vale pras consultas de antes desta regra); a Avaliação de Risco não vai pra CAIXA enquanto aparecer
+ * (pedirAvaliacao/travaAnaliseCaixa). `_caixaOutroCca` (fora de _caixaCadastro, que a fila regrava) só guarda o aviso já dado (push + anotação, uma vez por consulta). */
+const CONVENIO_AF = '00077001-9';
+const codigoCca = (v: string) => v.replace(/\s+/g, '');
+/** Códigos de convênio de OUTROS correspondentes na consulta (avaliação em andamento / proposta solicitada). Pura. */
+export function outrosCorrespondentes(textos: string[]): { codigo: string; tipo: string }[] {
+  const out: { codigo: string; tipo: string }[] = [];
+  for (const t of textos) {
+    const txt = String(t || '');
+    const nosso = codigoCca(/c[oó]digo do conv[eê]nio\s*([0-9]{8}\s*-\s*[0-9])/i.exec(txt)?.[1] || CONVENIO_AF);
+    for (const m of txt.matchAll(/possui (avalia[cç][aã]o de risco em andamento|proposta solicitada)\s+([0-9]{8}\s*-\s*[0-9])/gi)) {
+      const codigo = codigoCca(m[2]);
+      if (codigo === nosso || codigoCca(CONVENIO_AF) === codigo) continue;
+      const tipo = /avalia/i.test(m[1]) ? 'avaliação de risco em andamento' : 'proposta solicitada';
+      if (!out.some((x) => x.codigo === codigo && x.tipo === tipo)) out.push({ codigo, tipo });
+    }
+    if (/proposta solicitada em outro CCA/i.test(txt) && !/n[aã]o possui proposta solicitada em outro CCA/i.test(txt) && !out.some((x) => x.codigo === 'outro CCA')) out.push({ codigo: 'outro CCA', tipo: 'proposta solicitada' });
+  }
+  return out;
+}
+/** O que a consulta ATUAL do card mostra em outro correspondente (lido do texto: vale também pras consultas de antes desta regra). Pura. */
+export const outroCcaDe = (cf: Cf) => outrosCorrespondentes(Object.values(((cf?._caixaCadastro || {}) as Cf).consultas || {}).map((x: any) => String(x?.texto || '')));
+const descreveOutroCca = (cods: { codigo: string; tipo: string }[]) => cods.map((x) => `${x.tipo} (convênio ${x.codigo})`).join('; ');
+async function avisarOutroCorrespondente(accountId: string, leadId: string, nome: string, c: Cf, todos: boolean): Promise<void> {
+  const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')));
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true } });
+  const atual = ((l?.customFields || {}) as Cf)._caixaOutroCca as Cf | undefined;
+  if (!cods.length) {
+    // Consulta nova (de todos) sem nada em outro correspondente: o aviso sai do card.
+    if (todos && atual) {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_caixaOutroCca' WHERE id = ${leadId}`;
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '✅ CAIXA: a consulta nova não mostra mais avaliação nem proposta em outro correspondente. A análise de crédito pode seguir.' } }).catch(() => {});
+    }
+    return;
+  }
+  const chave = cods.map((x) => `${x.tipo}:${x.codigo}`).sort().join('|');
+  if (atual?.chave === chave) return; // já avisado
+  const reg = { codigos: cods, chave, at: new Date().toISOString() };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaOutroCca}', ${JSON.stringify(reg)}::jsonb, true) WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — CLIENTE EM OUTRO CORRESPONDENTE: a consulta do nome mostra ${descreveOutroCca(cods)}. O nosso convênio é ${CONVENIO_AF}.\nA análise de crédito NÃO vai pra CAIXA pelo CRM enquanto isso aparecer (Fabio 14/11). Os dados de renda que o outro correspondente lançou ficam na anotação "Cadastro ANTIGO na CAIXA" quando a extensão passa pela renda; os lidos dos documentos, na "FICHA DE CADASTRO". Nada foi dito ao cliente.` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `⚠️ ${nome}: cliente em outro correspondente (CAIXA)`, body: `${descreveOutroCca(cods)}. A análise de crédito fica segurada — veja o card.`.slice(0, 180), leadId }).catch(() => {});
+}
+
+/** Anotação com os dados de RENDA do cliente pro link do aviso: o cadastro antigo da CAIXA com a lista de rendas (o que o outro correspondente lançou), senão a ficha. */
+async function notaDaRenda(leadId: string): Promise<{ id: string; titulo: string; texto: string; em: string } | null> {
+  const notas = await prisma.note.findMany({
+    where: { leadId, OR: [{ content: { startsWith: '🗂️ Cadastro ANTIGO na CAIXA' } }, { content: { startsWith: '📋 FICHA DE CADASTRO' } }] },
+    orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, content: true, createdAt: true },
+  });
+  const antigo = notas.find((n) => n.content.startsWith('🗂️') && /renda/i.test(n.content));
+  const n = antigo || notas.find((x) => x.content.startsWith('📋'));
+  if (!n) return null;
+  return { id: n.id, titulo: antigo ? 'Cadastro antigo na CAIXA (renda lançada pelo outro correspondente)' : 'Ficha de cadastro (renda lida dos documentos)', texto: n.content.slice(0, 6000), em: n.createdAt.toISOString() };
+}
+
 export async function gravarConsulta(accountId: string, leadId: string, ordem: number, texto: string): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
@@ -229,6 +289,7 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
   const c = await salvar(leadId, (x) => { x.consultas = { ...(x.consultas || {}), [ordem]: { at: new Date().toISOString(), texto: limpo } }; delete x.atual; delete x.tentativasConsulta; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 CAIXA — Oportunidades de Negócios (${ordem}º participante: ${p?.nome || '—'}), consultado pela extensão:\n\n${limpo}` } }).catch(() => {});
   const todos = participantesDa((l.customFields || {}) as Cf).every((x) => c.consultas?.[x.ordem]);
+  await avisarOutroCorrespondente(accountId, leadId, l.name, c, todos).catch((e) => console.error('[CAIXA] outro correspondente:', e?.message));
   if (!todos) return;
   await salvar(leadId, (x) => { x.status = 'CONSULTADO'; x.consultadoEm = new Date().toISOString(); });
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -568,6 +629,8 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   const cf = (l.customFields || {}) as Cf;
   const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
+  const outroCca = outroCcaDe(cf);
+  if (outroCca.length) return `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não é encaminhada (Fabio 14/11)`;
   const anterior = cf._caixaCadastro?.avaliacao;
   const denovo = opts.denovo === true;
   if (!denovo && /^ENVIADA/i.test(String(anterior?.status || ''))) return `A Avaliação de Risco já foi ENVIADA à CAIXA (${String(anterior.fim || '').slice(0, 10)}) — o resultado sai na consulta`;
@@ -999,6 +1062,9 @@ export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
   const quem = av?.autorizacao?.por || av?.por;
   if (st === 'FILA') return { tipo: 'andamento', msg: `Análise de crédito na fila da extensão da CAIXA desde ${quando(av!.pedidoEm)}${quem ? ` (autorizada por ${quem})` : ''}` };
   if (av?.status && !avaliacaoTerminada(cf)) return { tipo: 'andamento', msg: `A extensão está rodando a Avaliação de Risco na CAIXA (desde ${quando(av.inicio)})` };
+  // Cliente em outro correspondente (Fabio 14/11: "não encaminha para análise de crédito").
+  const outroCca = outroCcaDe(cf);
+  if (outroCca.length && !/^ENVIADA/i.test(st)) return { tipo: 'falta', msg: `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não é encaminhada. Resolva e consulte o nome de novo.` };
   // Consulta do resultado em andamento: a extensão gravaria o resultado antigo por cima do "aguardando a nova" — espera ela terminar.
   const res = cf._caixaResultado as Cf | undefined;
   if (res?.status === 'RODANDO' && res.inicio && Date.now() - Date.parse(res.inicio) < LEASE_MS) return { tipo: 'andamento', msg: `A extensão está consultando o resultado da avaliação em Formulários Enviados (desde ${quando(res.inicio)}) — espere terminar` };
@@ -1063,11 +1129,14 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   // SBPE/MCMV e SAC/PRICE da operação avaliada, ao lado do resultado (Fabio 12/11): o gravado na avaliação; nas enviadas antes, a anotação do envio.
   const comResultado = /^\s*RESULTADO:/i.test(String(res?.status || ''));
   const notaOp = comResultado && (!amortizacaoDaAvaliacao(cf) || (!he && !av?.enquadramento)) ? (await notasDaOperacao([leadId]).catch(() => new Map<string, string>())).get(leadId) : null;
+  const oc = outroCcaDe(cf);
+  const outroCorrespondente = oc.length ? { codigos: oc, desde: (cf._caixaOutroCca as Cf | undefined)?.at || c.consultadoEm || null, nota: await notaDaRenda(leadId).catch(() => null) } : null;
   return {
     mostrar: true,
     podeConsultar,
     podeConsultarAprovacao,
     consultaAprov,
+    outroCorrespondente,
     pedido,
     produto: he ? 'HE' : 'FH',
     fechado: cardFechado(l),
