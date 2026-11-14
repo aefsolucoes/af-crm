@@ -276,7 +276,7 @@ async function notaDaRenda(leadId: string): Promise<{ id: string; titulo: string
     orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, content: true, createdAt: true },
   });
   const antigo = notas.find((n) => n.content.startsWith('🗂️') && /renda/i.test(n.content));
-  const n = antigo || notas.find((x) => x.content.startsWith('📋'));
+  const n = antigo || notas.find((x) => x.content.startsWith('📋 FICHA DE CADASTRO — CAIXA')) || notas.find((x) => x.content.startsWith('📋'));
   if (!n) return null;
   return { id: n.id, titulo: antigo ? 'Cadastro antigo na CAIXA (renda lançada pelo outro correspondente)' : 'Ficha de cadastro (renda lida dos documentos)', texto: n.content.slice(0, 6000), em: n.createdAt.toISOString() };
 }
