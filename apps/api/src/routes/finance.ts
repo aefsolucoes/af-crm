@@ -598,7 +598,8 @@ const notaSchema = z.object({
   netAmount: z.number().positive().nullable().optional(),
   taxesToPay: z.number().min(0).optional(),
   docType: z.enum(['NFSE', 'DEMONSTRATIVO']).nullable().optional(),
-  itens: z.array(z.object({ id: z.string().min(1), amount: z.number().positive(), credito: z.number().positive().optional() })).min(1),
+  // Pode ficar vazio: nota de cliente que não está no CRM (de antes do CRM) — fica guardada com os nomes que a nota cita.
+  itens: z.array(z.object({ id: z.string().min(1), amount: z.number().positive(), credito: z.number().positive().optional() })),
 });
 
 // PUT /api/finance/notes/:id — confirma (ou corrige) a nota: o valor de cada processo passa a ser o da nota; a taxa aprendida atualiza as estimativas do mesmo banco.
@@ -610,7 +611,7 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
     if (!nota) return res.status(404).json({ error: 'Nota não encontrada' });
     if (nota.status === 'RECEIVED') return res.status(400).json({ error: 'Nota já recebida' });
     const soma = Math.round(b.itens.reduce((s, i) => s + i.amount, 0) * 100) / 100;
-    if (Math.abs(soma - b.totalAmount) > 0.01) return res.status(400).json({ error: `A soma dos processos (R$ ${soma.toFixed(2)}) não bate com o total da nota (R$ ${b.totalAmount.toFixed(2)})` });
+    if (b.itens.length && Math.abs(soma - b.totalAmount) > 0.01) return res.status(400).json({ error: `A soma dos processos (R$ ${soma.toFixed(2)}) não bate com o total da nota (R$ ${b.totalAmount.toFixed(2)})` });
 
     // 1) Solta os processos que estavam nesta nota (voltam pra estimativa).
     const antes = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'OPEN' } });

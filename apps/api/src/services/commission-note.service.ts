@@ -199,12 +199,17 @@ export function proporItens(leitura: LeituraNota | null, total: number, payer: s
     }
     return out;
   }
+  // A nota cita clientes, mas nenhum está no CRM (ex.: Caroline, de antes do CRM): não chuta outro processo com valor parecido (Fabio 14/11).
+  if ((leitura?.itens || []).length) return [];
   if (!(total > 0)) return [];
+  // Sem clientes na nota: só processos CONCLUÍDOS desse pagador (o banco paga depois da liberação) e só se a soma bater (até 2%).
   // Santander do Home Equity é pago pela Credimorar: nota "Santander" casa com os processos "Credimorar" do HE.
   const casa = (c: Candidato) => mesmoPagador(c.pagador, payer) || (/santander/i.test(payer) && /^credimorar$/i.test(pagadorRaiz(c.pagador)) && produtoDe(c.produto) === 'HE');
-  const doPagador = candidatos.filter((c) => casa(c) && c.estimado > 0);
+  const doPagador = candidatos.filter((c) => casa(c) && c.estimado > 0 && (c.kind === 'SUGGESTION' || /conclu/i.test(c.etapa)));
   const idx = melhorSubconjunto(total, doPagador.map((c) => c.estimado));
   const escolhidos = idx.map((i) => doPagador[i]);
+  const somaEst = escolhidos.reduce((s, c) => s + c.estimado, 0);
+  if (!escolhidos.length || Math.abs(somaEst - total) > total * 0.02) return [];
   const partes = dividirProporcional(total, escolhidos.map((c) => c.estimado));
   return escolhidos.map((c, k) => ({ id: c.id, amount: partes[k], motivo: 'a nota não lista os clientes: escolhi os processos desse pagador que somam mais perto do total' }));
 }

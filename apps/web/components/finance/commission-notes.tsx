@@ -133,8 +133,9 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
     if (!rev) return;
     const itens = Object.entries(rev.marcados).map(([id, v]) => ({ id, amount: parseMoney(v) })).filter((i) => i.amount > 0);
     if (!(totalNum > 0)) return toast('Informe o total da nota', 'error');
-    if (!itens.length) return toast('Marque os processos que estão na nota', 'error');
-    if (Math.abs(diferenca) > 0.01) return toast(`A soma dos processos não bate com o total (diferença de ${formatCurrency(diferenca)})`, 'error');
+    const citados = (rev.nota.aiRead?.itens || []).map((i) => i.cliente).filter(Boolean);
+    if (!itens.length && !confirm(citados.length ? `Nenhum processo do CRM marcado. Guardar a nota só com os clientes que ela cita (${citados.join(', ')})?` : 'Nenhum processo marcado. Guardar a nota assim mesmo?')) return;
+    if (itens.length && Math.abs(diferenca) > 0.01) return toast(`A soma dos processos não bate com o total (diferença de ${formatCurrency(diferenca)})`, 'error');
     setSalvando(true);
     try {
       const { data: r } = await api.put(`/api/finance/notes/${rev.nota.id}`, {
@@ -228,6 +229,11 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
           </div>
           {rev.observacao && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 mt-2">IA: {rev.observacao}</p>}
 
+          {(rev.nota.aiRead?.itens || []).some((i) => !i.candidatoId) && (
+            <p className="text-[11px] text-slate-600 bg-slate-100 rounded-lg px-3 py-1.5 mt-2">
+              Clientes que a nota cita e não achei no CRM: {(rev.nota.aiRead?.itens || []).filter((i) => !i.candidatoId).map((i) => `${i.cliente}${i.valor ? ` (${formatCurrency(i.valor)})` : ''}`).join(' · ')}
+            </p>
+          )}
           <div className="flex items-center justify-between gap-3 mt-4 mb-1.5">
             <p className="text-xs font-semibold text-slate-600">Processos nesta nota</p>
             <button onClick={dividirPelaEstimativa} disabled={!Object.keys(rev.marcados).length || !(totalNum > 0)} className="text-[11px] text-af-mid hover:underline disabled:opacity-40">
@@ -329,6 +335,7 @@ function NotaRow({ n, onEdit, onChanged }: { n: CommissionNote; onEdit: () => vo
                 {(n.taxesToPay || 0) > 0 && <> · <span className="text-amber-700">ISS a pagar {formatCurrency(n.taxesToPay || 0)}</span></>}
               </p>
             )}
+            {n.note && <p className="text-[11px] text-slate-600 truncate" title={n.note}>{n.note}</p>}
             {n.drivePath && <p className="text-[10px] text-slate-400 truncate">Drive: {n.drivePath}</p>}
           </div>
         </div>
@@ -350,6 +357,11 @@ function NotaRow({ n, onEdit, onChanged }: { n: CommissionNote; onEdit: () => vo
           )}
         </div>
       </div>
+      {aberta && (n.aiRead?.itens || []).some((i) => !procs.some((p) => p.leadName.toLowerCase() === i.cliente.toLowerCase())) && !procs.length && (
+        <p className="mt-2 pt-2 border-t border-af-border text-[11px] text-slate-500">
+          Clientes da nota (sem card no CRM): {(n.aiRead?.itens || []).map((i) => `${i.cliente}${i.valor ? ` ${formatCurrency(i.valor)}` : ''}`).join(' · ')}
+        </p>
+      )}
       {aberta && procs.length > 0 && (
         <div className="mt-2 pt-2 border-t border-af-border space-y-1">
           {procs.map((p) => (
