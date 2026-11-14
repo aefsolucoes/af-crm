@@ -1260,11 +1260,40 @@ model CommissionProvision {
   transactionId  String? // Receita criada ao marcar "Recebido"
   note           String?
   createdById    String?
+  // Nota de comissão (Fabio 14/11): o banco paga vários processos numa nota só — o valor da nota substitui a estimativa pela % (estimatedAmount guarda a estimativa).
+  noteId          String?
+  estimatedAmount Float?
+  rateLocked      Boolean   @default(false) // % ou valor digitado por uma pessoa: a taxa aprendida das notas não mexe
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   @@index([accountId, status])
   @@index([leadId])
+  @@index([noteId])
+}
+
+// Nota de comissão (Fabio 14/11): nota fiscal ou demonstrativo do banco com UM ou VÁRIOS processos. O PDF fica guardado; a IA lê nº, data, total e os clientes;
+// o valor real de cada processo entra na provisão e a taxa efetiva (valor ÷ crédito) vira a sugestão dos próximos clientes do mesmo banco e produto.
+model CommissionNote {
+  id            String    @id @default(cuid())
+  accountId     String
+  payer         String // quem paga a nota (Inter, Creditas, Credimorar…)
+  number        String?
+  issueDate     DateTime?
+  totalAmount   Float     @default(0)
+  fileName      String?
+  fileMime      String?
+  fileData      Bytes?
+  aiRead        Json? // o que a IA leu do arquivo
+  status        String    @default("DRAFT") // DRAFT (lida, ainda não confirmada) | OPEN | RECEIVED
+  receivedAt    DateTime?
+  transactionId String?
+  note          String?
+  createdById   String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([accountId, status])
 }
 
 // Histórico do chat do Assistente AF CRM, por colaborador. messages guarda o

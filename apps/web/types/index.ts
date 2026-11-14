@@ -163,8 +163,32 @@ export interface CommissionProvision {
   receivedAmount?: number | null;
   receivedAt?: string | null;
   note?: string | null;
+  /** nota de comissão que trouxe o valor real deste processo (Fabio 14/11) */
+  noteId?: string | null;
+  /** estimativa pela % antes da nota */
+  estimatedAmount?: number | null;
+  rateLocked?: boolean;
   createdAt: string;
 }
+
+/** Nota de comissão: NF ou demonstrativo do banco com um ou vários processos (Fabio 14/11). */
+export interface CommissionNote {
+  id: string;
+  payer: string;
+  number?: string | null;
+  issueDate?: string | null;
+  totalAmount: number;
+  fileName?: string | null;
+  fileMime?: string | null;
+  status: 'DRAFT' | 'OPEN' | 'RECEIVED';
+  receivedAt?: string | null;
+  note?: string | null;
+  aiRead?: { observacao?: string | null; itens?: Array<{ cliente: string; valor: number | null; candidatoId?: string | null }> } | null;
+  createdAt: string;
+  processos?: Array<{ id: string; leadId: string; leadName: string; product?: string | null; payer?: string | null; baseAmount: number; amount: number; estimatedAmount?: number | null; receivedAmount?: number | null }>;
+}
+export interface CommissionNoteCandidate { id: string; kind: 'PROVISION' | 'SUGGESTION'; leadId: string; cliente: string; produto: string | null; pagador: string | null; credito: number; estimado: number; etapa: string }
+export interface LearnedRate { banco: string; bancoNome: string; produto: 'HE' | 'FH' | 'OUTRO'; pct: number; processos: number; notas: number; ultimaNota: string | null }
 
 export interface ProvisionCandidate {
   id: string;

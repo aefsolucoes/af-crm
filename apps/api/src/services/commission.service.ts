@@ -145,6 +145,9 @@ export async function montarProvisoes(accountId: string, leadIds: string[]): Pro
     orderBy: { createdAt: 'desc' },
   });
   const producao = await producaoPorPagador(accountId);
+  // Taxa aprendida das notas de comissão (Fabio 14/11): quando o banco já pagou nota, vale a taxa efetiva dele no lugar da tabela.
+  const { taxasAprendidas, taxaComAprendizado } = require('./commission-note.service') as typeof import('./commission-note.service');
+  const aprendidas = await taxasAprendidas(accountId).catch(() => new Map());
   const porId = new Map(leads.map((l) => [l.id, l]));
   return leadIds.map((id) => porId.get(id)).filter((l): l is NonNullable<typeof l> => !!l).map((l) => {
     const mine = analyses.filter((a) => a.leadId === l.id);
@@ -156,7 +159,7 @@ export async function montarProvisoes(accountId: string, leadIds: string[]): Pro
     const payer = pagadorComissao(product, pick?.bank, cf.instituicao);
     return {
       id: l.id, name: l.name, stage: `${l.pipeline.name} · ${l.stage.name}`, product, baseAmount: base, payer,
-      ratePct: commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, payer)) || 0) + base }),
+      ratePct: taxaComAprendizado(aprendidas, product, payer, commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, payer)) || 0) + base })).pct,
     };
   });
 }

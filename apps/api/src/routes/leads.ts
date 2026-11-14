@@ -481,7 +481,10 @@ router.put('/:id', validate(updateLeadSchema), async (req: AuthRequest, res: Res
               if (!already && !provisioned) {
                 const produto = before?.pipeline?.department?.name;
                 const producao = (await producaoPorPagador(req.user!.accountId)).get(chaveProducao(produto, pagadorComissao(produto, seguida?.bank, cf.instituicao))) || 0;
-                const ratePct = commissionRatePct(produto, seguida?.bank, { instituicao: cf.instituicao, producaoMes: producao + baseAmount });
+                const tabela = commissionRatePct(produto, seguida?.bank, { instituicao: cf.instituicao, producaoMes: producao + baseAmount });
+                // Taxa aprendida das notas de comissão desse banco/produto (Fabio 14/11), quando houver.
+                const nota = require('../services/commission-note.service') as typeof import('../services/commission-note.service');
+                const ratePct = nota.taxaComAprendizado(await nota.taxasAprendidas(req.user!.accountId).catch(() => new Map()), produto, pagadorComissao(produto, seguida?.bank, cf.instituicao), tabela).pct;
                 await prisma.commissionSuggestion.create({
                   data: {
                     accountId: req.user!.accountId,
