@@ -45,6 +45,15 @@ export async function arquivosDoImovel(accountId: string, cf: Record<string, any
   } catch { return []; }
 }
 
+/** Bloco CONTATO do e-mail ao Inter: quem recebe o engenheiro (confirmado com o cliente) + o e-mail do cliente. Também troca o bloco do pedido armado (vistoria-contato). */
+export function linhasContatoInter(c: { nome: string; telefone: string }, cf: Record<string, any>, contact?: { phone?: string | null; email?: string | null } | null): string[] {
+  const { linhasDoContato } = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const mail = String(cf.email_1 || contact?.email || '').trim();
+  const foneCliente = String(cf.telefone_1 || contact?.phone || '').replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
+  const ehCliente = /pr[oó]prio cliente/i.test(String(cf.contato_vistoria || '')) || (!!foneCliente && foneCliente === c.telefone);
+  return [...linhasDoContato(c), ...(mail ? [`• ${ehCliente ? 'E-mail' : 'E-mail do cliente'}: ${mail}`] : [])];
+}
+
 export async function vistoriaPreview(accountId: string, leadId: string): Promise<VistoriaPreview> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true, contact: { select: { phone: true, email: true } } } });
   if (!lead) throw new Error('Card não encontrado');
@@ -74,9 +83,9 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const cert = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, orderBy: { finishedAt: 'desc' }, select: { id: true, matricula: true, pdfName: true } });
   const matricula = cert?.matricula || String(cf.numero_matricula || '').trim();
   const cartorio = String(cf.cartorio_registro || '').trim();
-  const tel = String(cf.telefone_1 || lead.contact?.phone || '').trim();
-  const mail = String(cf.email_1 || lead.contact?.email || '').trim();
-  const contatoCard = String(cf.contato_vistoria || '').trim(); // campo "Contato vistoria" do card: manda mais que o telefone do cliente
+  // Contato da vistoria SÓ confirmado com o cliente (Fabio 14/11, Deborah: no Financiamento saiu a própria compradora porque o campo estava vazio) — vistoria-contato.service.
+  const { contatoConfirmado } = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const contato = contatoConfirmado(cf);
   const endImovel = String(cf.endereco_imovel || cf.imovel_endereco || '').trim();
 
   const doImovel = await arquivosDoImovel(accountId, cf);
@@ -93,10 +102,7 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
     `Seguem os dados para o agendamento da vistoria do imóvel do cliente ${nome}${proposta ? ` (proposta ${proposta})` : ''}.`,
     '',
     'CONTATO',
-    ...(contatoCard
-      ? [`• Responsável para receber o engenheiro / telefone para agendamento: ${contatoCard}`]
-      : [`• Responsável para receber o engenheiro: ${nome}`, `• Telefone para agendamento: ${tel || '(informar)'}`]),
-    ...(mail ? [`• E-mail: ${mail}`] : []),
+    ...(contato ? linhasContatoInter(contato, cf, lead.contact) : ['• Responsável para receber o engenheiro: (aguardando o cliente confirmar quem acompanha a vistoria)']),
     '',
     `IMÓVEL: ${matricula ? `matrícula nº ${matricula}` : 'conforme a matrícula'}${cartorio ? ` — ${cartorio}` : ''}${endImovel ? `\nEndereço: ${endImovel}` : ''}`,
     ...(listaAnexos.length ? [`Seguem em anexo ${listaAnexos.join(' e ')}.`] : []),
@@ -110,7 +116,7 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   if (!engaj) avisos.push('O e-mail de engajamento do Inter ainda não chegou para este cliente. Se você enviar agora, será um e-mail novo, e não uma resposta na conversa do Inter.');
   if (!to) avisos.push('Não achei o e-mail do consultor do Inter. Preencha o campo "Para".');
   if (!anexos.some((a) => a.checked)) avisos.push('Nenhum documento do imóvel foi marcado para anexar. O Inter pede sempre com anexo: marque a matrícula e o IPTU.');
-  if (!tel) avisos.push('O card não tem telefone do cliente para o engenheiro.');
+  if (!contato) avisos.push(`⚠️ O contato da vistoria ainda não foi confirmado com o cliente (campo "Contato vistoria" vazio ou sem nome e telefone). Ao enviar, o CRM pergunta a ele quem acompanha o engenheiro${cf._vistoriaContatoAsk?.at ? ' (já perguntado — esperando a resposta)' : ''} e o pedido sai sozinho, com esse contato, quando ele responder. Se você já confirmou, preencha o campo antes de enviar.`);
   avisos.push('O Inter também pede, pelo PORTAL (aba Documentos da proposta), a matrícula do imóvel e a guia do IPTU atual. Este botão só responde o e-mail; o upload no portal é separado.');
 
   const sentAt = cf._vistoriaRequestedAt ? String(cf._vistoriaRequestedAt) : null;
@@ -160,6 +166,16 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   const to = String(p.to || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) throw new Error('Informe o e-mail do consultor do Inter no campo "Para".');
   if (!INTER_FROM.test(to) && !String(process.env.VISTORIA_ALLOW_ANY_RECIPIENT || '')) throw new Error('O destinatário precisa ser um e-mail do Inter (@inter.co).');
+  if (!(p.attachDriveFileIds || []).length) throw new Error('O pedido de vistoria vai sempre com anexo: marque ao menos a matrícula do imóvel.');
+  // Sem o contato da vistoria confirmado com o cliente o pedido NÃO sai (Fabio 14/11): o CRM pergunta a ele e o pedido fica armado — sai sozinho, com o contato, quando ele responder.
+  {
+    const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+    const g = await vc.garantirContatoVistoria(p.accountId, p.leadId, { banco: 'Inter', userId: p.userId, io: p.io });
+    if (!g.ok) {
+      if (g.estado !== 'erro') await vc.armarVistoria(p.leadId, { banco: 'INTER', userId: p.userId, to, cc: p.cc || '', subject: p.subject, body: p.body, replyToId: p.replyToId || null, attachDriveFileIds: p.attachDriveFileIds || [] });
+      throw new Error(vc.textoEsperandoContato(g, 'Inter', g.estado !== 'erro'));
+    }
+  }
 
   const acc = await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: null }, orderBy: { createdAt: 'asc' } });
   if (!acc) throw new Error('A caixa de e-mail comercial não está configurada.');

@@ -93,7 +93,8 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     }
     // No Financiamento o imóvel é do VENDEDOR: quem recebe o engenheiro raramente é o comprador. Sem o "Contato vistoria", o CRM pergunta ao cliente o contato do corretor (ou do vendedor) — Fabio 30/10;
     // a resposta preenche o campo. Sem IA/automação/janela, a equipe recebe nota + push.
-    if (!String(cf.contato_vistoria || '').trim()) {
+    // Só vale o contato com nome E telefone (vistoria-contato.contatoConfirmado — Fabio 14/11: confirmar com o cliente quem acompanha).
+    if (!(require('./vistoria-contato.service') as typeof import('./vistoria-contato.service')).contatoConfirmado(cf)) {
       if (!st.contatoNoteAt) await salva(leadId, { contatoNoteAt: new Date().toISOString(), since: st.since || new Date().toISOString() });
       try { const { pedirDadosVistoriaFh } = require('./vistoria-santander-fh.service') as typeof import('./vistoria-santander-fh.service'); await pedirDadosVistoriaFh(accountId, leadId, 'Inter', io as any); } catch (e: any) { console.warn('[Vistoria FH] contato:', e?.message); }
       // o "seguir com proposta" não depende do contato: já pergunta ao cliente enquanto a equipe preenche
@@ -206,6 +207,8 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   const faltas = [!pv.engajamentoRecebido && 'o e-mail de engajamento do Inter', !pv.to && 'o e-mail do consultor do Inter', !temMatricula && 'a matrícula/certidão de ônus na pasta IMOVEL do Drive'].filter(Boolean) as string[];
   if (faltas.length) {
     // Sem o e-mail de engajamento do Inter é porque o cliente ainda não "seguiu com a proposta" no portal: o CRM pergunta a ele (uma vez) e a equipe clica depois do SIM (inter-seguir.service).
+    // Enquanto espera, já confirma com o cliente quem acompanha a vistoria (uma vez, 07h–21h) — o pedido não atrasa pela pergunta (Fabio 14/11).
+    await (require('./vistoria-contato.service') as typeof import('./vistoria-contato.service')).garantirContatoVistoria(accountId, leadId, { banco: 'Inter', io, respeitarHorario: true }).catch(() => {});
     if (!pv.engajamentoRecebido) { try { const { ensureInterSeguir } = require('./inter-seguir.service') as typeof import('./inter-seguir.service'); await ensureInterSeguir(accountId, leadId, io as any); } catch (e: any) { console.warn('[Inter seguir]', e?.message); } }
     const desde = st.since || new Date().toISOString();
     if (Date.now() - new Date(desde).getTime() > ESPERA_MAX_MS) { await salva(leadId, { status: 'MANUAL', at: new Date().toISOString() }); await note(leadId, '🏠 Vistoria do Inter: passaram 10 dias sem o e-mail de engajamento — a IA parou de esperar. Solicite à mão.'); return; }
@@ -218,6 +221,19 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   // 3) tudo pronto: solicita (e solicitarVistoria move o card pra "Vistoria do Imóvel")
   const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
   if (!dono) return;
+  // Contato da vistoria confirmado com o cliente antes do pedido (Fabio 14/11: no HE sugere o próprio cliente, mas confirma; no FH, vendedor/corretor/outra pessoa).
+  {
+    const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+    const g = await vc.garantirContatoVistoria(accountId, leadId, { banco: 'Inter', io, respeitarHorario: true });
+    if (!g.ok) {
+      if (st.status !== 'AGUARDA_CONTATO') {
+        await salva(leadId, { status: 'AGUARDA_CONTATO', since: st.since || new Date().toISOString() });
+        await note(leadId, `🏠 Vistoria do Inter pronta pra sair, esperando o contato de quem acompanha o engenheiro. ${vc.textoEsperandoContato(g, 'Inter', false)}`);
+        if (g.estado === 'erro') push(accountId, '🏠 Falta o contato da vistoria', `${lead.name}: não consegui perguntar ao cliente — preencha "Contato vistoria"`, leadId);
+      }
+      return;
+    }
+  }
   try {
     await solicitarVistoria({ accountId, userId: dono.id, leadId, to: pv.to, cc: '', subject: pv.subject, body: pv.body, replyToId: pv.replyToId, attachDriveFileIds: marcados.map((a) => a.id), io: io as any });
     await salva(leadId, { status: 'ENVIADA', at: new Date().toISOString(), por: 'IA' });

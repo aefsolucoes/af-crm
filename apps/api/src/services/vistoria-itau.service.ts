@@ -259,8 +259,16 @@ export async function requestItauVistoria(accountId: string, leadId: string, use
   const proposta = await propostaDoItau(leadId, cf);
   if (!proposta) throw new Error('Este card não tem proposta aprovada no Itaú.');
   const quem = (await prisma.user.findUnique({ where: { id: userId }, select: { name: true } }))?.name || 'a equipe';
+  // Contato da vistoria confirmado com o cliente (Fabio 14/11 — vistoria-contato.service): sem ele o formulário vai com o contato em branco e o CRM pergunta ao cliente quem acompanha.
+  const vcont = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const dv = (cf._dadosVistoriaFh || {}) as Cf;
+  let semContato = '';
+  if (!vcont.contatoConfirmado(cf) && !vcont.partirContato(dv.contato ? `${s(dv.contato.nome)} ${s(dv.contato.telefone)}` : '')) {
+    const g = await vcont.garantirContatoVistoria(accountId, leadId, { banco: 'Itaú', userId });
+    semContato = g.ok ? '' : ` ⚠️ O contato da vistoria vai em branco: ${vcont.textoEsperandoContato(g, 'Itaú', false).replace('o CRM segue com o pedido ao Itaú', 'clique de novo em "Preencher formulários do Itaú"')}`;
+  }
   await salvaSt(leadId, { status: 'REQUESTED', requestedAt: new Date().toISOString(), by: quem, proposta, erro: null, faltando: st.faltando || [] });
-  await note(leadId, `🏠 ${quem} pediu os formulários digitais do Itaú (proposta ${proposta}): a extensão "Financiamento Itaú" preenche compradores, vendedor, imóvel (com o contato da vistoria) e o seguro no portal e salva. O que faltar fica em branco e vem numa nota.`);
+  await note(leadId, `🏠 ${quem} pediu os formulários digitais do Itaú (proposta ${proposta}): a extensão "Financiamento Itaú" preenche compradores, vendedor, imóvel (com o contato da vistoria) e o seguro no portal e salva. O que faltar fica em branco e vem numa nota.${semContato}`);
   return { ok: true, proposta };
 }
 

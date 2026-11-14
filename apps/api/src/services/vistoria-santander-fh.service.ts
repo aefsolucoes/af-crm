@@ -30,7 +30,7 @@ type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; v
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
 type St = { status?: string; autAskedAt?: string; cobrancaAss?: import('./assinatura-lembrete.service').CobrancaAss; saudeSentAt?: string;
   autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string;
-  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[]; semLocalNoteAt?: string };
+  sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[]; semLocalNoteAt?: string; contatoNoteAt?: string };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -81,7 +81,7 @@ export function itensDoPedido(banco: 'Inter' | 'Santander', cf: Cf, compradores:
 export function textoPedidoDados(nome: string, itens: string[], doisCompradores: boolean, banco: 'Inter' | 'Santander' = 'Santander'): string {
   const l: string[] = [`${nome ? `${nome}, pra` : 'Pra'} ${MARCA_DADOS} preciso de algumas informações:`, ''];
   let n = 0;
-  if (itens.includes('contato')) l.push(`${++n}. O contato de quem vai receber o engenheiro no imóvel: se tiver corretor, o nome e o telefone do corretor; se não, o nome e o telefone do vendedor`);
+  if (itens.includes('contato')) l.push(`${++n}. Quem vai acompanhar o engenheiro na vistoria do imóvel — o vendedor, o corretor ou outra pessoa: o nome e o telefone dessa pessoa`);
   if (itens.includes('vendedor')) l.push(`${++n}. Do vendedor: e-mail, telefone e profissão`);
   if (itens.includes('conta')) l.push(`${++n}. A conta do vendedor pra receber o valor: banco, agência, conta (com dígito) e se é corrente ou poupança, e o nome do titular`);
   if (itens.includes('contaComprador')) l.push(`${++n}. ${doisCompradores ? 'A conta de um dos compradores' : 'Sua conta'} no ${banco} (agência e conta com dígito): é nela que as parcelas são debitadas. Se ainda não tiver conta no ${banco}, abra pelo app do ${banco}${banco === 'Santander' ? ' (ou pelo link https://abrasuaconta.santander.com.br)' : ''} e me mande os dados`);
@@ -140,7 +140,7 @@ const SYSTEM_DADOS = `Você lê mensagens de WhatsApp de um cliente que comprou 
 "conta":{"titular":null,"banco":null,"agencia":null,"conta":null,"digito":null,"tipo":"corrente|poupança|null"},
 "contaComprador":{"agencia":null,"conta":null,"digito":null,"naoTem":false},
 "compradores":[{"profissao":null,"email":null}],"imovel":{"cep":null,"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"tipo":"Apartamento|Casa|null"}}
-Regras: "contato" é quem recebe o engenheiro (corretor; sem corretor, o vendedor). Se o cliente mandar só o telefone do vendedor, ele também é o contato. Telefone só dígitos com DDD. "compradores" na ordem em que aparecem (1º = o próprio cliente). Conta: separe o dígito se vier "12345-6". "conta" é a do VENDEDOR (recebe o valor); "contaComprador" é a do próprio cliente/comprador no banco do financiamento (débito das parcelas) — "naoTem": true se ele disse que ainda não tem conta nesse banco.`;
+Regras: "contato" é quem vai acompanhar o engenheiro na vistoria — o vendedor, o corretor ou outra pessoa que o cliente indicar (papel "outro"; se for o próprio cliente, "outro" com o nome e o telefone dele). Só preencha "contato" se o cliente disser QUEM acompanha (ou mandar só o telefone do vendedor/corretor como contato da vistoria). Telefone só dígitos com DDD. "compradores" na ordem em que aparecem (1º = o próprio cliente). Conta: separe o dígito se vier "12345-6". "conta" é a do VENDEDOR (recebe o valor); "contaComprador" é a do próprio cliente/comprador no banco do financiamento (débito das parcelas) — "naoTem": true se ele disse que ainda não tem conta nesse banco.`;
 
 async function lerResposta(accountId: string, leadId: string, desde: Date): Promise<Dados | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -383,6 +383,20 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
       push(accountId, '🏦 Vistoria Santander parada: falta documento', `${lead.name}: ${travam.join('; ')}`.slice(0, 160), leadId);
     }
     return false;
+  }
+
+  // 4b) contato da vistoria confirmado com o cliente — vendedor, corretor ou outra pessoa (Fabio 14/11) — vistoria-contato.service. Sem ele o pedido à Letícia não sai.
+  {
+    const vcont = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+    const g = await vcont.garantirContatoVistoria(accountId, leadId, { banco: 'Santander', io: io as any, respeitarHorario: !opts.manual });
+    if (!g.ok) {
+      if (st.status !== 'AGUARDA_CONTATO' || opts.manual || faz(st.contatoNoteAt) > AVISO_REPETIR_MS) {
+        await salvaSt(leadId, { status: 'AGUARDA_CONTATO', contatoNoteAt: new Date().toISOString() });
+        await note(leadId, `🏦 Santander (Financiamento): o pedido de vistoria espera o contato de quem acompanha o engenheiro (vendedor, corretor ou outra pessoa). ${vcont.textoEsperandoContato(g, 'Santander', false)}`);
+        if (g.estado === 'erro') push(accountId, '🏦 Vistoria Santander: falta o contato', `${lead.name}: preencha "Contato vistoria" (nome e telefone)`, leadId);
+      }
+      return false;
+    }
   }
 
   // 5) ficha (Word)

@@ -1,8 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { cleanSubject } from './inter-email.service';
 import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
-import { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } from './message.service';
-import { queueOnReply } from './reply-pending.service';
 
 /**
  * Botão "Solicitar vistoria Creditas" do card (Fabio 03/11: "já temos base que é por e-mail para o Jonatas"). A vistoria da Creditas é pedida por e-mail ao Jonatas (suporte da
@@ -32,40 +30,17 @@ export interface VistoriaCreditasPreview {
   avisos: string[];
 }
 
-const CONTATO_LABEL = 'contato da vistoria';
-/** Pergunta ao cliente (sem citar banco — Fabio 03/11: não contamos que seguimos com mais de um) quem acompanha a vistoria. */
-export const CONTATO_PERGUNTA = 'Pra agendar a vistoria do imóvel, quem vai acompanhar o engenheiro na visita? Me passa o nome e o telefone dessa pessoa, por favor (pode ser você mesmo).';
-
-/**
- * "Contato vistoria" vazio no clique de "Solicitar vistoria Creditas" (Fabio 03/11: "quando seguido pelo Creditas, o CRM pode perguntar ao cliente quem será o contato para vistoria"):
- * pergunta ao cliente — conversa aberta = mensagem; fechada = template "Olá, tudo bem?" e a pergunta sai quando ele responder (reply-pending). A resposta vai pro campo
- * "contato_vistoria" pela IA da conversa / leitura do card (card-fill). Não repete: pergunta já feita nos últimos 3 dias ou esperando o template = 'aguardando'.
- */
+/** Pergunta ao cliente quem acompanha a vistoria — hoje é a regra única de todos os bancos (vistoria-contato.service, Fabio 14/11): Financiamento = vendedor/corretor/outra pessoa;
+ *  Home Equity = sugere o próprio cliente e confirma. Conversa fechada = template "Olá, tudo bem?" e a pergunta na resposta. Mantido aqui pros chamadores antigos (botão, CAIXA). */
 export async function pedirContatoVistoria(accountId: string, leadId: string, userId: string, io?: Io): Promise<'ja_tem' | 'mensagem' | 'template' | 'aguardando'> {
-  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
-  if (!lead) throw new Error('Card não encontrado');
-  const cf = (lead.customFields || {}) as Record<string, any>;
-  if (String(cf.contato_vistoria || '').trim()) return 'ja_tem';
-  const antes = cf._vistoriaContatoAsk?.at ? new Date(cf._vistoriaContatoAsk.at).getTime() : 0;
-  if (Date.now() - antes < 3 * 86_400_000) return 'aguardando';
-  if (Array.isArray(cf._replyPending) && cf._replyPending.some((x: any) => x?.label === CONTATO_LABEL)) return 'aguardando';
-  const marca = async (via: string) => {
-    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaContatoAsk: { at: new Date().toISOString(), via, por: userId } } } });
-  };
-  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  if (await whatsappWindowOpen(leadId)) {
-    const r = await sendOutboundWhatsApp({ accountId, leadId, content: CONTATO_PERGUNTA, userId, io: io as any });
-    if (!r.success) throw new Error(`Não consegui perguntar o contato da vistoria ao cliente: ${(r as any).error || 'erro'}`);
-    await marca('mensagem');
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: '🏠 Perguntei ao cliente quem acompanha a vistoria (nome e telefone). A resposta vai pro campo "Contato vistoria" do card.' } }).catch(() => {});
-    return 'mensagem';
-  }
-  const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', userId, io: io as any });
-  if (!t.success) throw new Error(`A conversa está fechada e o template "Olá, tudo bem?" falhou: ${t.error}`);
-  await queueOnReply(prisma, { leadId, label: CONTATO_LABEL, text: CONTATO_PERGUNTA, noteText: '🏠 A janela de 24 h estava fechada — mandei o template "Olá, tudo bem?". Quando o cliente responder, sai a pergunta de quem acompanha a vistoria (nome e telefone); a resposta vai pro campo "Contato vistoria".' });
-  await marca('template');
-  return 'template';
+  const { pedirContato } = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  return pedirContato(accountId, leadId, { userId: userId || null, banco: 'Creditas', io: io as any });
+}
+
+/** Bloco CONTATO do e-mail ao Jonatas (contato confirmado com o cliente). */
+export function linhasContatoCreditas(c: { nome: string; telefone: string }): string[] {
+  const { fmtFone } = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  return [`• Nome: ${c.nome}`, `• Telefone: ${fmtFone(c.telefone)}`];
 }
 
 type Arquivo = { id: string; name: string; path: string; size: number; mimeType: string; tipo?: string };
@@ -128,8 +103,8 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   const pai = daCreditas.find((e) => /vistoria/i.test(e.subject || '')) || daCreditas.find((e) => /pr[eé][ -]?aprovad/i.test(e.subject || '')) || daCreditas[0] || null;
   const ccPai = ((pai?.ccList as unknown as { address?: string }[] | null) || []).map((c) => String(c?.address || '').toLowerCase()).filter((a) => CREDITAS_FROM.test(a) && a !== CREDITAS_VISTORIA_EMAIL);
 
-  const contatoCard = String(cf.contato_vistoria || '').trim(); // campo "Contato vistoria" do card (ex.: inquilino) vale mais que o telefone do cliente
-  const tel = String(cf.telefone_1 || lead.contact?.phone || '').trim();
+  // Contato SÓ confirmado com o cliente (Fabio 14/11) — sem ele o e-mail não sai: o CRM pergunta e o pedido fica armado (vistoria-contato.service).
+  const contato = (require('./vistoria-contato.service') as typeof import('./vistoria-contato.service')).contatoConfirmado(cf);
   const endImovel = String(cf.endereco_imovel || cf.imovel_endereco || '').trim();
   const matricula = String(cf.numero_matricula || '').trim();
 
@@ -153,7 +128,7 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
     `Seguem os dados para o agendamento da vistoria do imóvel do cliente ${nome}${idCreditas ? ` (ID ${idCreditas})` : ''}${cpf ? `, CPF ${cpf}` : ''}.`,
     '',
     'CONTATO PARA O AGENDAMENTO',
-    ...(contatoCard ? [`• ${contatoCard}`] : [`• Nome: ${nome}`, `• Telefone: ${tel || '(informar)'}`]),
+    ...(contato ? linhasContatoCreditas(contato) : ['• (aguardando o cliente confirmar quem acompanha a vistoria)']),
     ...(matricula || endImovel ? ['', `IMÓVEL: ${matricula ? `matrícula nº ${matricula}` : ''}${matricula && endImovel ? ' — ' : ''}${endImovel}`] : []),
     '',
     `Seguem em anexo ${[onus ? 'a certidão de ônus (matrícula) do imóvel' : '', iptu ? 'a capa do IPTU' : ''].filter(Boolean).join(' e ') || 'os documentos do imóvel'}.`,
@@ -168,8 +143,7 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   if (!onus) avisos.push('Faltou a CERTIDÃO DE ÔNUS (matrícula) na pasta IMOVEL do cliente — o e-mail sai sem ela se você não anexar.');
   if (!iptu) avisos.push('Faltou a CAPA DO IPTU na pasta IMOVEL do cliente — o e-mail sai sem ela se você não anexar.');
   else if (iptu.tipo === 'GUIA_IPTU') avisos.push('Não achei a capa do IPTU; marquei a GUIA do IPTU — confira se é do mesmo imóvel.');
-  if (!tel && !contatoCard) avisos.push('O card não tem telefone do cliente para o agendamento.');
-  if (!contatoCard && cf._vistoriaContatoAsk?.at) avisos.push(`Perguntei ao cliente o contato da vistoria (${new Date(cf._vistoriaContatoAsk.at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}) — o e-mail pode esperar a resposta (ela vai pro campo "Contato vistoria" e entra aqui).`);
+  if (!contato) avisos.push(`⚠️ O contato da vistoria ainda não foi confirmado com o cliente (campo "Contato vistoria" vazio ou sem nome e telefone). Ao enviar, o CRM pergunta a ele quem acompanha o engenheiro${cf._vistoriaContatoAsk?.at ? ` (já perguntado em ${new Date(cf._vistoriaContatoAsk.at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} — esperando a resposta)` : ''} e o pedido sai sozinho, com esse contato, quando ele responder. Se você já confirmou, preencha o campo antes de enviar.`);
   if (!pai) avisos.push('Ainda não há conversa da Creditas sobre este cliente na caixa comercial: vai como e-mail novo ao Jonatas.');
 
   return {
@@ -181,7 +155,7 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
     anexos,
     jaSolicitadaEm: cf._vistoriaCreditasAt ? String(cf._vistoriaCreditasAt) : null,
     temCreditas: !!creditas,
-    contatoVazio: !contatoCard,
+    contatoVazio: !contato,
     avisos,
   };
 }
@@ -193,6 +167,15 @@ export async function solicitarVistoriaCreditas(p: { accountId: string; userId: 
   const to = String(p.to || '').trim().toLowerCase();
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) throw new Error('Informe o e-mail da Creditas no campo "Para".');
   if (!CREDITAS_FROM.test(to) && !String(process.env.VISTORIA_ALLOW_ANY_RECIPIENT || '')) throw new Error('O destinatário precisa ser um e-mail da Creditas (@creditas.com).');
+  // Sem o contato da vistoria confirmado com o cliente o pedido NÃO sai (Fabio 14/11): pergunta + pedido armado, que sai sozinho com o contato.
+  {
+    const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+    const g = await vc.garantirContatoVistoria(p.accountId, p.leadId, { banco: 'Creditas', userId: p.userId, io: p.io });
+    if (!g.ok) {
+      if (g.estado !== 'erro') await vc.armarVistoria(p.leadId, { banco: 'CREDITAS', userId: p.userId, to, cc: p.cc || '', subject: p.subject, body: p.body, replyToId: p.replyToId || null, attachDriveFileIds: p.attachDriveFileIds || [] });
+      throw new Error(vc.textoEsperandoContato(g, 'Creditas', g.estado !== 'erro'));
+    }
+  }
 
   const acc = await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: null }, orderBy: { createdAt: 'asc' } });
   if (!acc) throw new Error('A caixa de e-mail comercial não está configurada.');
@@ -232,7 +215,7 @@ export async function solicitarVistoriaCreditas(p: { accountId: string; userId: 
 }
 
 /** Pedido AUTOMÁTICO da vistoria da Creditas (Fabio 14/11: o laudo do outro banco reprovou o imóvel e o cliente aceitou seguir pela Creditas — "sim, pedir sozinho").
- *  Sem "Contato vistoria" no card: pergunta ao cliente quem acompanha o engenheiro (07h–21h) e espera até 24 h; sem resposta, vai com o nome e o telefone do cliente.
+ *  Sem "Contato vistoria" confirmado: pergunta ao cliente quem acompanha o engenheiro (07h–21h) e espera a resposta (vistoria-contato.service, Fabio 14/11).
  *  Depois manda o mesmo e-mail do botão ao Jonatas, com a certidão de ônus e o IPTU marcados na pasta. 'enviada' | 'aguardando'. */
 export async function pedirVistoriaCreditasSozinho(accountId: string, leadId: string, io?: Io): Promise<'enviada' | 'aguardando'> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
@@ -241,15 +224,14 @@ export async function pedirVistoriaCreditasSozinho(accountId: string, leadId: st
   if (cf._vistoriaCreditasAt) return 'enviada';
   const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
   if (!dono) throw new Error('sem administrador na conta');
-  if (!String(cf.contato_vistoria || '').trim()) {
-    const ask = cf._vistoriaContatoAsk?.at ? Date.parse(String(cf._vistoriaContatoAsk.at)) : 0;
-    if (!ask) {
-      const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
-      if (!inNoticeWindow()) return 'aguardando'; // pergunta ao cliente só 07h–21h
-      const r = await pedirContatoVistoria(accountId, leadId, dono.id, io).catch(() => 'erro' as const);
-      if (r === 'mensagem' || r === 'template' || r === 'aguardando') return 'aguardando';
-      // não deu pra perguntar: segue com o nome e o telefone do cliente
-    } else if (Date.now() - ask < 24 * 3_600_000) return 'aguardando';
+  // Contato da vistoria confirmado com o cliente antes do pedido (Fabio 14/11 — regra única, vistoria-contato.service). Pergunta só 07h–21h.
+  {
+    const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+    const g = await vc.garantirContatoVistoria(accountId, leadId, { banco: 'Creditas', io, respeitarHorario: true });
+    if (!g.ok) {
+      if (g.estado === 'erro') throw new Error(vc.textoEsperandoContato(g, 'Creditas', false));
+      return 'aguardando';
+    }
   }
   const pv = await vistoriaCreditasPreview(accountId, leadId);
   await solicitarVistoriaCreditas({ accountId, userId: dono.id, leadId, to: pv.to, cc: pv.cc, subject: pv.subject, body: pv.body, replyToId: pv.replyToId, attachDriveFileIds: pv.anexos.filter((a) => a.checked).map((a) => a.id), io });

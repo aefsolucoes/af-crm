@@ -18,7 +18,7 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 export const VISTORIA_SANTANDER_TO = process.env.VISTORIA_SANTANDER_TO || 'leticia.gomes@credimorar.com.vc';
 const AVISO_REPETIR_MS = 12 * 3600_000;
 
-type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; docsCheckAt?: string; enviadoPor?: string;
+type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; docsCheckAt?: string; enviadoPor?: string; contatoNoteAt?: string;
   /** cobrança da assinatura com a conversa fechada / prazo combinado (assinatura-lembrete, Fabio 14/11) */ cobrancaAss?: import('./assinatura-lembrete.service').CobrancaAss };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
@@ -283,9 +283,22 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     return false;
   }
 
+  // 3b) contato da vistoria confirmado com o cliente (Fabio 14/11: "no HE seria a própria pessoa, mesmo assim também é necessário confirmar com o cliente") — vistoria-contato.service.
+  //     Sem ele o pedido não sai: o CRM pergunta (07h–21h no automático) e segue sozinho quando a resposta chegar ao campo "Contato vistoria".
+  const vcont = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const g = await vcont.garantirContatoVistoria(accountId, leadId, { banco: 'Santander', io: io as any, respeitarHorario: !opts.manual });
+  if (!g.ok) {
+    if (st.status !== 'AGUARDA_CONTATO' || opts.manual || faz(st.contatoNoteAt) > AVISO_REPETIR_MS) {
+      await salva(leadId, { status: 'AGUARDA_CONTATO', contatoNoteAt: new Date().toISOString() });
+      await note(leadId, `🏦 Santander: documentos ok, o pedido de vistoria espera o contato de quem acompanha o engenheiro. ${vcont.textoEsperandoContato(g, 'Santander', false)}`);
+      if (g.estado === 'erro') await pushDono(accountId, leadId, '🏦 Vistoria Santander: falta o contato', `${lead.name}: preencha "Contato vistoria" (nome e telefone)`);
+    }
+    return false;
+  }
+
   // 4) cadastro WEB CASAS + e-mail
-  const contatoPessoa = String(cf.contato_vistoria || '').trim() || p1.nome;
-  const telefone = String(cf.telefone_1 || lead.contact?.phone || campos['Celular'] || '').trim();
+  const contatoPessoa = g.contato.nome;
+  const telefone = vcont.fmtFone(g.contato.telefone);
   const dados = dadosWebCasas(cf, campos, lead.name, { pessoa: contatoPessoa, telefone });
   // Nº do documento em branco não segura quando o RG/CNH vai anexado no mesmo e-mail (Fabio 06/11, Alexandre: a proposta pelo WhatsApp não traz o número; a Letícia lê no documento).
   const identAnexada = cat.ident.length >= (p2 ? 2 : 1);

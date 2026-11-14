@@ -376,6 +376,13 @@ httpServer.listen(PORT, () => {
     setInterval(rodar, 2 * 60 * 1000);
   }, 3 * 60 * 1000);
 
+  // Pedido de vistoria armado pelo botão sem o contato confirmado (Fabio 14/11): o contato chegou (resposta do cliente ou a equipe preencheu) → o pedido sai com ele.
+  setTimeout(() => {
+    const rodar = () => (require('./services/vistoria-contato.service') as typeof import('./services/vistoria-contato.service')).processVistoriasArmadas(io as any).catch((err: any) => console.error('[Vistoria armada] Poll:', err?.message));
+    rodar();
+    setInterval(rodar, 2 * 60 * 1000);
+  }, 3 * 60 * 1000);
+
   // Santander em análise manual (Fabio 13/11, Claudemir): pedido de documentos segurado sai dentro do horário e, com tudo recebido, os documentos vão por e-mail à Letícia.
   setTimeout(() => {
     const rodar = () => (require('./services/santander-manual.service') as typeof import('./services/santander-manual.service')).processSantanderManual(io as any).catch((err: any) => console.error('[Santander manual] Poll:', err?.message));
