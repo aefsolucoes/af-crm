@@ -927,7 +927,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       : { success: false };
     if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'docsCompletos', `avisar que recebeu toda a documentação${banco ? ` e que vai dar entrada na análise da ${banco}` : ''} e que avisa por aqui quando sair o resultado`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 Documentação do comprador COMPLETA (${caixaRota ? (cfLead._caixaRota ? 'o cliente pediu a CAIXA' : 'card na etapa Análise CAIXA') : `Financiamento Habitacional${banco ? ` — ${banco}` : ''}`}):\n${verdict.receivedText}\n\n👉 ${caixaRota ? 'O CRM gera a ficha e a extensão faz o cadastro na CAIXA.' : banco ? `Rodar a análise na ${banco} com esses documentos.` : 'Nenhum banco escolhido ainda.'}${sentFh.success ? ' Cliente avisado.' : ' Cliente NÃO avisado (IA desligada).'}` } }).catch(() => {});
-    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa', leadId }).catch(() => {});
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏦 ${lead.name}: documentação completa`, body: `${caixaRota ? 'Ficha e cadastro da CAIXA a caminho' : banco ? `Rodar a análise na ${banco}` : 'Documentação do comprador completa'}${sentFh.success ? '' : ' — IA desligada: o cliente ainda não foi avisado'}`, leadId }).catch(() => {});
     return true;
   }
   // Habite-se em aberto, ou imóvel sem habite-se com proposta do Santander/Creditas em jogo (Fabio 06/11): o card não vai sozinho pra contratação — a equipe decide (nota + push).
@@ -968,7 +968,16 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     const foi = (await iaLigadaAgora(leadId)) ? await sendOutboundWhatsApp({ accountId, leadId, content: textoDepois, io: io || undefined }) : { success: false };
     await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsDepois}', ${JSON.stringify({ itens: depois, at: new Date().toISOString(), avisado: !!foi.success })}::jsonb, true) WHERE id = ${leadId}`;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📎 Documentação conta como completa pra vistoria; ficaram pra depois: ${depois.join('; ')}. ${foi.success ? 'O cliente foi avisado de que precisa mandar depois.' : 'NÃO avisei o cliente (IA desligada) — avise você.'}` } }).catch(() => {});
-    if (!foi.success) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `📎 ${lead.name}: documentos pra depois`, body: depois.join('; ').slice(0, 150), leadId }).catch(() => {});
+    if (!foi.success && lead.aiAutoReplyActive) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `📎 ${lead.name}: documentos pra depois`, body: depois.join('; ').slice(0, 150), leadId }).catch(() => {}); // IA desligada: vai no push da documentação completa
+  }
+  // IA DESLIGADA (Fabio 14/11: "quero sempre que quando um cliente encaminhar toda a documentação e a IA estiver desligada, ela encaminha um push para a equipe informando isso"):
+  // ninguém avisou o cliente — a equipe recebe o push (antes só ficava a nota no card).
+  if (!lead.aiAutoReplyActive) {
+    (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, {
+      title: `📁 ${lead.name}: documentação completa`,
+      body: `A IA está desligada: o cliente ainda não foi avisado. Card em "${moved.stageName}".${depois.length ? ` Pra depois: ${depois.join('; ')}.` : ''}`.slice(0, 220),
+      leadId,
+    }).catch(() => {});
   }
 
   await prisma.note.create({
