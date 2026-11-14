@@ -1,6 +1,6 @@
 import { prisma } from '../lib/prisma';
 import { createCertidaoRequest, enderecoTexto, type EnderecoCertidao } from './certidao.service';
-import { contractingAutoOn, manualStep } from './contracting-auto.service';
+import { manualStep } from './contracting-auto.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
@@ -178,6 +178,15 @@ async function avisaPixAmanha(accountId: string, leadId: string, io: Io) {
 async function carrega(leadId: string) {
   return prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, accountId: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
 }
+/** Fabio 14/11 (Cleci): "sempre que a IA estiver ligada e o cliente estiver ciente e der a permissão de emitir a ônus, o CRM pode seguir o fluxo sozinho, só fica a trava se a IA
+ *  estiver desligada". O fluxo da certidão (oferta, pedido no ONR, endereço) não depende mais da chave geral da contratação: vale a IA do card. */
+async function certidaoSozinha(leadId: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
+  return !!l?.aiAutoReplyActive;
+}
+/** Etapas em que a certidão ainda é oferecida/emitida sozinha: aguardando a documentação ou documentação recebida sem a certidão (o Santander não pede vistoria sem ela — Fabio 14/11). Texto sem acento. */
+const ETAPA_CERTIDAO = /aguardando document|documentacao recebida/i;
+
 async function salvaOferta(leadId: string, patch: Record<string, unknown>) {
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
@@ -192,7 +201,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused || !lead.aiAutoReplyActive) return false;
   if (cf._docsCheckDue) return false; // ele ainda está mandando documento: a conferência (que roda depois) é quem faz a oferta
-  if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false;
+  if (!ETAPA_CERTIDAO.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return false;
   // Home Equity; no Financiamento só quem segue pelo Inter (Fabio 30/10: "INTER MESMO FLUXO") — os outros bancos do FH ainda são à mão.
   const dept = lead.pipeline?.department?.name || '';
   if (!/home equity/i.test(dept) && !(/habitacional/i.test(dept) && /^inter$/i.test(String(cf._fhChosen?.bank || '')) && !cf._optouCaixa)) return false;
@@ -205,9 +214,9 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
   if (ativo) return false;
   // Chave da contratação (Fabio 23/10: "coloca um interruptor igual da vistoria"): desligada, a IA NÃO oferece a emissão — nota + push com o passo pra equipe (que combina com o cliente e usa o botão do card).
-  if (!(await contractingAutoOn(accountId, leadId))) {
+  if (!(await certidaoSozinha(leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${d.matricula}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: mandou a escritura sem a certidão — oferecer a emissão`,
-      note: `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus/matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Se for emitir pelo cartório digital (ONR), combine com o cliente (a certidão é essencial pra solicitar a vistoria; o custo só se ele perguntar) e use o botão "Pedir certidão pelo ONR" na aba Financiamento do card.` });
+      note: `🏛️ O cliente mandou a escritura (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) e não a certidão de ônus/matrícula. Passo manual (IA do card desligada): a IA NÃO ofereceu a emissão. Se for emitir pelo cartório digital (ONR), combine com o cliente (a certidão é essencial pra solicitar a vistoria; o custo só se ele perguntar) e use o botão "Pedir certidão pelo ONR" na aba Financiamento do card.` });
     return false;
   }
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
@@ -234,9 +243,9 @@ async function maybeOfferPorEndereco(accountId: string, leadId: string, lead: No
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
   if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) return false; // já perguntado (Jarvis/equipe), esperando
   const end = `${enderecoTexto(e.endereco)} — ${e.cidade}/${e.uf}`;
-  if (!(await contractingAutoOn(accountId, leadId))) {
+  if (!(await certidaoSozinha(leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-oferta-${chave}`, pushTitle: '🏛️ Certidão de ônus/matrícula', pushBody: `${lead.name}: falta a certidão e não há matrícula — oferecer a emissão pelo endereço`,
-      note: `🏛️ Falta a certidão de ônus/matrícula e os documentos não trazem a matrícula. Passo manual (automação da contratação desligada): a IA NÃO ofereceu a emissão. Pra emitir pelo endereço (${end}), combine com o cliente e peça pelo Jarvis ou pelo botão do card.` });
+      note: `🏛️ Falta a certidão de ônus/matrícula e os documentos não trazem a matrícula. Passo manual (IA do card desligada): a IA NÃO ofereceu a emissão. Pra emitir pelo endereço (${end}), combine com o cliente e peça pelo Jarvis ou pelo botão do card.` });
     return false;
   }
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
@@ -284,10 +293,10 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
     }
     const e = await enderecoDoImovel(leadId, cf);
     if (!e) return { created: false, why: 'não achei a matrícula nos documentos nem o endereço completo do imóvel (CEP, rua, número, cidade/UF)' };
-    if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) {
+    if (!opts.manual && !(await certidaoSozinha(leadId))) {
       await manualStep({ accountId, leadId, leadName: lead.name, step: 'certidao-pedido-endereco', pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
-        note: `🏛️ A emissão da certidão pelo ENDEREÇO do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" do card.` });
-      return { created: false, why: 'modo manual da contratação' };
+        note: `🏛️ A emissão da certidão pelo ENDEREÇO do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (IA do card desligada). Use o botão "Pedir certidão pelo ONR" do card.` });
+      return { created: false, why: 'IA do card desligada' };
     }
     try {
       const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix });
@@ -297,10 +306,10 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
       return { created: false, why: String(err?.message || err) };
     }
   }
-  if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) {
+  if (!opts.manual && !(await certidaoSozinha(leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: `certidao-pedido-${d.matricula}`, pushTitle: '🏛️ Certidão pelo ONR', pushBody: `${lead.name}: o cliente aceitou — peça pelo botão do card`,
-      note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (automação da contratação desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
-    return { created: false, why: 'modo manual da contratação' };
+      note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (IA do card desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
+    return { created: false, why: 'IA do card desligada' };
   }
   const existente = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
   if (existente) return { created: false, why: 'já existe pedido pra esta matrícula' };
@@ -423,7 +432,7 @@ export async function checkCertidaoAcceptance(accountId: string, leadId: string,
   if (!of?.at || of.acceptedAt || of.declinedAt || cf._autoPaused) return;
   if (Date.now() - new Date(of.at).getTime() > 7 * 86_400_000) return; // oferta velha: não gasta IA lendo toda mensagem
   // A oferta só vale enquanto o card AINDA espera documentação (mesma regra de quando ela é feita): com a documentação recebida / em contratação não há mais o que emitir sozinho.
-  if (!/aguardando document/i.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
+  if (!ETAPA_CERTIDAO.test((lead.stage?.name || '').normalize('NFD').replace(/[̀-ͯ]/g, ''))) return;
   if (await jaTemCertidaoValida(leadId, cf)) return; // já mandou a certidão: a oferta perdeu o sentido, nada a autorizar
   // O cliente tem que estar respondendo à PERGUNTA DA CERTIDÃO: se a última mensagem da empresa (equipe ou IA) é sobre outro assunto, o "ok/sim/obrigado" dele não autoriza nada.
   const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true } });
@@ -549,9 +558,9 @@ export async function certidaoPeloEnderecoUltimoCaso(accountId: string, leadId: 
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Certidão pelo endereço', body: `${lead.name}: sem escritura/contrato e sem endereço completo do imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
     return;
   }
-  if (!(await contractingAutoOn(accountId, leadId))) {
+  if (!(await certidaoSozinha(leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'certidao-endereco-ultimo-caso', pushTitle: '🏛️ Certidão pelo endereço', pushBody: `${lead.name}: sem escritura/contrato — confirmar o endereço e pedir`,
-      note: `🏛️ O cliente aceitou a emissão e não tem escritura nem contrato de compra e venda. Passo manual (automação da contratação desligada): confirme com ele o endereço do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) e peça a certidão pelo endereço (Jarvis ou botão do card).` });
+      note: `🏛️ O cliente aceitou a emissão e não tem escritura nem contrato de compra e venda. Passo manual (IA do card desligada): confirme com ele o endereço do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) e peça a certidão pelo endereço (Jarvis ou botão do card).` });
     return;
   }
   const r = await askEnderecoCertidao(accountId, leadId, { endereco: e.endereco, cidade: e.cidade, uf: e.uf, cartorio: 'AUTO', sendPix: true }, io);
@@ -609,7 +618,7 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
       const cf0 = (lead?.customFields || {}) as Record<string, any>;
       const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', deleted: false, NOT: { content: '' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
       if (!ultima || !mensagemFalaDaCertidao(ultima.content || '')) return;
-      if (cf0._autoPaused || !/aguardando document/i.test((lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')) || (await jaTemCertidaoValida(leadId, cf0))) return;
+      if (cf0._autoPaused || !ETAPA_CERTIDAO.test((lead?.stage?.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')) || (await jaTemCertidaoValida(leadId, cf0))) return;
     }
   }
   if (tipo === 'OUTRO') return;
