@@ -184,10 +184,16 @@ const BANK_FILE: Array<[RegExp, string, string]> = [
   [/ita[uú]/i, 'itau.png', 'Itaú'],
   [/caixa/i, 'caixa.png', 'CAIXA'],
 ];
+/** Nome do banco do processo (o mesmo do símbolo): "Credimorar (Inter)" → Inter; Credimorar no Home Equity → Santander; sem banco → ''. */
+function bancoDaProvisao(payer?: string | null, product?: string | null): string {
+  const banco = ((/\(([^)]+)\)/.exec(payer || '') || [])[1] || payer || '').trim();
+  if (/^credimorar$/i.test(banco) && /home equity/i.test(product || '')) return 'Santander';
+  const hit = BANK_FILE.find(([rx]) => rx.test(banco));
+  return hit ? hit[2] : banco;
+}
 function ProvisionBankIcon({ payer, product }: { payer?: string | null; product?: string | null }) {
   const [semImagem, setSemImagem] = useState(false);
-  const banco = (/\(([^)]+)\)/.exec(payer || '') || [])[1] || payer || '';
-  const nome = /^credimorar$/i.test(banco.trim()) && /home equity/i.test(product || '') ? 'Santander' : banco.trim();
+  const nome = bancoDaProvisao(payer, product);
   const hit = BANK_FILE.find(([rx]) => rx.test(nome));
   const box = 'w-8 h-8 flex-shrink-0 rounded-lg';
   if (hit && !semImagem) {
@@ -316,6 +322,14 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
   const outros = aReceber.filter((p) => !he.includes(p) && !fh.includes(p));
   const concluidos = aReceber.filter((p) => p.leadSituacao === 'CONCLUIDO');
   const semBanco = aReceber.filter((p) => !p.payer);
+  // Total a receber por banco (Fabio 14/11), do maior pro menor; "sem banco" por último.
+  const porBanco = Object.values(aReceber.reduce<Record<string, { nome: string; exemplo: CommissionProvision; total: number; n: number; he: number; fh: number }>>((acc, p) => {
+    const nome = bancoDaProvisao(p.payer, p.product) || 'Sem banco';
+    const g = (acc[nome] ||= { nome, exemplo: p, total: 0, n: 0, he: 0, fh: 0 });
+    g.total += p.amount; g.n += 1;
+    if (/home equity/i.test(p.product || '')) g.he += p.amount; else if (/financiamento/i.test(p.product || '')) g.fh += p.amount;
+    return acc;
+  }, {})).sort((a, b) => (a.nome === 'Sem banco' ? 1 : b.nome === 'Sem banco' ? -1 : b.total - a.total));
   const inPeriod = aReceber.filter((p) => p.expectedDate && dayOf(p.expectedDate) >= from && dayOf(p.expectedDate) <= to);
   const totalInPeriod = inPeriod.reduce((s, p) => s + p.amount, 0);
   const lateCount = aReceber.filter((p) => p.expectedDate && dayOf(p.expectedDate) < todayISO()).length;
@@ -375,6 +389,23 @@ export function CommissionProvisions({ from, to }: { from: string; to: string })
             <p className="text-lg font-bold text-slate-800">{formatCurrency(soma(fh))}</p>
             <p className="text-[11px] text-slate-400">{fh.length} processo{fh.length === 1 ? '' : 's'}</p>
           </div>
+          {porBanco.length > 0 && (
+            <div className="sm:col-span-4">
+              <p className="text-[11px] font-medium text-slate-500 uppercase tracking-wide mb-1.5">Por banco</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2">
+                {porBanco.map((b) => (
+                  <div key={b.nome} className="flex items-center gap-2 rounded-xl border border-af-border bg-white px-3 py-2 min-w-0" title={b.he && b.fh ? `Home Equity ${formatCurrency(b.he)} · Financiamento ${formatCurrency(b.fh)}` : undefined}>
+                    <ProvisionBankIcon payer={b.nome === 'Sem banco' ? null : b.exemplo.payer} product={b.exemplo.product} />
+                    <div className="min-w-0">
+                      <p className="text-[11px] text-slate-500 truncate">{b.nome} · {b.n}</p>
+                      <p className="text-sm font-bold text-slate-800 truncate">{formatCurrency(b.total)}</p>
+                      {b.he > 0 && b.fh > 0 && <p className="text-[10px] text-slate-400 truncate">HE {formatCurrency(b.he)} · FH {formatCurrency(b.fh)}</p>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {(outros.length > 0 || perdidos.length > 0 || semBanco.length > 0) && (
             <div className="sm:col-span-4 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-500 -mt-1">
               {outros.length > 0 && <span>Outros produtos: <b className="text-slate-700">{formatCurrency(soma(outros))}</b> ({outros.length})</span>}
