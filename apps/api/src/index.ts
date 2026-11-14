@@ -376,6 +376,13 @@ httpServer.listen(PORT, () => {
     setInterval(rodar, 2 * 60 * 1000);
   }, 3 * 60 * 1000);
 
+  // Feedback do processo concluído (Fabio 14/11): card marcado Ganho → no dia seguinte, 09h–21h, o template de feedback (uma vez por card).
+  setTimeout(() => {
+    const rodar = () => (require('./services/feedback-concluido.service') as typeof import('./services/feedback-concluido.service')).processFeedbackConcluido(io as any).catch((err: any) => console.error('[Feedback] Poll:', err?.message));
+    rodar();
+    setInterval(rodar, 10 * 60 * 1000);
+  }, 6 * 60 * 1000);
+
   // Pedido de vistoria armado pelo botão sem o contato confirmado (Fabio 14/11): o contato chegou (resposta do cliente ou a equipe preencheu) → o pedido sai com ele.
   setTimeout(() => {
     const rodar = () => (require('./services/vistoria-contato.service') as typeof import('./services/vistoria-contato.service')).processVistoriasArmadas(io as any).catch((err: any) => console.error('[Vistoria armada] Poll:', err?.message));

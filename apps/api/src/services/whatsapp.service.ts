@@ -1399,7 +1399,9 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
         await approvalNotice.checkOutroCanalAnswer(accountId, leadId, text).catch((e) => console.error('[Aprovação] resposta do outro canal:', e?.message));
         // Resposta ao pedido de CNPJ/admissão da ficha de cadastro (Fabio 30/10): grava na ficha e o cadastro da CAIXA volta pra fila.
         await (require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).capturarCnpjDaResposta(accountId, leadId, text).catch((e: any) => console.error('[Ficha] resposta do CNPJ:', e?.message));
-        const interestHandled = (msg.type === 'button' && (
+        // Resposta ao feedback do processo concluído (Fabio 14/11): botão Ótima/Boa/Poderia ser melhor → nota + agradecimento com o link do Google; comentário depois → nota + push.
+        const feedbackHandled = await (require('./feedback-concluido.service') as typeof import('./feedback-concluido.service')).maybeHandleFeedbackReply(accountId, leadId, text, msg.type === 'button', io).catch((e: any) => { console.error('[Feedback] resposta do cliente:', e?.message); return false; });
+        const interestHandled = feedbackHandled || (msg.type === 'button' && (
           // "Sim, tenho interesse" ao "Ainda deseja prosseguir com o crédito?" (Fabio 28/10): liga a IA e confere a documentação; sem nada a dizer, a IA responde.
           await (require('./prosseguir.service') as typeof import('./prosseguir.service')).handleProsseguirYes(accountId, leadId, text, io, () => maybeAiAutoReplyCloudApi(accountId, leadId, text, from, io, departmentId)).catch((e: any) => { console.error('[Prosseguir] Sim:', e?.message); return false; }) ||
           await approvalNotice.maybeSendApprovalOnYes(accountId, leadId, text, io).catch((e) => { console.error('[Aprovação] falhou:', e?.message); return false; }) ||
