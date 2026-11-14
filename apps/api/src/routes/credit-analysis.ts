@@ -169,6 +169,11 @@ router.post('/check-now', async (req: AuthRequest, res: Response) => {
   const bank = String(b.bank || '').toUpperCase();
   if (!b.leadId || !EXT_BANK_KEYS.includes(bank)) return res.status(400).json({ error: 'leadId e banco são obrigatórios' }); // Financiamento também (03/11): conferência do Itaú/Inter/Credimorar FH de card em STOP só anda pedida por pessoa
   try {
+    // `semAviso: true` (Fabio 14/11): quando essa conferência terminar, os valores novos ficam como já avisados — o aviso de aprovação não sai sozinho (credit-auto noticeClients).
+    if (b.semAviso === true) {
+      const seg = JSON.stringify({ at: new Date().toISOString(), bank });
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_avisoSegurado}', ${seg}::jsonb, true) WHERE id = ${String(b.leadId)} AND "accountId" = ${req.user!.accountId}`;
+    }
     const out = await expediteCheck(prisma, { accountId: req.user!.accountId, leadId: String(b.leadId), bank, userId: req.user!.id });
     emit(req, { leadId: String(b.leadId) });
     res.json(out);
