@@ -348,6 +348,9 @@ async function cascadeToSecond(accountId: string) {
     const label: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
     const feitos = { ...((cf._autoSozinho || {}) as Record<string, string[]>) };
     for (const t of todo) {
+      // Banco com rodada/conferência ABERTA agora: o createRequests não cria o pedido automático e a cascata ficava marcada como feita sem rodar (Fabio 14/11, Andreia Pimentel:
+      // Itaú "invertido: 0 pedido(s) na fila" e o Jorlan nunca rodou). Espera o banco ficar livre — tenta de novo no próximo minuto.
+      if (await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: t.bank, dryRun: false, status: { in: ['REQUESTED', 'RUNNING'] }, updatedAt: { gt: new Date(Date.now() - 25 * 60_000) } }, select: { id: true } })) continue;
       const data = t.who === 'INV' ? { inverter: true, soTitular: false } : { inverter: t.who === 'P2', soTitular: true };
       await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data, merge: true, userName: t.who === 'INV' ? 'Análise automática (casados: invertido)' : 'Análise automática (cada um sozinho)' });
       const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [t.bank], dryRun: false, force: true });
@@ -393,6 +396,9 @@ async function cascadeFh(accountId: string) {
     const p1 = String(cf.participante_1 || l.name || '').trim(), p2 = String(cf.participante_2 || '').trim();
     const feitos = { ...((cf._autoSozinho || {}) as Record<string, string[]>) };
     for (const t of todo) {
+      // Banco com rodada/conferência ABERTA agora: o createRequests não cria o pedido automático e a cascata ficava marcada como feita sem rodar (Fabio 14/11, Andreia Pimentel:
+      // Itaú "invertido: 0 pedido(s) na fila" e o Jorlan nunca rodou). Espera o banco ficar livre — tenta de novo no próximo minuto.
+      if (await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: t.bank, dryRun: false, status: { in: ['REQUESTED', 'RUNNING'] }, updatedAt: { gt: new Date(Date.now() - 25 * 60_000) } }, select: { id: true } })) continue;
       const data = t.who === 'INV' ? { inverter: true, soTitular: false } : { inverter: t.who === 'P2', soTitular: true };
       await setOverrides(prisma, { accountId, leadId: l.id, banks: [t.bank], data, merge: true, userName: t.who === 'INV' ? 'Análise automática (casados: invertido)' : 'Análise automática (cada um sozinho)' });
       const out = await createRequests(prisma, { accountId, leadIds: [l.id], banks: [t.bank], dryRun: false, force: true });
