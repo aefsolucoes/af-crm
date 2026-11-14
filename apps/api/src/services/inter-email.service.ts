@@ -53,7 +53,11 @@ export function engajamentoDizApartamento(text: string | null | undefined): bool
 
 /** Vistoria terminou e o imóvel foi aceito: "CRÉDITO E IMÓVEL APROVADOS!" (André, 30/10, Pedro Francisco), "laudo concluído", "vistoria concluída". "Imóvel não foi aprovado" não casa. Pura (testável). */
 export function vistoriaConcluida(text: string | null | undefined): boolean {
-  return /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|laudo\s+(foi\s+)?(conclu[ií]do|aprovado|finalizado)|vistoria\s+(foi\s+)?(conclu[ií]da|aprovada|finalizada)|avalia[cç][aã]o\s+do\s+im[oó]vel\s+(foi\s+)?(conclu[ií]da|aprovada)/i.test(String(text || ''));
+  const t = String(text || '');
+  // Resposta do LAUDO = o card vai pra Análise Jurídica (Fabio 14/11: "deve ir para Análise Jurídica quando vier a resposta do laudo"). Laudo que REPROVA o imóvel não conta
+  // (antes "laudo concluído — imóvel reprovado" também movia); "tentei solicitar o laudo, mas há pendências" não casa (é pendência).
+  if (/im[oó]ve(l|is)\s+(foi\s+|foram\s+)?(reprovad|n[aã]o\s+(foi\s+)?aprovad)|reprova[cç][aã]o\s+do\s+im[oó]vel|laudo\s+(foi\s+)?(reprovad|negad|desfavor[aá]vel)/i.test(t)) return false;
+  return /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|laudo(\s+de\s+avalia[cç][aã]o)?\s+(foi\s+|est[aá]\s+|j[aá]\s+)?(conclu[ií]do|aprovado|finalizado|emitido|pronto|dispon[ií]vel)|vistoria\s+(foi\s+)?(conclu[ií]da|aprovada|finalizada)|avalia[cç][aã]o\s+do\s+im[oó]vel\s+(foi\s+)?(conclu[ií]da|aprovada)/i.test(t);
 }
 
 /** Tipo do e-mail, pelo assunto e pelo começo do texto NOVO (sem a conversa citada). Pura (testável). */
