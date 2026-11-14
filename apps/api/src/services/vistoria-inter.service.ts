@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { cleanSubject } from './inter-email.service';
+import { cleanSubject, interEmailTexto } from './inter-email.service';
 
 /**
  * Botão "Solicitar vistoria" do card (Fabio 19/10). A vistoria do Inter segue pelo e-mail: depois do "[Inter] Engajamento Automático" o consultor designado responde e pede/agenda
@@ -55,15 +55,20 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   // e-mails do Inter já ligados a este card (o vigia liga pelo nº da proposta/nome)
   const emails = await prisma.emailMessage.findMany({
     where: { leadId, folder: 'INBOX', OR: [{ fromAddress: { endsWith: 'inter.co', mode: 'insensitive' } }, { fromAddress: { endsWith: 'bancointer.com.br', mode: 'insensitive' } }] },
-    orderBy: { date: 'desc' }, take: 12, select: { id: true, fromAddress: true, fromName: true, subject: true, textBody: true, date: true },
+    orderBy: { date: 'desc' }, take: 12, select: { id: true, fromAddress: true, fromName: true, subject: true, textBody: true, htmlBody: true, date: true },
   });
+  // Texto do e-mail: o "[Inter] Engajamento Automático - Correspondente Bancário" vem com o texto puro sem preencher ("%%nome do closer%%") e o consultor/e-mail só no HTML
+  // (Nalia 14/11: o "Para" do pedido de vistoria saía vazio) — interEmailTexto usa o HTML nesse caso, como o vigia que liga o e-mail ao card.
+  const texto = (e: { textBody: string | null; htmlBody: string | null }) => interEmailTexto(e.textBody, e.htmlBody);
   // o engajamento pode vir no assunto ou só citado no texto de quem respondeu (ex.: assunto "Home Equity - PEDRO" com "[Inter] Engajamento Automático" embaixo)
-  const engaj = emails.find((e) => /engajamento/i.test(e.subject || '') || /Engajamento Autom[aá]tico|PR[OÓ]XIMO PASSO:\s*VISTORIA/i.test(e.textBody || ''));
+  const engaj = emails.find((e) => /engajamento/i.test(e.subject || '') || /Engajamento Autom[aá]tico|PR[OÓ]XIMO PASSO:\s*VISTORIA/i.test(texto(e)));
   const pessoa = emails.find((e) => e.fromAddress && INTER_FROM.test(e.fromAddress) && !NO_REPLY.test(e.fromAddress));
-  // consultor: quem já respondeu na conversa; senão o e-mail citado no corpo do engajamento ("entre em contato através do email …")
-  const doCorpo = engaj?.textBody ? (/[\w.+-]+@inter\.co/i.exec(engaj.textBody) || [])[0]?.toLowerCase() : undefined;
+  // consultor: quem já respondeu na conversa; senão o e-mail/nome citados no corpo do engajamento ("ANDRE … será o(a) consultor(a) … entre em contato através do email …")
+  const corpoEngaj = engaj ? texto(engaj) : '';
+  const doCorpo = (/[\w.+-]+@inter\.co\b/i.exec(corpoEngaj) || [])[0]?.toLowerCase();
+  const nomeDoCorpo = (/([A-ZÀ-Ú][A-Za-zÀ-ú]+(?: [A-Za-zÀ-ú]+){0,6}) ser[aá] o\(a\) consultor/.exec(corpoEngaj) || [])[1];
   const to = pessoa?.fromAddress?.toLowerCase() || doCorpo || '';
-  const consultor = pessoa?.fromName ? firstName(pessoa.fromName) : null;
+  const consultor = pessoa?.fromName ? firstName(pessoa.fromName) : (doCorpo && nomeDoCorpo ? firstName(nomeDoCorpo) : null);
   const pai = pessoa || engaj || emails[0] || null;
 
   const cert = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, orderBy: { finishedAt: 'desc' }, select: { id: true, matricula: true, pdfName: true } });
