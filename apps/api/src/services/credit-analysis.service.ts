@@ -950,7 +950,7 @@ function pedidoDoCard(cf: Record<string, any>): number {
 const chaveParticipante = (cf: Record<string, any>, holderName?: string | null, holderCpf?: string | null) =>
   `p${whichParticipant({ name1: cf.participante_1 || null, name2: cf.participante_2 || null, cpf1: cf.cpf_1 || null, cpf2: cf.cpf_2 || null }, holderName, holderCpf)}`;
 
-async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null; options?: OpcaoCreditas[] } & ResultFields) {
+async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean; source?: string | null }, data: { status?: string; detail?: string | null; holderName?: string | null; options?: OpcaoCreditas[] } & ResultFields) {
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "A proposta foi negada — Cliente com proposta em andamento na Creditas" é o MESMO caso do "CPF já possui proposta ativa" (não é reprovação de crédito): vira falha por regra (Desqualificado).
   if (row.bank === 'CREDITAS' && /Cliente com proposta em andamento na Creditas/i.test(String(data.detail || '')) && !/CPF j[aá] possui uma proposta ativa/i.test(String(data.detail || ''))) {
@@ -992,7 +992,9 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   if (row.bank === 'CREDITAS' && (next === 'CHECK' || next === 'FAILED') && /CPF j[aá] possui uma proposta ativa na Creditas/i.test(String(data.detail || ''))) next = 'FAILED';
   // Aprovação MUITO acima do que o cliente pediu (mais de 1,5×; Fabio 15/10, Gabriela: pediu R$ 50 mil e a conferência do Creditas trouxe R$ 1,6 milhão em 161 meses — era OUTRA proposta ativa do
   // mesmo CPF no portal): não vale pra este card. No Creditas vira "CPF com proposta ativa" (Desqualificado); nos outros, volta pra conferir à mão.
-  if (!row.dryRun && (next === 'APPROVED' || next === 'CONDITIONAL')) {
+  // Proposta escolhida pela EQUIPE na busca do portal (source PORTAL — Fabio 14/11, Rosana: pediu R$ 50 mil, o Inter aprovou R$ 110 mil e o "Escolher" dava "só dá pra escolher uma proposta
+  // aprovada"): quem escolheu conferiu no portal — a trava de "outra proposta do mesmo CPF" não vale.
+  if (!row.dryRun && row.source !== 'PORTAL' && (next === 'APPROVED' || next === 'CONDITIONAL')) {
     const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
     const cfv = (lead?.customFields || {}) as Record<string, any>;
     const toN = (v: any) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/\.\d{3}$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t)); return Number.isFinite(n) ? n : 0; };

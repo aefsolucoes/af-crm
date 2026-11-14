@@ -101,5 +101,7 @@ export async function escolherDoPortal(accountId: string, leadId: string, bank: 
     row = { id: r.id };
   }
   await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: user.nome });
+  // Cliques de antes da correção (Fabio 14/11, Rosana) deixaram linhas "RESULTADO DESCARTADO" da busca do portal: saem, a escolha valeu.
+  await prisma.creditAnalysis.deleteMany({ where: { leadId, bank, source: 'PORTAL', status: 'CHECK', proposalNumber: null, detail: { startsWith: 'RESULTADO DESCARTADO' } } }).catch(() => {});
   return { ok: true, analysisId: row.id };
 }
