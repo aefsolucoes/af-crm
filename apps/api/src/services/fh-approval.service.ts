@@ -401,7 +401,12 @@ export async function negativaFhPelaEquipe(p: { accountId: string; leadId: strin
   const { sendRejectionNoticeNow, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const x = await propostasFh(p.accountId, p.leadId);
   if (!x || x.lead.status !== 'OPEN') return { ok: false, error: 'Card não encontrado ou já fechado.' };
-  const ativos = await prisma.creditAnalysis.count({ where: { leadId: p.leadId, dryRun: false, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, status: { in: ['REQUESTED', 'RUNNING', 'SENT'] } } });
+  // Vale a linha MAIS NOVA de cada banco (como em processFhRejections): a rodada que ficou "enviada" depois que a conferência já leu o resultado não segura a negativa
+  // (Fabio 14/11, Adriana: o Itaú de 03/11 seguia SENT com a conferência das 13h52 já "Recusada").
+  const linhas = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] } }, orderBy: { createdAt: 'desc' }, select: { bank: true, status: true } });
+  const maisNova = new Map<string, string>();
+  for (const r of linhas) if (!maisNova.has(r.bank)) maisNova.set(r.bank, r.status);
+  const ativos = linhas.some((r) => ['REQUESTED', 'RUNNING'].includes(r.status)) || [...maisNova.values()].some((st) => st === 'SENT');
   if (ativos) return { ok: false, error: 'Ainda tem banco rodando ou em análise: espere a resposta.' };
   const bancos = Object.entries(x.resumo).filter(([b, s]) => !/^(CAIXA|BRB)$/.test(b) && !/n[aã]o enviad/i.test(s.status));
   if (!bancos.length || !bancos.every(([, s]) => /reprov|rejeit|recus|negad|n[aã]o aprovad/i.test(s.status))) return { ok: false, error: 'Ainda há banco aprovado ou sem resposta final: não dá pra mandar a negativa.' };
