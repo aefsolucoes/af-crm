@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button';
 import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
-import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell, jaSeguiuAprovado, PropostasRodadas, propostasRodadas } from '@/components/credit/shared';
+import { BANKS, STATUS, MANUAL_STATUS, ago, Badge, overrideSummary, type Bank, type Analysis, type BoardLead, fmtCpf, sameWho, ParticipantCell, jaSeguiuAprovado, PropostasRodadas, propostasRodadas, OpcoesCreditas } from '@/components/credit/shared';
 import { AdjustModal } from '@/components/credit/adjust-modal';
 import { EscritorioBancos } from '@/components/credit/escritorio-bancos';
 import { ProdutoSwitch } from '@/components/credit/produto-switch';
@@ -568,6 +568,7 @@ export default function AnaliseCreditoPage() {
                                               {a.proposalNumber ? <><dt className="text-slate-400">Proposta nº</dt><dd>{a.proposalNumber}</dd></> : null}
                                             </dl>
                                           )}
+                                          <OpcoesCreditas a={a} />
                                           {a.bank === 'INTER' && a.status === 'SENT' && !a.proposalNumber && a.source !== 'MANUAL' && <p className="text-amber-600">⚠️ Marcada como enviada, mas sem número de proposta: no portal pode ser só um rascunho. Confira no portal do Inter; se for erro, use "Rodar de novo".</p>}
                                           {a.status === 'APPROVED' && !a.approvedValue && <p className="text-amber-600">Aprovada, mas sem os números — clique em "Resultado" e preencha.</p>}
                                           {a.status === 'CONDITIONAL' && <p className="text-teal-700">Aprovada com condição: o banco pede documentação para seguir.</p>}

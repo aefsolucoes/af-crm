@@ -494,13 +494,13 @@ async function noticeClients(accountId: string, io: any) {
     // Sem nenhum valor (só Inter condicional): a assinatura é o próprio "condicional" — quando o Inter liberar os números a assinatura muda e sai o aviso atualizado.
     const sig = sigValores || (preview.condSozinho ? `INTER:CONDICIONAL:${nomeCurto(rows.find((a) => a.bank === 'INTER' && a.status === 'CONDITIONAL')?.holderName ?? null)}` : '');
     const sigAntiga = rows.filter((a) => ['APPROVED', 'CONDITIONAL'].includes(a.status) && a.approvedValue).map((a) => `${a.bank}:${a.approvedValue}:${a.holderName || ''}`).sort().join('|'); // formato antigo: não reenvia pra quem já tinha aviso gravado
-    // Conferência pedida "SEM AVISO" (Fabio 14/11, Robson/Cibele/Marcos: a extensão da Creditas lia a opção errada e a reconferência corrige os valores, mas o cliente
+    // Conferência pedida "SEM AVISO" ou opção da Creditas trocada pela equipe (Fabio 14/11, Robson/Cibele/Marcos: a extensão da Creditas lia a opção errada e a reconferência corrige os valores, mas o cliente
     // não deve receber o aviso de novo sozinho): quando ESSA conferência termina, os valores novos ficam como já avisados — nem agora nem ao ligar a IA depois sai aviso.
     // A equipe manda pelo botão "Avisar cliente" se quiser. Uso único: some quando a conferência termina, ou em 24 h.
     const seg = cf._avisoSegurado as { at?: string; bank?: string } | undefined;
     if (seg?.at) {
       const desde = new Date(seg.at).getTime();
-      const conferiu = rows.some((a) => a.kind === 'CHECK' && (!seg.bank || a.bank === seg.bank) && !['REQUESTED', 'RUNNING'].includes(a.status) && a.updatedAt.getTime() > desde);
+      const conferiu = rows.some((a) => (!seg.bank || a.bank === seg.bank) && !['REQUESTED', 'RUNNING'].includes(a.status) && a.updatedAt.getTime() > desde); // conferência terminada ou opção trocada pela equipe
       if (conferiu || !(Date.now() - desde < 24 * 3_600_000)) {
         const pegou = await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_avisoSegurado' WHERE id = ${l.id} AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_avisoSegurado')`;
         if (pegou && conferiu && cf._autoNoticeSig !== sig && cf._autoNoticeSig !== sigAntiga) {

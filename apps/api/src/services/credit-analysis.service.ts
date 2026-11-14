@@ -1,6 +1,7 @@
 import type { PrismaClient, Prisma } from '@prisma/client';
 import { whyNotRun } from './credit-not-run';
 import { sexoPeloNome } from './sexo-pelo-nome';
+import { limparOpcoes, escolherOpcaoCreditas, menorValorDasOpcoes, numerosDaOpcao, detalheComOpcao, rotuloOpcao, type OpcaoCreditas } from './creditas-opcoes.service';
 
 /**
  * Aba "Análise de Crédito" (Fabio 14/10). As extensões do Chrome dele (Inter,
@@ -940,7 +941,16 @@ async function propostaCreditasNossa(db: Db, rowId: string, leadId: string, hold
   return cands.find((c) => (c.status === 'SENT' || /enviad|pr[eé]-qualifica/i.test(c.detail || '')) && mesmoTitular(ref, c)) || null;
 }
 
-async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null } & ResultFields) {
+/** Valor PEDIDO do card (o que o cliente quer receber): o da última rodada, senão o crédito do card. Aceita "50.000,00", "50000" e número. */
+function pedidoDoCard(cf: Record<string, any>): number {
+  const toN = (v: any) => { const t = String(v ?? '').replace(/[^\d.,]/g, ''); const n = t.includes(',') ? Number(t.replace(/\./g, '').replace(',', '.')) : (/\.\d{3}$/.test(t) ? Number(t.replace(/\./g, '')) : Number(t)); return Number.isFinite(n) && n > 0 ? n : 0; };
+  return toN(cf._lastRunValue) || toN(cf.valor_credito);
+}
+/** Chave do participante da análise no `_creditasOpcao` do card ("p1"/"p2"): a opção que a equipe escolheu vale por participante. */
+const chaveParticipante = (cf: Record<string, any>, holderName?: string | null, holderCpf?: string | null) =>
+  `p${whichParticipant({ name1: cf.participante_1 || null, name2: cf.participante_2 || null, cpf1: cf.cpf_1 || null, cpf2: cf.cpf_2 || null }, holderName, holderCpf)}`;
+
+async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId: string; bank: string; status: string; dryRun: boolean }, data: { status?: string; detail?: string | null; holderName?: string | null; options?: OpcaoCreditas[] } & ResultFields) {
   let next = data.status && ALL_STATUS.has(data.status) ? data.status : row.status;
   // Creditas: "A proposta foi negada — Cliente com proposta em andamento na Creditas" é o MESMO caso do "CPF já possui proposta ativa" (não é reprovação de crédito): vira falha por regra (Desqualificado).
   if (row.bank === 'CREDITAS' && /Cliente com proposta em andamento na Creditas/i.test(String(data.detail || '')) && !/CPF j[aá] possui uma proposta ativa/i.test(String(data.detail || ''))) {
@@ -989,13 +999,16 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const pedido = toN(cfv._lastRunValue) || toN(cfv.valor_credito);
     // Compara o que o cliente RECEBE (líquido do Creditas, já sem IOF/tarifa/custas) com o pedido; o valor bruto do Creditas vem MAIOR por causa dessas custas (+8% a +22% nos casos reais), então
     // sem o líquido a margem é maior (1,8×) pra não barrar aprovação legítima. Caso do erro (Gabriela): 30× o pedido.
-    const aprovado = Number(data.netValue) || Number(data.approvedValue) || 0;
+    // Com a lista de opções da Creditas (Fabio 14/11): vale a MENOR opção da lista — se nem ela chega perto do pedido, a proposta não é deste card. Antes comparava só a opção
+    // lida e descartava aprovação de verdade (Marili/Michele pediram R$ 50 mil, a opção lida era de R$ 111 mil e a de R$ 50 mil estava na lista).
+    const opsTrava = data.options?.length ? limparOpcoes(data.options) : [];
+    const aprovado = (opsTrava.length ? menorValorDasOpcoes(opsTrava) : null) || Number(data.netValue) || Number(data.approvedValue) || 0;
     const fator = row.bank === 'CREDITAS' && !Number(data.netValue) ? 1.8 : 1.5;
     if (pedido > 0 && aprovado > pedido * fator) {
       const lido = `${brl(Number(data.netValue) || Number(data.approvedValue))}${data.termMonths ? ` em ${data.termMonths} meses` : ''}`;
       next = row.bank === 'CREDITAS' ? 'FAILED' : 'CHECK';
       data = {
-        ...data, status: next, proposalNumber: null, approvedValue: null, netValue: null, termMonths: null, rate: null, indexer: null, firstInstallment: null, lastInstallment: null, conditions: null,
+        ...data, status: next, proposalNumber: null, approvedValue: null, netValue: null, termMonths: null, rate: null, indexer: null, firstInstallment: null, lastInstallment: null, conditions: null, ...(data.options ? { options: [] } : {}),
         detail: row.bank === 'CREDITAS'
           ? `CPF já possui uma proposta ativa na Creditas — a conferência trouxe ${lido}, que não é o pedido deste card (${brl(pedido)}). Resultado descartado; confira no portal.`
           : `RESULTADO DESCARTADO: o portal devolveu ${lido}, muito acima do pedido deste card (${brl(pedido)}) — provavelmente outra proposta do mesmo CPF. Confira no portal.`,
@@ -1023,6 +1036,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
       ...(resetStart ? { startedAt: new Date() } : {}),
       ...(novoSteps ? { steps: novoSteps as any } : {}),
       ...(data.holderName ? { holderName: data.holderName } : {}),
+      ...(data.options ? { options: data.options as any } : {}),
       ...(becameFinal ? { finishedAt: new Date() } : {}),
     },
   });
@@ -1257,7 +1271,23 @@ export async function reportAnalysis(db: Db, p: { accountId: string; requestId?:
   const holderName = parseHolder(detail) || row.holderName || (FINAL.has(status) ? await resolveHolder(db, p.leadId, p.bank, null) : null);
   const vindo = pickResult(p.result || {});
   for (const k of Object.keys(numbers) as (keyof ResultFields)[]) if (vindo[k] == null) delete vindo[k];
-  const { row: updated } = await applyUpdate(db, row, { status, detail: detail ?? null, holderName, ...numbers, ...vindo });
+  // Creditas (Fabio 14/11): a extensão manda TODAS as opções aprovadas do portal; quem ESCOLHE é o CRM, pelo pedido do card (creditas-opcoes.service.ts):
+  // pós-fixada → prazo solicitado → cobre o pedido = menor parcela / não cobre = maior valor; parcela igual (< 1%) → maior valor. A troca da equipe ("Seguir com esta") vale primeiro.
+  let detalheFinal = detail;
+  let opcoes: OpcaoCreditas[] | undefined;
+  if (p.bank === 'CREDITAS' && (status === 'APPROVED' || status === 'CONDITIONAL')) {
+    const ops = limparOpcoes(p.result?.options);
+    if (ops.length) {
+      const cf = (lead.customFields || {}) as Record<string, any>;
+      const esc = escolherOpcaoCreditas(ops, pedidoDoCard(cf) || row.requestedValue || null, (cf._creditasOpcao || {})[chaveParticipante(cf, holderName, vindo.holderCpf || row.holderCpf)] || null);
+      if (esc) {
+        opcoes = ops.map((o, j) => ({ ...o, escolhida: j === esc.i }));
+        Object.assign(vindo, numerosDaOpcao(ops[esc.i]));
+        detalheFinal = detalheComOpcao(detail, ops[esc.i], esc.criterio, ops.length);
+      }
+    }
+  }
+  const { row: updated } = await applyUpdate(db, row, { status, detail: detalheFinal ?? null, holderName, ...numbers, ...vindo, ...(opcoes ? { options: opcoes } : {}) });
   if (p.bank === FH_BANK && !updated.dryRun) await notaFinanciamento(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento] nota:', e?.message));
   if (p.bank === FH_INTER_BANK && !updated.dryRun) await notaFinanciamentoBanco(db, p.accountId, updated, 'Inter').catch((e: any) => console.error('[Financiamento Inter] nota:', e?.message));
   if (p.bank === FH_ITAU_BANK && !updated.dryRun) await notaFinanciamentoBanco(db, p.accountId, updated, 'Itaú').catch((e: any) => console.error('[Financiamento Itaú] nota:', e?.message));
@@ -1529,6 +1559,32 @@ export async function registerManual(db: Db, p: { accountId: string; userId?: st
 }
 
 /** Escolhe a proposta do cliente (manual): marca como escolhida e preenche a aba Financiamento do card. */
+/**
+ * "Seguir com esta" numa opção da Creditas (Fabio 14/11): a equipe troca a opção que o CRM escolheu por outra da lista do portal (ex.: o cliente quer taxa menor ou mais valor).
+ * Grava os números da opção na análise, guarda a escolha no card (`_creditasOpcao`, por participante — vale nas próximas conferências) e NÃO avisa o cliente sozinho
+ * (`_avisoSegurado`: os valores novos ficam como já avisados; a equipe manda pelo "Avisar cliente").
+ */
+export async function trocarOpcaoCreditas(db: Db, p: { accountId: string; id: string; i: number; userName?: string }) {
+  const row = await db.creditAnalysis.findFirst({ where: { id: p.id, accountId: p.accountId, bank: 'CREDITAS', status: { in: ['APPROVED', 'CONDITIONAL'] } } });
+  if (!row) throw new Error('análise da Creditas aprovada não encontrada');
+  const ops = limparOpcoes(row.options);
+  const o = ops[p.i];
+  if (!o) throw new Error('opção não encontrada');
+  const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const chave = chaveParticipante(cf, row.holderName, row.holderCpf);
+  const pref = JSON.stringify({ n: o.n, prazo: o.prazo, at: new Date().toISOString(), por: p.userName || null });
+  const seg = JSON.stringify({ at: new Date().toISOString(), bank: 'CREDITAS' });
+  await db.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_creditasOpcao}', COALESCE("customFields"->'_creditasOpcao', '{}'::jsonb) || jsonb_build_object(${chave}::text, ${pref}::jsonb), true), '{_avisoSegurado}', ${seg}::jsonb, true) WHERE id = ${row.leadId}`;
+  const criterio = `trocada pela equipe${p.userName ? ` (${p.userName})` : ''} — "Seguir com esta"`;
+  const updated = await db.creditAnalysis.update({
+    where: { id: row.id },
+    data: { ...numerosDaOpcao(o), detail: detalheComOpcao(row.detail, o, criterio, ops.length).slice(0, 4000), options: ops.map((x, j) => ({ ...x, escolhida: j === p.i })) as any },
+  });
+  await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: `🔀 Creditas${row.holderName ? ` (${row.holderName})` : ''}: opção trocada${p.userName ? ` por ${p.userName}` : ''} para ${rotuloOpcao(o)} — ${o.texto}. Vale nas próximas conferências. O aviso ao cliente NÃO sai sozinho: use "Avisar cliente" se quiser mandar.` } }).catch(() => {});
+  return updated;
+}
+
 export async function chooseAnalysis(db: Db, p: { accountId: string; id: string; userName?: string }) {
   const row = await db.creditAnalysis.findFirst({ where: { id: p.id, accountId: p.accountId } });
   if (!row) throw new Error('análise não encontrada');

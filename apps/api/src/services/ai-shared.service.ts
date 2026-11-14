@@ -336,7 +336,7 @@ export async function aiCreditContext(leadId: string): Promise<string> {
   const rows = await prisma.creditAnalysis.findMany({
     where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },
     orderBy: { createdAt: 'desc' },
-    select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true, createdAt: true, approvedValue: true },
+    select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true, createdAt: true, approvedValue: true, options: true, holderName: true },
   });
   if (!rows.length) return '';
   const { bankVerdict, semRuidoDeSimulacao } = require('./credit-auto.service') as typeof import('./credit-auto.service');
@@ -359,6 +359,21 @@ export async function aiCreditContext(leadId: string): Promise<string> {
     else txt = 'ainda sem resultado (a última tentativa não terminou ou falhou — não diga que está em análise neste banco)';
     return `- ${nomes[b]}: ${txt}`;
   });
+  // Opções da Creditas (Fabio 14/11): o portal aprova várias (taxa, valor, parcela, prazo); o CRM escolheu uma pelo pedido. A IA sabe das outras pra quando o cliente pedir outra condição —
+  // mas NÃO passa valores (aprovação só pelo aviso padrão): aciona a equipe, que troca com "Seguir com esta" e manda o aviso.
+  {
+    const { limparOpcoes, opcoesParaIa } = require('./creditas-opcoes.service') as typeof import('./creditas-opcoes.service');
+    const vistos = new Set<string>();
+    for (const r of rows) {
+      if (r.bank !== 'CREDITAS' || !['APPROVED', 'CONDITIONAL'].includes(r.status)) continue;
+      const quem = String(r.holderName || '').toLowerCase();
+      if (vistos.has(quem)) continue;
+      vistos.add(quem);
+      const ops = limparOpcoes(r.options);
+      if (ops.length < 2) continue;
+      linhas.push(`- Opções que a Creditas aprovou${r.holderName ? ` (${r.holderName})` : ''}: ${opcoesParaIa(ops)}. REGRA: NÃO escreva esses valores ao cliente (aprovação só pelo aviso padrão). Se ele pedir outra condição (taxa menor, mais valor, parcela menor) e uma dessas opções atende, diga que vai verificar com a equipe e use askTeam dizendo qual opção atende; a equipe troca e manda o aviso. Pra isso NÃO marque "simulate" na Creditas (o portal não aceita outra proposta do mesmo CPF).`);
+    }
+  }
   const [aprovSent, rejSent] = await Promise.all([
     prisma.message.count({ where: { leadId, direction: 'OUTBOUND', content: { contains: 'Resumo da proposta' }, createdAt: { gte: new Date(Date.now() - 21 * 86_400_000) } } }),
     (require('./approval-notice.service') as typeof import('./approval-notice.service')).rejectionAlreadyInChat(leadId).catch(() => null),

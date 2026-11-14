@@ -1419,6 +1419,8 @@ model CreditAnalysis {
   firstInstallment Float?
   lastInstallment  Float?
   conditions       String?   @db.Text
+  /// Creditas (Fabio 14/11): TODAS as opções aprovadas que o portal mostrou ([{n, selos, credito, liquido, parcela, prazo, taxa, pos, texto, escolhida}]) — o CRM escolhe pelo pedido (creditas-opcoes.service.ts) e a equipe pode trocar.
+  options          Json?
   dryRun           Boolean   @default(false)
   source           String    @default("EXTENSION")
   notBefore        DateTime? // conferência repetida: só entra na fila depois disso

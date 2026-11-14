@@ -1,5 +1,7 @@
-import { Star } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
+import { useState } from 'react';
+import { Star, Check } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { formatCurrency } from '@/lib/utils';
 
@@ -32,6 +34,8 @@ export interface Analysis {
   cadDiv?: boolean;
   holderName?: string | null; requestedValue?: number | null; proposalNumber: string | null; approvedValue: number | null; netValue?: number | null; termMonths: number | null; rate: string | null; indexer: string | null;
   firstInstallment: number | null; lastInstallment: number | null; conditions: string | null;
+  /** Creditas: todas as opções aprovadas que o portal mostrou; `escolhida` = a que vale (o CRM escolhe pelo pedido; a equipe troca com "Seguir com esta"). */
+  options?: OpcaoCreditas[] | null;
   requestedAt: string; finishedAt: string | null; updatedAt: string; createdAt: string;
 }
 export interface OverrideData {
@@ -257,5 +261,49 @@ export function PropostasRodadas({ lista }: { lista: { numero: string; status: s
         <span key={p.numero}>{i > 0 ? ' · ' : ''}<span className="font-medium text-slate-600">nº {p.numero}</span> <span className="text-slate-400">({(STATUS[p.status]?.label || p.status).toLowerCase()})</span></span>
       ))}
     </p>
+  );
+}
+
+/** Uma opção da aprovação da Creditas (Fabio 14/11). Ver apps/api/src/services/creditas-opcoes.service.ts. */
+export interface OpcaoCreditas {
+  n: number | null; selos: string[]; credito: number | null; liquido: number | null; parcela: number | null; prazo: number | null;
+  taxa: string | null; indexer: string | null; pos: boolean; texto: string; escolhida?: boolean;
+}
+
+/** Lista das opções que a Creditas aprovou no portal, com a escolhida marcada e "Seguir com esta" nas outras. Some quando há só uma opção. */
+export function OpcoesCreditas({ a }: { a: Analysis }) {
+  const qc = useQueryClient();
+  const [trocando, setTrocando] = useState<number | null>(null);
+  const ops = Array.isArray(a.options) ? a.options : [];
+  if (a.bank !== 'CREDITAS' || !['APPROVED', 'CONDITIONAL'].includes(a.status) || ops.length < 2) return null;
+  const rotulo = (o: OpcaoCreditas) => `${o.n ? `P${o.n}` : 'Opção'}${o.selos.filter((s) => !/fixad/i.test(s)).length ? ` · ${o.selos.filter((s) => !/fixad/i.test(s)).join(' + ')}` : ''}`;
+  async function seguir(i: number) {
+    const o = ops[i];
+    if (!window.confirm(`Seguir com ${rotulo(o)}?\n\nLíquido ${o.liquido ? formatCurrency(o.liquido) : '—'} · ${o.prazo || '—'} meses · 1ª parcela ${o.parcela ? formatCurrency(o.parcela) : '—'} · ${o.taxa || ''}\n\nVale nas próximas conferências. O aviso ao cliente NÃO sai sozinho (use "Avisar cliente").`)) return;
+    setTrocando(i);
+    try {
+      await api.post(`/api/credit-analysis/${a.id}/opcao`, { i });
+      toast('Opção trocada', 'success');
+      qc.invalidateQueries({ queryKey: ['credit-board'] });
+      qc.invalidateQueries({ queryKey: ['credit-lead'] });
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao trocar a opção', 'error');
+    } finally { setTrocando(null); }
+  }
+  return (
+    <div className="rounded-md border border-af-border bg-slate-50/60 px-2 py-1.5 space-y-1">
+      <div className="text-[11px] font-medium text-slate-600">Opções aprovadas no portal ({ops.length})</div>
+      {ops.map((o, i) => (
+        <div key={i} className={`flex items-start justify-between gap-2 text-[11px] ${o.escolhida ? 'text-emerald-800' : 'text-slate-600'}`}>
+          <div>
+            <span className="font-medium">{rotulo(o)}</span> <span className="text-slate-400">({o.pos ? 'pós-fixada' : 'pré-fixada'})</span>
+            <div>{[o.liquido ? `líquido ${formatCurrency(o.liquido)}` : '', o.prazo ? `${o.prazo} meses` : '', o.parcela ? `parcela ${formatCurrency(o.parcela)}` : '', o.taxa || ''].filter(Boolean).join(' · ')}</div>
+          </div>
+          {o.escolhida
+            ? <span className="flex items-center gap-1 shrink-0 text-emerald-700"><Check size={11} /> Escolhida</span>
+            : <button onClick={() => seguir(i)} disabled={trocando !== null} className="shrink-0 px-2 py-0.5 rounded border border-af-border bg-white text-slate-600 hover:bg-slate-50 disabled:opacity-50">{trocando === i ? 'Trocando…' : 'Seguir com esta'}</button>}
+        </div>
+      ))}
+    </div>
   );
 }

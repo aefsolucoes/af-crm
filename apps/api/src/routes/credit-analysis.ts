@@ -11,7 +11,7 @@ import { pedirBuscaPortal, claimBuscas, resultadoBusca, escolherDoPortal } from 
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
-  registerManual, chooseAnalysis, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
+  registerManual, chooseAnalysis, trocarOpcaoCreditas, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
 } from '../services/credit-analysis.service';
 
 /** Aba "Análise de Crédito" — ver credit-analysis.service.ts. As extensões do Chrome entram com o login normal do CRM. */
@@ -467,6 +467,18 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
     emit(req, { leadId: row.leadId });
     res.json(row);
   } catch (err) { fail(res, err, 'Erro ao salvar', 400); }
+});
+
+// "Seguir com esta" numa opção da Creditas (Fabio 14/11): troca a opção escolhida pela da posição `i` da lista do portal; não avisa o cliente sozinho.
+router.post('/:id/opcao', async (req: AuthRequest, res: Response) => {
+  const i = Number((req.body || {}).i);
+  if (!Number.isInteger(i) || i < 0) return res.status(400).json({ error: 'opção inválida' });
+  try {
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const row = await trocarOpcaoCreditas(prisma, { accountId: req.user!.accountId, id: req.params.id, i, userName });
+    emit(req, { leadId: row.leadId });
+    res.json(row);
+  } catch (err) { fail(res, err, 'Erro ao trocar a opção', 400); }
 });
 
 router.post('/:id/choose', async (req: AuthRequest, res: Response) => {
