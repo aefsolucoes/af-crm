@@ -8,7 +8,7 @@ import api from '@/lib/api';
 import { CommissionProvisions } from '@/components/finance/commission-provisions';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import { Transaction, TransactionType, CommissionSuggestion } from '@/types';
-import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check, Repeat } from 'lucide-react';
+import { Plus, TrendingUp, TrendingDown, Wallet, Trash2, X, PiggyBank, Pencil, Percent, Check, Repeat, ChevronLeft, ChevronRight } from 'lucide-react';
 
 interface FinanceResponse {
   transactions: Transaction[];
@@ -113,17 +113,28 @@ function CommissionSuggestionRow({ s, onResolved }: { s: CommissionSuggestion; o
   );
 }
 
-function defaultFrom() {
-  const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+// Período = um MÊS inteiro (Fabio 14/11: "deixa apenas para selecionar o mês"). mes = 'AAAA-MM'.
+const MESES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+const pad2 = (n: number) => String(n).padStart(2, '0');
+function mesAtual() {
+  const d = new Date(); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
-function defaultTo() {
-  const d = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 0);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function somaMes(mes: string, delta: number) {
+  const [a, m] = mes.split('-').map(Number);
+  const d = new Date(a, m - 1 + delta, 1);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
+function limitesDoMes(mes: string) {
+  const [a, m] = mes.split('-').map(Number);
+  return { from: `${mes}-01`, to: `${mes}-${pad2(new Date(a, m, 0).getDate())}` };
+}
+const nomeDoMes = (mes: string) => { const [a, m] = mes.split('-').map(Number); return `${MESES[m - 1]} ${a}`; };
 
 export default function FinanceiroPage() {
-  const [from, setFrom] = useState(defaultFrom());
-  const [to, setTo] = useState(defaultTo());
+  const [mes, setMes] = useState(mesAtual);
+  const { from, to } = limitesDoMes(mes);
+  // Lista do seletor: 24 meses pra trás e 12 pra frente (provisões e lançamentos recorrentes do futuro).
+  const opcoesMes = Array.from({ length: 37 }, (_, i) => somaMes(mesAtual(), 12 - i));
   const [showAdd, setShowAdd] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formType, setFormType] = useState<TransactionType>('INCOME');
@@ -259,9 +270,11 @@ export default function FinanceiroPage() {
 
       <div className="flex items-center justify-between px-6 py-3 app-topbar-surface border-b gap-4">
         <div className="flex items-center gap-2">
-          <input type="date" value={from} onChange={e => setFrom(e.target.value)} className="text-xs px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent" />
-          <span className="text-xs app-topbar-text-muted">até</span>
-          <input type="date" value={to} onChange={e => setTo(e.target.value)} className="text-xs px-2 py-1.5 border border-af-border rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent" />
+          <button onClick={() => setMes((m) => somaMes(m, -1))} title="Mês anterior" className="p-1.5 border border-af-border rounded-lg bg-white text-slate-600 hover:bg-slate-50"><ChevronLeft size={14} /></button>
+          <select value={mes} onChange={e => setMes(e.target.value)} className="text-sm font-medium px-3 py-1.5 border border-af-border rounded-lg bg-white text-slate-700 focus:outline-none focus:ring-1 focus:ring-af-accent">
+            {(opcoesMes.includes(mes) ? opcoesMes : [mes, ...opcoesMes]).map((m) => <option key={m} value={m}>{nomeDoMes(m)}</option>)}
+          </select>
+          <button onClick={() => setMes((m) => somaMes(m, 1))} title="Próximo mês" className="p-1.5 border border-af-border rounded-lg bg-white text-slate-600 hover:bg-slate-50"><ChevronRight size={14} /></button>
         </div>
         <div className="flex items-center gap-2">
           <button
