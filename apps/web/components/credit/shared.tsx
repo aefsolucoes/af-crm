@@ -294,7 +294,7 @@ export function OpcoesCreditas({ a }: { a: Analysis }) {
     <div className="rounded-md border border-af-border bg-slate-50/60 px-2 py-1.5 space-y-1">
       <div className="text-[11px] font-medium text-slate-600">Opções aprovadas no portal ({ops.length})</div>
       {ops.map((o, i) => (
-        <div key={i} className={`flex items-start justify-between gap-2 text-[11px] ${o.escolhida ? 'text-emerald-800' : 'text-slate-600'}`}>
+        <div key={i} className={`flex items-start justify-between gap-2 text-[11px] ${o.escolhida ? 'text-emerald-700' : 'text-slate-600'}`}>
           <div>
             <span className="font-medium">{rotulo(o)}</span> <span className="text-slate-400">({o.pos ? 'pós-fixada' : 'pré-fixada'})</span>
             <div>{[o.liquido ? `líquido ${formatCurrency(o.liquido)}` : '', o.prazo ? `${o.prazo} meses` : '', o.parcela ? `parcela ${formatCurrency(o.parcela)}` : '', o.taxa || ''].filter(Boolean).join(' · ')}</div>
