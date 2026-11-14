@@ -698,6 +698,8 @@ export interface AiExtractedAction {
   aiReply?: string | null;  /** Fabio 14/11: o cliente aceitou a emissão e não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório — último caso: confirma o
    *  endereço do imóvel com ele e, com o sim, pede a certidão pelo endereço (certidao-offer.certidaoPeloEnderecoUltimoCaso). */
   certidaoPorEndereco?: 'TEM_MATRICULA' | 'NAO_SABE' | null;
+  /** Fabio 14/11: o cliente disse que o imóvel NÃO é registrado em cartório — o CRM avisa que não serve de garantia e pergunta se há outro imóvel (não tem → Perdidos). */
+  imovelSemRegistro?: boolean;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -1010,6 +1012,10 @@ export async function applyAiExtractedActions(
 
     // Cliente disse com qual banco vai seguir (Fabio 28/10: "a proposta que o cliente for seguir deve preencher o valor da venda"): mesma ação do botão "Seguir com esta" —
     // ⭐ na proposta aprovada mais recente desse banco, Valor da venda e aba Financiamento. Já escolhida: não mexe.
+    // Imóvel sem registro (Fabio 14/11): pergunta outro imóvel pra garantia; não tem → Perdidos (mesmo fluxo da área irregular).
+    if (action.imovelSemRegistro) {
+      await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).imovelSemRegistroPerguntaOutro(accountId, leadId, io as any).catch((e: any) => console.error('[IA] imóvel sem registro falhou:', e?.message));
+    }
     // Certidão pelo ENDEREÇO só em último caso (Fabio 14/11): o cliente não tem escritura nem contrato de compra e venda. Sempre confirma o endereço com ele antes de pedir.
     if (action.certidaoPorEndereco) {
       await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).certidaoPeloEnderecoUltimoCaso(accountId, leadId, io as any, { temMatricula: action.certidaoPorEndereco === 'TEM_MATRICULA' }).catch((e: any) => console.error('[IA] certidão pelo endereço falhou:', e?.message));

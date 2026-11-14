@@ -740,6 +740,31 @@ async function respondeImovelRegular(accountId: string, leadId: string, texto: s
   } catch (e: any) { await note(leadId, `⚠️ O cliente confirmou que o imóvel tem matrícula, mas não consegui pedir a certidão: ${e?.message || e}.`); }
 }
 
+/** O cliente disse que o imóvel NÃO é registrado em cartório (Fabio 14/11: "pergunta outro imóvel para colocar como garantia, se não tiver, o lead vai para Perdidos"). Mesmo texto e
+ *  mesmo acompanhamento da área irregular: a resposta vai pra respondeOutroImovel (tem → equipe; não tem → Perdidos) e o silêncio pro checarOutroImovelSemResposta. Uma vez só. */
+export async function imovelSemRegistroPerguntaOutro(accountId: string, leadId: string, io: Io): Promise<void> {
+  const lead = await carrega(leadId);
+  if (!lead || lead.accountId !== accountId) return;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._autoPaused) return;
+  const ir0 = cf._certidaoIrregular as IrregularAsk | undefined;
+  if (ir0?.outroImovelAskedAt) return; // já perguntado
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: `Entendi${nome ? `, ${nome}` : ''}. Sem matrícula registrada em cartório, o imóvel não é aceito pelo banco como garantia, então não temos como avançar dessa maneira. Você possui outro imóvel com matrícula registrada que possa ser usado como garantia?`, io: (io || undefined) as any });
+  if (!r.success) {
+    await note(leadId, '⚠️ O cliente disse que o imóvel NÃO é registrado em cartório, mas não consegui mandar a pergunta do outro imóvel (janela de 24 h fechada?). Pergunte se ele tem outro imóvel com matrícula pra garantia.');
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Imóvel sem matrícula', body: `${lead.name}: imóvel não registrado — pergunte se tem outro imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    return;
+  }
+  const e = await enderecoDoImovel(leadId, cf).catch(() => null);
+  const agora = new Date().toISOString();
+  await salvaIrregular(leadId, { uf: e?.uf || String(cf.uf || ''), cidade: e?.cidade || String(cf.cidade_imovel || cf.cidade || ''), cartorio: 'AUTO', endereco: (e?.endereco || { cep: '' }) as EnderecoCertidao, motivo: 'o cliente disse que o imóvel não é registrado em cartório', askedAt: agora, answeredAt: agora, resposta: 'NAO', outroImovelAskedAt: agora });
+  await note(leadId, '⚠️ O cliente disse que o imóvel NÃO é registrado em cartório (sem matrícula). Avisei que o imóvel não serve de garantia e perguntei se ele tem outro imóvel com matrícula: tem → a equipe segue com o novo imóvel; não tem → o card vai pra Perdidos.');
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Imóvel sem matrícula', body: `${lead.name}: imóvel não registrado — perguntei se tem outro imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
+}
+
 /** Resposta a "você possui outro imóvel com matrícula?" (Fabio 30/10): não tem → card vai pra Perdido; tem → equipe segue com o outro imóvel. */
 async function respondeOutroImovel(accountId: string, leadId: string, texto: string, ir: IrregularAsk, io: Io): Promise<void> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -772,7 +797,7 @@ async function respondeOutroImovel(accountId: string, leadId: string, texto: str
 async function marcarPerdidoSemImovel(accountId: string, leadId: string, porque: string, io: Io): Promise<void> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, status: true, pipeline: { select: { departmentId: true } } } });
   if (!lead || lead.status !== 'OPEN') return;
-  const lostReason = 'Imóvel sem matrícula registrada (área irregular) e sem outro imóvel para garantia';
+  const lostReason = 'Imóvel sem matrícula registrada e sem outro imóvel para garantia';
   const { updateLead } = require('./lead.service') as typeof import('./lead.service');
   const { moveLeadToPerdidos } = require('./named-pipeline.service') as typeof import('./named-pipeline.service');
   await updateLead(lead.id, accountId, { status: 'LOST', lostReason }, io as any);
