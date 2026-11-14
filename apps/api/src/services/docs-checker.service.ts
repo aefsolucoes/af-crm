@@ -184,6 +184,70 @@ export function naRotaCaixa(cf: Record<string, any> | null | undefined, stageNam
   return !!cf?._caixaRota || /^analise\s+caixa/.test(norm(stageName || ''));
 }
 
+// ── CPF À PARTE SÓ QUANDO NENHUM DOCUMENTO DE IDENTIFICAÇÃO MOSTRA O NÚMERO (Fabio 14/11 — regra GERAL: FH, HE e qualquer produto que peça "RG e CPF ou CNH") ──
+// CNH e CIN sempre trazem o CPF; RG/carteira funcional só quando a leitura viu o número impresso (`_docReview[].cpfNoDoc`).
+const semAcU = (x: unknown) => String(x || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+const ID_SEMPRE_CPF = /^(CNH|CIN\b|CARTEIRA DE IDENTIDADE NACIONAL|CARTEIRA NACIONAL DE HABILITACAO)/;
+const ID_TALVEZ_CPF = /^(RG|IDENTIDADE|CARTEIRA DE IDENTIDADE|CARTEIRA (FUNCIONAL|PROFISSIONAL)|RNE|CRNM|DOCUMENTO DE IDENTIFICACAO)/;
+export type DocIdent = { attId: string; tipo: string; titulares: string[]; cpfNoDoc?: boolean; lidoCpf: boolean };
+/** Documentos de identificação recebidos, por arquivo (classificação + leitura completa). Pura. */
+export function documentosDeIdentificacao(atts: { id: string }[], info: Record<string, any>, revAll: Record<string, any>): DocIdent[] {
+  const out: DocIdent[] = [];
+  for (const a of atts) {
+    const d = info[a.id], r = revAll[a.id];
+    if (r?.resultado === 'NAO_DOCUMENTO') continue;
+    const tipo = semAcU(r?.tipo || (d && typeof d === 'object' ? d.type : ''));
+    if (!ID_SEMPRE_CPF.test(tipo) && !ID_TALVEZ_CPF.test(tipo)) continue;
+    const titulares = String(r?.titular || (d && typeof d === 'object' ? d.holder : '') || '').split(/\s*;\s*/).filter(Boolean);
+    out.push({ attId: a.id, tipo, titulares, cpfNoDoc: r?.cpfNoDoc, lidoCpf: !!r && 'cpfNoDoc' in r });
+  }
+  return out;
+}
+/** Quem já tem o número do CPF num documento de identificação recebido. Pura. */
+export function cpfCobertos(docs: DocIdent[]): string[] {
+  return Array.from(new Set(docs.filter((d) => ID_SEMPRE_CPF.test(d.tipo) || d.cpfNoDoc === true).flatMap((d) => d.titulares)));
+}
+/** Item de "faltando" que é SÓ o CPF ("CPF de Fulano (ou CNH…)", "CPF do Adriano"). Pura. */
+export function itemSoCpf(item: string): boolean {
+  return /^\W*(o\s+)?(n[uú]mero\s+do\s+)?CPF\b/i.test(String(item || '').trim());
+}
+const mesmaOuPrimeiro = (a: string, b: string) => mesmaPessoa(a, b) || ((semAcU(a).split(' ').length < 2 || semAcU(b).split(' ').length < 2) && semAcU(a).split(' ')[0] === semAcU(b).split(' ')[0]);
+/** Participante de quem o item fala (pelo primeiro nome no texto); null = não diz. Pura. */
+export function pessoaDoItem(item: string, participantes: string[]): string | null {
+  const t = ` ${semAcU(item).replace(/[^A-Z ]/g, ' ')} `;
+  return participantes.find((p) => { const n = semAcU(p).split(' ')[0]; return n.length > 2 && t.includes(` ${n} `); }) || null;
+}
+/** O CPF pedido nesse item já está num documento de identificação recebido? Pura. */
+export function cpfDoItemCoberto(item: string, participantes: string[], cobertos: string[]): boolean {
+  if (!itemSoCpf(item)) return false;
+  const p = pessoaDoItem(item, participantes);
+  if (p) return cobertos.some((c) => mesmaOuPrimeiro(c, p));
+  return participantes.length > 0 && participantes.every((pp) => cobertos.some((c) => mesmaOuPrimeiro(c, pp)));
+}
+
+/** Tira de "faltando" o CPF de quem já tem o número num RG/CIN/CNH recebido. RG lido antes desta regra (sem `cpfNoDoc`) é relido SÓ quando o CPF daquela pessoa ia ser cobrado
+ *  (até 2 arquivos por conferência; grava só a chave `cpfNoDoc`). */
+async function tirarCpfCoberto(accountId: string, leadId: string, ctx: { cf: Record<string, any>; leadName: string; setor: string }, faltando: string[], docs: DocIdent[], participantes: string[]): Promise<string[]> {
+  if (!faltando.some(itemSoCpf)) return faltando;
+  let cobertos = cpfCobertos(docs);
+  const pendentes = faltando.filter((f) => itemSoCpf(f) && !cpfDoItemCoberto(f, participantes, cobertos));
+  if (pendentes.length) {
+    const alvo = (f: string) => pessoaDoItem(f, participantes);
+    const relerIds = docs.filter((d) => !d.lidoCpf && d.titulares.length === 1 && ID_TALVEZ_CPF.test(d.tipo) && pendentes.some((f) => { const p = alvo(f); return !p || mesmaOuPrimeiro(d.titulares[0], p); })).slice(0, 2);
+    const dr = require('./doc-review.service') as typeof import('./doc-review.service');
+    for (const d of relerIds) {
+      const att = await prisma.messageAttachment.findFirst({ where: { id: d.attId, leadId }, select: { id: true, driveFileId: true, data: true, mimeType: true, fileName: true, createdAt: true } });
+      if (!att) continue;
+      const r = await dr.reviewAttachment(accountId, att, dr.participantsContext(ctx.cf, ctx.leadName, ctx.setor)).catch(() => undefined);
+      if (!r) continue;
+      d.cpfNoDoc = r.cpfNoDoc === true; d.lidoCpf = true;
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", ARRAY['_docReview', ${d.attId}, 'cpfNoDoc']::text[], to_jsonb(${d.cpfNoDoc}::boolean), true) WHERE id = ${leadId} AND "customFields"->'_docReview' ? ${d.attId}`.catch(() => {});
+    }
+    cobertos = cpfCobertos(docs);
+  }
+  return faltando.filter((f) => !cpfDoItemCoberto(f, participantes, cobertos));
+}
+
 /** Renda NÃO exigida neste card (Fabio 14/11: só CAIXA/BRB ou quando a aprovação do banco pede — `rendaExigida`): problema/dúvida em documento de RENDA não segura o card nem gera cobrança
  *  (Fabio 20/10, caso Luiz). Tira da lista. Vale também pro FH sem banco escolhido (antes a lista do comprador exigia o contracheque). */
 export async function filtrarRendaDispensada(leadId: string, review: { problemas: { doc: string }[]; duvidas: { doc: string }[] }): Promise<void> {
@@ -425,7 +489,7 @@ Como decidir:
 1. Senão, escolha a lista certa entre as listas abaixo: Home Equity pessoa física → "Documentos Home Equity"; crédito no nome de empresa (PJ) → "Documentos comprador PJ"; Financiamento Habitacional → a lista do perfil de renda (empresário/autônomo/profissional liberal → empresário; assalariado/CLT → setor privado; servidor público → servidor público).
 2. Documentos pessoais e de renda valem pra CADA participante listado.
 3. Itens marcados "se usar" ou "se houver" não são obrigatórios.
-4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil. HOME EQUITY (Fabio 27/10): de cada participante só se pedem RG/CNH e comprovante de residência (+ os documentos do imóvel) — NUNCA ponha certidão de nascimento/casamento, CPF ou renda em "faltando" na lista "Documentos Home Equity", mesmo que uma versão antiga da lista cite. A documentação completa é só da CAIXA (e das listas do Financiamento Habitacional).
+4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil. CPF (Fabio 14/11, regra GERAL — FH, HE e qualquer produto): o CPF à parte só é cobrado de quem não tem o número em nenhum documento recebido — CNH e CIN sempre trazem o CPF, e o RG/carteira que mostra o número do CPF também supre (linha "CPF" abaixo). HOME EQUITY (Fabio 27/10): de cada participante só se pedem RG/CNH e comprovante de residência (+ os documentos do imóvel) — NUNCA ponha certidão de nascimento/casamento, CPF ou renda em "faltando" na lista "Documentos Home Equity", mesmo que uma versão antiga da lista cite. A documentação completa é só da CAIXA (e das listas do Financiamento Habitacional).
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
 7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel é ITEM ESSENCIAL (sem ela a contratação não conclui). A "Certidão de Cadastro Imobiliário" da PREFEITURA (inscrição imobiliária, proprietários, endereço) NÃO é certidão de ônus nem matrícula: não conta como recebida pra este item (ela só ajuda com a "Inscrição Imobiliária"). Qualquer arquivo de matrícula/ônus do CARTÓRIO recebido (mesmo consulta, antigo ou parcial) conta como recebido; se o cliente JÁ trouxe a certidão/matrícula, ela basta — a A&F NÃO emite outra. Escritura pública ou contrato de compra e venda NÃO substituem a certidão, mas trazem o número da matrícula (normalmente a escritura pública) e permitem à A&F emiti-la, SE o cliente autorizar. Se NÃO chegou, ponha em "faltando" ("Certidão de ônus/matrícula — ou escritura/documento com o número da matrícula") — a menos que a linha "Cliente autorizou a A&F a emitir a certidão" seja Sim: aí vai em "emitir" e não em "faltando". O que sobra do imóvel (o item do IPTU: inscrição imobiliária OU capa do IPTU) continua obrigatório.
@@ -513,12 +577,14 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const blocoFh = !ehFh && !caixaRota ? '' : fhSoComprador && cfAll._optouCaixa?.banco === 'BRB'
     ? `FINANCIAMENTO HABITACIONAL — BRB (Fabio 29/10): o BRB analisa com a documentação COMPLETA do comprador pela profissão — a referência é a lista "${perfilTemplate(cfAll)}" abaixo (pessoais + renda). NÃO cobre nada do imóvel nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false.\n\n`
     : fhSoComprador
-    ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10${rendaNecessaria ? ' — lista ENXUTA pra rodar na CAIXA' : ''}): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG, CPF (a CNH vale pelos dois), comprovante de endereço${rendaNecessaria ? ', último contracheque' : ''} e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge.${rendaNecessaria ? '' : ' NENHUM documento de renda (contracheque, extrato, IR): ninguém pediu renda (Fabio 14/11) — as listas "Documentos comprador …" abaixo valem só pelos documentos pessoais.'} NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
+    ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10${rendaNecessaria ? ' — lista ENXUTA pra rodar na CAIXA' : ''}): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG e CPF (a CNH vale pelos dois; RG/CIN que mostra o número do CPF também — aí NÃO cobre o CPF), comprovante de endereço${rendaNecessaria ? ', último contracheque' : ''} e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge.${rendaNecessaria ? '' : ' NENHUM documento de renda (contracheque, extrato, IR): ninguém pediu renda (Fabio 14/11) — as listas "Documentos comprador …" abaixo valem só pelos documentos pessoais.'} NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
     : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
   const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
   const matriculaEncerrada = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }).then((l) => { const m = ((l?.customFields || {}) as any)._matriculaEncerrada; return m ? ((m.novas || []).join('; ') || 'número novo') : ''; }).catch(() => '');
+  const docsIdent = documentosDeIdentificacao(atts, info as Record<string, any>, revAll as Record<string, any>);
+  const cpfJa = cpfCobertos(docsIdent);
   const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
   // Imóvel com FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não"; Home Equity): o banco pede o DESCRITIVO DA PARCELA em PDF (Fabio 30/10). Só o PDF conta — a foto/print
   // vira problema na leitura (doc-review) e o cliente é avisado que precisa do PDF.
@@ -540,6 +606,7 @@ ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
 ${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor.\n` : ''}Comprovação de renda: ${rendaNecessaria ? `necessária (${jogo.rendaMotivo})` : `NÃO é necessária (${jogo.rendaMotivo} — Fabio 14/11: renda só na CAIXA/BRB ou quando a aprovação do banco pede)`}
+CPF (Fabio 14/11, regra geral): o número do CPF JÁ ESTÁ num documento de identificação recebido (CNH, CIN ou RG/carteira com o CPF impresso) de: ${cpfJa.length ? cpfJa.join('; ') : 'ninguém ainda'} — NUNCA coloque o CPF dessas pessoas em "faltando"; o CPF à parte só é cobrado de quem não tem o número em nenhum documento recebido.
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 ${precisaDescritivo ? `Imóvel com FINANCIAMENTO ATIVO: o banco pede o DESCRITIVO DA PARCELA (PDF do app do banco do financiamento, com as últimas prestações) — ${temDescritivo ? 'JÁ RECEBIDO: não cobre.' : `NÃO recebido: ponha em "faltando" o item "${ITEM_DESCRITIVO}".`}
 ` : ''}
@@ -576,6 +643,13 @@ ${history}`;
   if (!rendaNecessaria && Array.isArray(verdict.faltando)) {
     const antes = verdict.faltando;
     verdict.faltando = antes.filter((f) => !itemDeRenda(String(f)));
+    if (antes.length && !verdict.faltando.length && verdict.complete === false && !unread.length) verdict.complete = true;
+  }
+  // CPF: decide o CRM, não o modelo (Fabio 14/11 — regra geral: RG/CIN/CNH com o número do CPF dispensa o CPF à parte). Se só faltava o CPF, a documentação está completa.
+  if (Array.isArray(verdict.faltando) && verdict.faltando.some(itemSoCpf)) {
+    const participantes = [cf.participante_1, cf.participante_2].map((x) => String(x || '').trim()).filter(Boolean);
+    const antes = verdict.faltando;
+    verdict.faltando = await tirarCpfCoberto(accountId, leadId, { cf: cfAll, leadName: lead.name, setor: lead.pipeline.department?.name || '' }, antes, docsIdent, participantes.length ? participantes : [lead.name]).catch(() => antes);
     if (antes.length && !verdict.faltando.length && verdict.complete === false && !unread.length) verdict.complete = true;
   }
   // Descritivo da parcela: decide o CRM (o PDF chegou ou não), não o modelo.
