@@ -18,7 +18,8 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 export const VISTORIA_SANTANDER_TO = process.env.VISTORIA_SANTANDER_TO || 'leticia.gomes@credimorar.com.vc';
 const AVISO_REPETIR_MS = 12 * 3600_000;
 
-type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; enviadoPor?: string };
+type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; enviadoPor?: string;
+  /** cobrança da assinatura com a conversa fechada / prazo combinado (assinatura-lembrete, Fabio 14/11) */ cobrancaAss?: import('./assinatura-lembrete.service').CobrancaAss };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 const push = (accountId: string, title: string, body: string, leadId: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* aviso */ } };
@@ -203,7 +204,7 @@ export async function processVistoriaSantander(accountId: string, leadId: string
     const depois = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields as any)?._vistoriaSant as St | undefined;
     if (!depois?.signedAt) {
       // "Já assinou?" antes da conversa fechar, no horário de atendimento (Fabio 13/11).
-      await (require('./assinatura-lembrete.service') as typeof import('./assinatura-lembrete.service')).lembrarAssinaturaGovBr({ accountId, leadId, leadName: lead.name, nome: primeiroNome, pedidoAt: st.askedAt!, oQue: 'a autorização', estado: { lembreteDe: depois?.lembreteDe, lembretes: depois?.lembretes }, salvar: (patch) => salva(leadId, patch), io }).catch((e: any) => console.warn('[Vistoria Santander] lembrete da assinatura:', e?.message));
+      await (require('./assinatura-lembrete.service') as typeof import('./assinatura-lembrete.service')).lembrarAssinaturaGovBr({ accountId, leadId, leadName: lead.name, nome: primeiroNome, pedidoAt: st.askedAt!, oQue: 'a autorização', estado: { lembreteDe: depois?.lembreteDe, lembretes: depois?.lembretes, lembreteAt: depois?.lembreteAt, cobrancaAss: depois?.cobrancaAss }, salvar: (patch) => salva(leadId, patch), io }).catch((e: any) => console.warn('[Vistoria Santander] lembrete da assinatura:', e?.message));
       return false;
     }
     st.signedAt = depois.signedAt; st.signedName = depois.signedName;

@@ -28,7 +28,7 @@ type DadosSt = { askedAt?: string; banco?: string; itens?: string[]; teamNoteAt?
 type Dados = { contato?: { nome?: string; telefone?: string; papel?: string }; vendedor?: { email?: string; telefone?: string; profissao?: string }; conta?: ContaCredito;
   contaComprador?: { agencia?: string; conta?: string; digito?: string; naoTem?: boolean };
   compradores?: { profissao?: string; email?: string }[]; imovel?: ImovelFh };
-type St = { status?: string; autAskedAt?: string; saudeSentAt?: string;
+type St = { status?: string; autAskedAt?: string; cobrancaAss?: import('./assinatura-lembrete.service').CobrancaAss; saudeSentAt?: string;
   autSignedAt?: string; autSignedName?: string; saudeSignedAt?: string; saudeSignedName?: string; faltaNoteAt?: string; teamAskNoteAt?: string; semAssinaturaNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string;
   sentAt?: string; to?: string; erro?: string; prontaNoteAt?: string; startedByTeam?: boolean; fichaTentouAt?: string; pendentes?: string[]; semLocalNoteAt?: string };
 
@@ -353,7 +353,7 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     if (!st.autSignedAt || !st.saudeSignedAt) {
       // "Já assinou?" antes da conversa fechar, no horário de atendimento (Fabio 13/11).
       const falta = !st.autSignedAt && !st.saudeSignedAt ? 'a autorização e a declaração de saúde' : !st.autSignedAt ? 'a autorização' : 'a declaração de saúde';
-      await (require('./assinatura-lembrete.service') as typeof import('./assinatura-lembrete.service')).lembrarAssinaturaGovBr({ accountId, leadId, leadName: lead.name, nome: primeiroNome, pedidoAt: st.autAskedAt!, oQue: falta, estado: { lembreteDe: st.lembreteDe, lembretes: st.lembretes }, salvar: (patch) => salvaSt(leadId, patch), io }).catch((e: any) => console.warn('[Vistoria Santander FH] lembrete da assinatura:', e?.message));
+      await (require('./assinatura-lembrete.service') as typeof import('./assinatura-lembrete.service')).lembrarAssinaturaGovBr({ accountId, leadId, leadName: lead.name, nome: primeiroNome, pedidoAt: st.autAskedAt!, oQue: falta, estado: { lembreteDe: st.lembreteDe, lembretes: st.lembretes, lembreteAt: st.lembreteAt, cobrancaAss: st.cobrancaAss }, salvar: (patch) => salvaSt(leadId, patch), io }).catch((e: any) => console.warn('[Vistoria Santander FH] lembrete da assinatura:', e?.message));
       return false;
     }
     await salvaSt(leadId, { status: 'ASSINADA' });
