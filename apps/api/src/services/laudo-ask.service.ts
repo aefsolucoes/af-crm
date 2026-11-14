@@ -65,10 +65,25 @@ export function dadosDoApartamentoNaMensagem(texto: string): Record<string, stri
   const um = (...res: RegExp[]) => { for (const re of res) { const m = re.exec(t); if (m) return m[1]; } return null; };
   const zero = (v: string | null) => (v === null ? null : /^(nenhum|nao|sem|zero)/.test(v) ? '0' : v);
   const out: Record<string, string> = {};
-  const q = um(/(?:dormitorios?|quartos?)\s*[:=\-–]?\s*(\d{1,2})\b/, /\b(\d{1,2})\s*(?:dormitorios?|quartos?)\b/);
-  const b = um(/banheiros?\s*[:=\-–]?\s*(\d{1,2})\b/, /\b(\d{1,2})\s*banheiros?\b/);
-  const s = zero(um(/suites?\s*[:=\-–]?\s*(\d{1,2}\b|nenhuma|nao|sem|zero)/, /\b(\d{1,2}|nenhuma|sem|zero)\s*suites?\b/));
-  const v = zero(um(/vagas?(?:\s+de\s+garagem)?\s*[:=\-–]?\s*(\d{1,2}\b|nenhuma|nao|sem|zero)/, /\b(\d{1,2}|nenhuma|sem|zero)\s*vagas?\b/));
+  // Número ANTES do rótulo vem primeiro ("02 dormitórios 01 suíte" — Fabio 14/11, Nalia: lia o número do item seguinte); "rótulo: número" só com separador, ou com o
+  // número que não é de outro item.
+  const ITEM = '(?:dormit|quarto|banheir|suite|vaga|lavabo|area|ano)';
+  // Formato da mensagem: o 1º número vem antes do 1º rótulo ("02 dormitórios…") ou depois ("Dormitórios 2…")?
+  const iRot = t.search(new RegExp(ITEM)), iNum = t.search(/\d/);
+  const numeroAntes = iNum >= 0 && (iRot < 0 || iNum < iRot);
+  const conta = (rot: string, palavras = '') => {
+    const antes = new RegExp(`\\b(\\d{1,2}${palavras})\\s*${rot}`);
+    const comSeparador = new RegExp(`${rot}\\s*[:=\\-–]\\s*(\\d{1,2}\\b${palavras})`);
+    const depois = new RegExp(`${rot}\\s+(\\d{1,2}\\b${palavras})`);
+    return numeroAntes ? um(antes, comSeparador, depois) : um(comSeparador, depois, antes);
+  };
+  const q = conta('(?:dormitorios?|quartos?)\\b');
+  let b = conta('banheiros?\\b');
+  const s = zero(conta('suites?\\b', '|nenhuma|nao|sem|zero'));
+  const v = zero(conta('vagas?(?:\\s+de\\s+garagem)?\\b', '|nenhuma|nao|sem|zero'));
+  // Lavabo (e banheiro de empregada) citado à parte entra no total de banheiros (regra do Inter); o número de banheiros já inclui o da suíte.
+  const lav = conta('lavabos?\\b') || (/\blavabo\b/.test(t) && b ? '1' : null);
+  if (b && lav && !/banheiros?[^.;\n]{0,40}(com|incluindo|contando)\s+(o\s+)?lavabo/.test(t)) b = String(Number(b) + Number(lav));
   const a = um(/area(?:\s+(?:util|privativa))?\s*(?:de\s*)?[:=\-–]?\s*(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2|m²|metros)/, /\b(\d{1,4}(?:[.,]\d{1,2})?)\s*(?:m2\b|m²)/);
   const ano = um(/(?:ano\s+de\s+construcao|construid[oa]\s+em|construcao)\s*[:=\-–]?\s*((?:19|20)\d{2})\b/);
   if (q) out.imovel_dormitorios = q;
@@ -104,8 +119,9 @@ export function imovelDaProposta(texto: string): { cep?: string; numero?: string
 }
 
 const DOC_IMOVEL_SYSTEM = `Você lê um documento de IMÓVEL (matrícula/certidão de ônus, IPTU, cadastro imobiliário, escritura, habite-se) pra preencher o laudo digital de um APARTAMENTO no banco. Responda SOMENTE com JSON:
-{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|","tipo":"APARTAMENTO|CASA|OUTRO|"}
+{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|","tipo":"APARTAMENTO|CASA|OUTRO|","daUnidade":<true se o documento descreve a UNIDADE do cliente; false se é do TERRENO/lote ou do PRÉDIO/empreendimento inteiro>}
 Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO".
+DOCUMENTO DO TERRENO OU DO PRÉDIO INTEIRO (Fabio 14/11, Nalia: o IPTU do lote, de uma construção antiga "uso especial" de 1970, deu o ano de um prédio novo): IPTU/cadastro/matrícula do lote ou do empreendimento (área de terreno ou construída muito maior que uma unidade, uso "especial"/"terreno", construção de antes da incorporação) → "daUnidade": false e NÃO preencha anoConstrucao nem areaPrivativa. Imóvel NA PLANTA/em construção (contrato de compra na planta, incorporação): anoConstrucao = ano previsto de conclusão/entrega/habite-se se o documento disser; senão vazio.
 Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. Não invente nada: o que não estiver escrito no documento fica vazio.`;
 
 /** Lê UM documento do imóvel (PDF/imagem do Drive) e devolve os campos do laudo que achou. undefined = não deu pra ler. */
@@ -133,6 +149,7 @@ async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mime
   try {
     const j = JSON.parse((data?.content?.find((c) => c.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '{}');
     const out: Record<string, string> = {};
+    if (j.daUnidade === false) { j.anoConstrucao = ''; j.areaPrivativa = ''; } // terreno/prédio inteiro: ano e área não são do apartamento
     const cep = String(j.cep || '').replace(/\D/g, '');
     if (cep.length === 8) out.imovel_cep = `${cep.slice(0, 5)}-${cep.slice(5)}`;
     if (/^\d{1,6}[A-Za-z]?$/.test(String(j.numero || '').trim())) out.imovel_numero = String(j.numero).trim();
