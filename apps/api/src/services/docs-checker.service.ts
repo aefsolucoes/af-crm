@@ -633,6 +633,12 @@ async function perguntarProtegidos(accountId: string, leadId: string, io: Io): P
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔒 Perguntei ao cliente o que são os arquivos protegidos por senha (${pend.map(([, v]) => v.fileName).join('; ')}). Eles ficam na pasta do Drive como "VERIFICAR - …" pra você conferir depois.` } }).catch(() => {});
 }
 
+/** A IA do card está ligada AGORA (lido na hora do envio — a conferência demora e a equipe pode ter desligado nesse meio-tempo; Fabio 14/11). */
+async function iaLigadaAgora(leadId: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+  return !!l?.aiAutoReplyActive && !(l?.customFields as any)?._autoPaused;
+}
+
 export async function checkDocsComplete(accountId: string, leadId: string, io: Io, opts: { force?: boolean } = {}): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } }, pipeline: { select: { department: { select: { name: true } } } } } });
   const cfLead = (lead?.customFields || {}) as Record<string, any>;
@@ -647,6 +653,12 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   const review = await reviewReceivedDocs(accountId, leadId).catch((err) => { console.error(`[Docs] leitura dos documentos falhou (${leadId}):`, err?.message || err); return null; });
   // Renda dispensada PELA EQUIPE neste card (marca _rendaDispensada; Fabio 20/10, caso Luiz): problema/dúvida em documento de RENDA não segura o card nem gera cobrança.
   if (review) await filtrarRendaDispensada(leadId, fhSoComprador, review);
+  // A leitura leva minutos: a IA pode ter sido desligada nesse meio-tempo (Fabio 14/11, Fabricio: a conferência começou com a IA ligada, a equipe desligou durante a leitura e a
+  // mensagem saiu mesmo assim). Daqui pra frente vale o estado de AGORA pra falar com o cliente.
+  {
+    const agora = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+    lead.aiAutoReplyActive = !!agora?.aiAutoReplyActive && !(agora?.customFields as any)?._autoPaused;
+  }
   if (review?.novas.length) {
     const linhas = review.novas.map(({ arquivo, r }) => `${r.resultado === 'OK' ? '✅' : r.resultado === 'PROBLEMA' ? '⚠️' : r.resultado === 'DUVIDA' ? '❓' : '•'} ${r.tipo}${r.titular ? ` (${r.titular})` : ''}${r.resultado === 'PROBLEMA' ? ` — ${r.problemas.join('; ')}` : ''}${r.observacao ? ` [${r.observacao}]` : ''} — ${arquivo}`);
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🤖 A IA leu ${review.novas.length > 1 ? 'os documentos novos' : 'o documento novo'}:\n${linhas.join('\n')}` } }).catch(() => {});
@@ -685,7 +697,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
       where: { leadId, direction: 'OUTBOUND', status: { not: 'FAILED' }, createdAt: { gt: new Date(Date.now() - 30 * 86_400_000) }, OR: [{ content: { contains: 'cessão de direito', mode: 'insensitive' } }, { content: { contains: 'cessao de direito', mode: 'insensitive' } }] },
       select: { id: true },
     });
-    const sentS = jaDito ? { success: false } : lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: TEXTO_CESSAO, io: io || undefined }) : { success: false };
+    const sentS = jaDito ? { success: false } : (await iaLigadaAgora(leadId)) ? await sendOutboundWhatsApp({ accountId, leadId, content: TEXTO_CESSAO, io: io || undefined }) : { success: false };
     const agoraS = new Date().toISOString();
     const marca = JSON.stringify({ motivo: 'cessão de direitos', at: cfS._imovelSemGarantia?.at || agoraS });
     // Só as chaves (jsonb_set): regravar o card inteiro apaga o que outro processo gravou no meio (corrida no customFields, 29/10).
@@ -742,7 +754,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
         empresas.length && `Vi que ${docNome(empresas[0].doc)} ainda está no nome da empresa ${empresas.map((d) => `*${d.dono}*`).join(' e ')}, e não no seu. Você tem a matrícula individual do seu imóvel, já no seu nome? 🙏`,
       ].filter(Boolean) as string[];
       const texto = partes.join('\n\n');
-      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      const sent = (await iaLigadaAgora(leadId)) ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       // Só marca "perguntado" se a pergunta SAIU (Fabio 05/11): com a IA desligada, ao religar a conferência pergunta (retomarComIa).
       if (sent.success) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cfd, _donoAskedFor: [...ja, ...novos.map((d) => d.dono.toUpperCase())], _donoAskedAt: new Date().toISOString(), _donoResolvedAt: null } as any } });
       if (pessoas.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 O imóvel está em nome de ${pessoas.map((d) => d.dono).join(' e ')}, que não é participante. ${sent.success ? 'Perguntei ao cliente quem é essa pessoa pra ele (precisa ser parente de 1º grau ou participante); o card espera a resposta.' : lead.aiAutoReplyActive ? 'A pergunta ao cliente não saiu — pergunte de quem é o imóvel.' : 'IA desligada: pergunte ao cliente de quem é o imóvel (precisa ser parente de 1º grau ou participante).'}` } }).catch(() => {});
@@ -834,7 +846,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     if (novos.length || opts.force) {
       const alvo = novos.length ? novos : review.problemas;
       const texto = `${buildDocProblemsMessage({ ...review, problemas: alvo }).replace(/\n\nAssim que você reenviar, eu confiro de novo!$/, '')}${faltaTxt}\n\nAssim que você mandar, eu confiro de novo!`;
-      const sent = lead.aiAutoReplyActive ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
+      const sent = (await iaLigadaAgora(leadId)) ? await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }) : { success: false, error: 'IA desligada no card' };
       // "Já dito" só quando SAIU (Fabio 05/11): com a IA desligada, ao religar a conferência avisa (retomarComIa).
       // Com a hora de cada aviso (`_docProblemsToldAt`): o "mesmo erro reenviado" só conta arquivo que chegou DEPOIS do aviso (Fabio 07/11).
       if (sent.success) {
