@@ -119,8 +119,8 @@ export function imovelDaProposta(texto: string): { cep?: string; numero?: string
 }
 
 const DOC_IMOVEL_SYSTEM = `Você lê um documento de IMÓVEL (matrícula/certidão de ônus, IPTU, cadastro imobiliário, escritura, habite-se) pra preencher o laudo digital de um APARTAMENTO no banco. Responda SOMENTE com JSON:
-{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|","tipo":"APARTAMENTO|CASA|OUTRO|","daUnidade":<true se o documento descreve a UNIDADE do cliente; false se é do TERRENO/lote ou do PRÉDIO/empreendimento inteiro>}
-Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO".
+{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|ASSINATURA|","tipo":"APARTAMENTO|CASA|OUTRO|","daUnidade":<true se o documento descreve a UNIDADE do cliente; false se é do TERRENO/lote ou do PRÉDIO/empreendimento inteiro>}
+Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO"; (4) Fabio 14/11: se o documento for ESCRITURA ou CONTRATO DE COMPRA E VENDA (sem matrícula/ônus), o ano da ASSINATURA dele (data no fim, "São Paulo, 30 de outubro de 2026", ou a data da assinatura eletrônica) → "ASSINATURA".
 DOCUMENTO DO TERRENO OU DO PRÉDIO INTEIRO (Fabio 14/11, Nalia: o IPTU do lote, de uma construção antiga "uso especial" de 1970, deu o ano de um prédio novo): IPTU/cadastro/matrícula do lote ou do empreendimento (área de terreno ou construída muito maior que uma unidade, uso "especial"/"terreno", construção de antes da incorporação) → "daUnidade": false e NÃO preencha anoConstrucao nem areaPrivativa. Imóvel NA PLANTA/em construção (contrato de compra na planta, incorporação): anoConstrucao = ano previsto de conclusão/entrega/habite-se se o documento disser; senão vazio.
 Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. Não invente nada: o que não estiver escrito no documento fica vazio.`;
 
@@ -159,7 +159,7 @@ async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mime
     const ano = parseInt(String(j.anoConstrucao || ''), 10);
     if (ano >= 1900 && ano <= new Date().getFullYear()) {
       out.imovel_ano_construcao = String(ano);
-      const fonte = ({ ABERTURA_MATRICULA: 'data de abertura da matrícula', PRIMEIRA_AVERBACAO: '1ª averbação da matrícula' } as Record<string, string>)[String(j.anoFonte || '')];
+      const fonte = ({ ABERTURA_MATRICULA: 'data de abertura da matrícula', PRIMEIRA_AVERBACAO: '1ª averbação da matrícula', ASSINATURA: 'ano da assinatura da escritura/contrato' } as Record<string, string>)[String(j.anoFonte || '')];
       if (fonte) out.__anoFonte = fonte;
     }
     if (j.tipo === 'APARTAMENTO') out.imovel_tipo = 'Apartamento';
@@ -257,13 +257,19 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
     const tipos = (cf._docInfo || {}) as Record<string, string>;
     const atts = await prisma.messageAttachment.findMany({ where: { leadId, driveFileId: { not: null }, id: { in: Object.keys(tipos) } }, select: { id: true, driveFileId: true, mimeType: true, fileName: true } });
     for (const a of atts) if (tipos[a.id] && tipos[a.id] !== 'IGNORAR' && isPropertyDocType(tipos[a.id].split('|')[0])) arquivos.set(a.driveFileId!, { mimeType: a.mimeType, nome: a.fileName });
+    // Ano: vale o de MAIOR prioridade entre os documentos (construção > abertura da matrícula/ônus > 1ª averbação > assinatura da escritura/contrato — Fabio 03/11 e 14/11).
+    const RANK: Record<string, number> = { '': 0, 'data de abertura da matrícula': 1, '1ª averbação da matrícula': 2, 'ano da assinatura da escritura/contrato': 3 };
+    let melhorAno: { v: string; de: string; rank: number } | null = null;
     for (const [id, f] of [...arquivos.entries()].filter(([id]) => !lidos.includes(id)).slice(0, 3)) {
       const r = await lerDocumentoDoImovel(accountId, id, f.mimeType);
       if (r === undefined) continue; // erro de leitura: tenta no próximo ciclo
       novosLidos.push(id);
-      const { __anoFonte, ...campos } = r;
-      for (const [k, v] of Object.entries(campos)) poe(k, v, k === 'imovel_ano_construcao' && __anoFonte ? `${__anoFonte} — documento "${f.nome}"` : `documento "${f.nome}"`);
+      const { __anoFonte, imovel_ano_construcao: ano, ...campos } = r;
+      for (const [k, v] of Object.entries(campos)) poe(k, v, `documento "${f.nome}"`);
+      const rank = RANK[__anoFonte || ''] ?? 0;
+      if (ano && (!melhorAno || rank < melhorAno.rank)) melhorAno = { v: ano, de: __anoFonte ? `${__anoFonte} — documento "${f.nome}"` : `documento "${f.nome}"`, rank };
     }
+    if (melhorAno) poe('imovel_ano_construcao', melhorAno.v, melhorAno.de);
   }
   if (!Object.keys(patch).length) {
     if (novosLidos.length) await marca(leadId, { _laudoDocsLidos2: [...lidos, ...novosLidos] });
