@@ -208,13 +208,54 @@ export async function solicitarVistoriaCreditas(p: { accountId: string; userId: 
   const cc = String(p.cc || '').split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 
   const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-  await sendEmailFrom({ acc, userId: p.userId, to: [to], cc, subject: p.subject, body: p.body, replyToId: p.replyToId || null, leadId: p.leadId, io: (p.io || ({ to: () => ({ emit: () => {} }) })) as any, attachments });
+  const enviar = (conta: typeof acc, copias: string[]) => sendEmailFrom({ acc: conta, userId: p.userId, to: [to], cc: [...new Set([...cc, ...copias])].filter((a) => a.toLowerCase() !== conta.address.toLowerCase()), subject: p.subject, body: p.body, replyToId: p.replyToId || null, leadId: p.leadId, io: (p.io || ({ to: () => ({ emit: () => {} }) })) as any, attachments });
+  let via = acc.address;
+  try {
+    await enviar(acc, []);
+  } catch (e: any) {
+    // CAIXA RESERVA (Fabio 12/11, a mesma do Inter): comercial@ suspenso no Titan (535) → sai pela caixa pessoal do 1º admin, no mesmo fio. Só no erro de login.
+    const msg = String(e?.message || e);
+    if (!/\b535\b|invalid login|authentication failed|EAUTH/i.test(msg)) throw e;
+    const dono = await prisma.user.findFirst({ where: { accountId: p.accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    const reserva = dono ? await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: dono.id, NOT: { id: acc.id } }, orderBy: { createdAt: 'asc' } }) : null;
+    if (!reserva) throw new Error(`${msg} — a caixa ${acc.address} está com erro de login e não há caixa reserva`);
+    try { await enviar(reserva, []); via = reserva.address; } catch (e2: any) { throw new Error(`${msg} — e pela caixa reserva ${reserva.address}: ${e2?.message || e2}`); }
+  }
 
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaCreditasAt: new Date().toISOString() } } });
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada à Creditas (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ', sem anexo'}).` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada à Creditas (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ', sem anexo'}).${via !== acc.address ? ` Saiu pelo ${via} (o ${acc.address} está com erro de login no envio).` : ''}` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada à Creditas', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
   // Vistoria solicitada = o card vai pra "Vistoria do Imóvel" (Fabio 03/11), como no Inter e no Santander.
   await moverParaVistoria(p.accountId, p.leadId, 'vistoria solicitada à Creditas', p.io);
   return { ok: true, to, anexou: attachments.length };
+}
+
+/** Pedido AUTOMÁTICO da vistoria da Creditas (Fabio 14/11: o laudo do outro banco reprovou o imóvel e o cliente aceitou seguir pela Creditas — "sim, pedir sozinho").
+ *  Sem "Contato vistoria" no card: pergunta ao cliente quem acompanha o engenheiro (07h–21h) e espera até 24 h; sem resposta, vai com o nome e o telefone do cliente.
+ *  Depois manda o mesmo e-mail do botão ao Jonatas, com a certidão de ônus e o IPTU marcados na pasta. 'enviada' | 'aguardando'. */
+export async function pedirVistoriaCreditasSozinho(accountId: string, leadId: string, io?: Io): Promise<'enviada' | 'aguardando'> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!lead) throw new Error('Card não encontrado');
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._vistoriaCreditasAt) return 'enviada';
+  const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+  if (!dono) throw new Error('sem administrador na conta');
+  if (!String(cf.contato_vistoria || '').trim()) {
+    const ask = cf._vistoriaContatoAsk?.at ? Date.parse(String(cf._vistoriaContatoAsk.at)) : 0;
+    if (!ask) {
+      const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      if (!inNoticeWindow()) return 'aguardando'; // pergunta ao cliente só 07h–21h
+      const r = await pedirContatoVistoria(accountId, leadId, dono.id, io).catch(() => 'erro' as const);
+      if (r === 'mensagem' || r === 'template' || r === 'aguardando') return 'aguardando';
+      // não deu pra perguntar: segue com o nome e o telefone do cliente
+    } else if (Date.now() - ask < 24 * 3_600_000) return 'aguardando';
+  }
+  const pv = await vistoriaCreditasPreview(accountId, leadId);
+  await solicitarVistoriaCreditas({ accountId, userId: dono.id, leadId, to: pv.to, cc: pv.cc, subject: pv.subject, body: pv.body, replyToId: pv.replyToId, attachDriveFileIds: pv.anexos.filter((a) => a.checked).map((a) => a.id), io });
+  if (pv.avisos.some((a) => /CERTIDÃO DE ÔNUS|CAPA DO IPTU/.test(a))) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Vistoria da Creditas pedida sozinha, mas: ${pv.avisos.filter((a) => /CERTIDÃO DE ÔNUS|CAPA DO IPTU/.test(a)).join(' ')}` } }).catch(() => {});
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '⚠️ Vistoria Creditas sem documento do imóvel', body: 'Pedida sozinha, mas faltou certidão de ônus ou IPTU na pasta — confira.', leadId }).catch(() => {}); } catch { /* aviso */ }
+  }
+  return 'enviada';
 }

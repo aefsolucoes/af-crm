@@ -6,7 +6,8 @@ import { prisma } from '../lib/prisma';
  *  - IA LIGADA, sem aprovação em OUTRO banco → avisa o cliente da negativa do banco sobre o imóvel e leva o card pra Perdidos;
  *  - IA LIGADA, com aprovação em outro banco → avisa o cliente que vai tentar pelo outro banco já aprovado (com o nome do banco) e manda a proposta dele com o botão
  *    "Seguir com esta". Se o cliente concordar (botão, ou "sim" por escrito → a IA marca o banco), a ⭐ vai pra esse banco, o card volta pra "Documentação Recebida" e a
- *    vistoria desse banco segue pelo fluxo normal (vistoria-ai: Santander pela Letícia; com a chave da contratação automática desligada, passo manual com push).
+ *    vistoria desse banco é pedida SOZINHA pelo vistoria-ai, mesmo com a chave da contratação automática desligada (Fabio 14/11): Santander pela Letícia (fluxo automático),
+ *    Creditas por e-mail ao Jonatas (pergunta antes quem acompanha a vistoria, até 24 h). Sem resposta à oferta, lembrete antes de a janela de 24 h fechar.
  * Hoje só o e-mail do Inter detecta o laudo reprovado (inter-email.service). Estado em customFields._laudoReprovado.
  * Fora das 07h–21h espera; conversa fechada → template de atualização, e a mensagem sai quando o cliente responder (até 2 dias; depois, push pra equipe).
  */
@@ -15,7 +16,7 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 type Status = 'NOVO' | 'TEMPLATE' | 'AVISADO_PERDIDO' | 'OFERECIDO' | 'ESCOLHEU' | 'EQUIPE';
 /** O e-mail fala em pendência/correção/reavaliação ("não foi aprovado ainda", "reenviar a matrícula"): não é negativa definitiva — só a equipe é avisada. Pura. */
 export const reprovacaoDuvidosa = (texto: string) => /pend[eê]ncia|reenvi|corrig|regulariz|aguard|\bainda\b|reavali|nova\s+(vistoria|avalia)|recurso|contest/i.test(texto);
-export type LaudoReprovado = { banco: string; at: string; status: Status; duvidoso?: boolean; emailId?: string; outro?: string | null; analysisId?: string | null; templateAt?: string; avisadoAt?: string; escolheuAt?: string; motivo?: string };
+export type LaudoReprovado = { banco: string; at: string; status: Status; duvidoso?: boolean; lembreteFor?: string; fechouAvisado?: string; emailId?: string; outro?: string | null; analysisId?: string | null; templateAt?: string; avisadoAt?: string; escolheuAt?: string; motivo?: string };
 
 const ESPERA_TEMPLATE_MS = 2 * 86_400_000;
 export const NOME_BANCO: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
@@ -71,8 +72,73 @@ export async function iniciarLaudoReprovado(accountId: string, leadId: string, b
 
 /** Poller (1 min, credit-auto): reprovações à espera do horário ou da resposta ao template. */
 export async function processLaudoReprovado(accountId: string, io?: Io): Promise<void> {
-  const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "customFields"->'_laudoReprovado'->>'status' IN ('NOVO', 'TEMPLATE') LIMIT 20`;
-  for (const { id } of ids) await processarUm(accountId, id, io).catch((e: any) => console.error('[Laudo reprovado]', e?.message));
+  const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+    AND ("customFields"->'_laudoReprovado'->>'status' IN ('NOVO', 'TEMPLATE')
+      OR ("customFields"->'_laudoReprovado'->>'status' IN ('OFERECIDO', 'ESCOLHEU') AND ("customFields"->'_laudoReprovado'->>'at')::timestamptz > now() - interval '4 days'))
+    LIMIT 30`;
+  for (const { id } of ids) {
+    await processarUm(accountId, id, io).catch((e: any) => console.error('[Laudo reprovado]', e?.message));
+    await lembreteAntesDeFechar(accountId, id, io).catch((e: any) => console.error('[Laudo reprovado] lembrete:', e?.message));
+  }
+}
+
+// Lembrete antes de a janela de 24 h fechar (Fabio 14/11: "caso o cliente não responda antes da janela fechar, o CRM manda um lembrete antes de fechar a janela"):
+// a oferta do outro banco sem resposta, ou a pergunta de quem acompanha a vistoria da Creditas. Sai nas últimas 3 h de horário útil (07h–21h) antes de a janela fechar
+// (fecha de madrugada → na véspera, até as 21h). Uma vez por janela; IA desligada não manda nada. Janela fechou sem resposta à oferta → push pra equipe (uma vez).
+const JANELA_MS = 23 * 3_600_000;
+const LEMBRA_ANTES_MS = 3 * 3_600_000; // nas últimas 3 h de horário útil antes de a janela fechar
+/** Último instante do horário dos avisos (07h–21h, Brasília) antes de a janela fechar: a própria hora, se fecha no horário; senão as 21h da véspera (ou do mesmo dia). Pura. */
+export function ultimoHorarioUtil(closeAt: number, noHorario: (d: Date) => boolean): number {
+  const brt = new Date(closeAt - 3 * 3_600_000); // relógio de Brasília nos campos UTC
+  if (noHorario(new Date(closeAt)) && brt.getUTCHours() >= 8) return closeAt; // fecha entre 07h e 08h: pouco tempo de manhã — lembra na véspera
+  const as21 = Date.UTC(brt.getUTCFullYear(), brt.getUTCMonth(), brt.getUTCDate(), 21, 0, 0) + 3 * 3_600_000;
+  return brt.getUTCHours() >= 21 ? as21 : as21 - 24 * 3_600_000;
+}
+export function textoLembreteOferta(nome: string, outro: string): string {
+  return inicio(nome, `passando pra lembrar: pra seguir ${peloBanco(outro)} e eu já solicitar a vistoria do imóvel, é só tocar em *Seguir com esta* na proposta que te mandei (ou me responder aqui). Se preferir não seguir, me avisa também, tá? 😊`);
+}
+export function textoLembreteContato(nome: string): string {
+  return inicio(nome, 'passando pra lembrar: pra agendar a vistoria do imóvel, preciso do nome e do telefone de quem vai acompanhar o engenheiro na visita (pode ser você mesmo). 😊');
+}
+async function lembreteAntesDeFechar(accountId: string, leadId: string, io?: Io): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, status: true, aiAutoReplyActive: true, customFields: true } });
+  if (!lead || lead.status !== 'OPEN') return;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const lr = cf._laudoReprovado as LaudoReprovado | undefined;
+  if (!lr || cf._autoPaused) return;
+  const qual = lr.status === 'OFERECIDO' && lr.outro ? 'oferta'
+    : lr.status === 'ESCOLHEU' && cf._vistoriaAi?.status === 'AGUARDA_CONTATO' && !String(cf.contato_vistoria || '').trim() && cf._vistoriaContatoAsk?.via === 'mensagem' ? 'contato' : null;
+  if (!qual) return;
+  const desde = qual === 'oferta' ? lr.avisadoAt : cf._vistoriaContatoAsk?.at;
+  if (!desde) return;
+  if (await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(desde) } }, select: { id: true } })) return; // respondeu: a IA cuida
+  const lastIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!lastIn) return;
+  const closeAt = lastIn.createdAt.getTime() + JANELA_MS;
+  const left = closeAt - Date.now();
+  const chave = `${qual}:${lastIn.createdAt.toISOString()}`;
+  const O = lr.outro ? NOME_BANCO[lr.outro] || lr.outro : '';
+  if (left <= 0) {
+    if (qual === 'oferta' && lr.fechouAvisado !== chave) {
+      await salva(leadId, { ...lr, fechouAvisado: chave });
+      await note(leadId, `🏚️ A janela de 24 h do WhatsApp fechou sem o cliente responder à oferta de seguir ${peloBanco(lr.outro!)}${lr.lembreteFor === chave ? ' (o lembrete foi enviado)' : ''}. Pra falar com ele agora, só por template.`);
+      push(accountId, `🏚️ ${lead.name}: sem resposta à oferta ${doBanco(lr.outro!)}`, 'A janela de 24 h fechou. Chame por template.', leadId);
+    }
+    return;
+  }
+  if (lr.lembreteFor === chave || !lead.aiAutoReplyActive) return;
+  const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!an.inNoticeWindow()) return;
+  if (ultimoHorarioUtil(closeAt, an.inNoticeWindow) - Date.now() > LEMBRA_ANTES_MS) return; // ainda cedo
+  if (await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', createdAt: { gte: new Date(Date.now() - 60 * 60_000) } } })) return; // falou há menos de 1 h
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
+  const texto = qual === 'oferta' ? textoLembreteOferta(nome, lr.outro!) : textoLembreteContato(nome);
+  const msg = require('./message.service') as typeof import('./message.service');
+  const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io as any });
+  if (!env.success) return;
+  await salva(leadId, { ...lr, lembreteFor: chave });
+  await note(leadId, `🔔 Lembrete antes de a janela de 24 h fechar: ${qual === 'oferta' ? `seguir ${peloBanco(lr.outro!)} (oferta depois do imóvel reprovado)` : `quem acompanha a vistoria ${doBanco(lr.outro || 'CREDITAS')}`}.`);
 }
 
 async function processarUm(accountId: string, leadId: string, io?: Io): Promise<void> {
@@ -139,7 +205,7 @@ async function processarUm(accountId: string, leadId: string, io?: Io): Promise<
   await new Promise((r) => setTimeout(r, 1500)); // a proposta chega depois do aviso
   const fw = await an.forwardApprovalToClient({ accountId, leadId, analysisId: outro.analysisId, io, porIa: true }).catch((e: any) => ({ ok: false, error: String(e?.message || e) }));
   await salva(leadId, { ...lr, status: 'OFERECIDO', outro: outro.bank, analysisId: outro.analysisId, avisadoAt: new Date().toISOString() });
-  await note(leadId, `🏚️ ${B} reprovou o imóvel. O cliente tem aprovação ${noBanco(outro.bank)}${outro.valor ? ` (${outro.valor})` : ''}: avisei e ${fw.ok ? `mandei a proposta ${doBanco(outro.bank)} com o botão "Seguir com esta"` : `NÃO consegui mandar a proposta (${(fw as any).error || 'erro'}) — encaminhe pela aba Financiamento`}. Se ele concordar, a ⭐ vai pro ${O}, o card volta pra "Documentação Recebida" e a vistoria segue por ele.`);
+  await note(leadId, `🏚️ ${B} reprovou o imóvel. O cliente tem aprovação ${noBanco(outro.bank)}${outro.valor ? ` (${outro.valor})` : ''}: avisei e ${fw.ok ? `mandei a proposta ${doBanco(outro.bank)} com o botão "Seguir com esta"` : `NÃO consegui mandar a proposta (${(fw as any).error || 'erro'}) — encaminhe pela aba Financiamento`}. Se ele concordar, a ⭐ vai pro ${O}, o card volta pra "Documentação Recebida" e o CRM pede a vistoria por ele sozinho.`);
   push(accountId, `🏚️ ${lead.name}: ${B} reprovou o imóvel`, `Ofereci seguir ${noBanco(outro.bank)}${fw.ok ? '' : ' (a proposta não saiu — encaminhe você)'}.`, leadId);
 }
 
@@ -159,7 +225,7 @@ export async function escolheuOutroBanco(accountId: string, leadId: string, bank
     await updateLeadStage(leadId, accountId, doc.id);
     await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${doc.name}" — o ${NOME_BANCO[lr.banco] || lr.banco} reprovou o imóvel e o cliente vai ${"seguir " + peloBanco(bank)}` } }).catch(() => {});
   }
-  await note(leadId, `🏚️ O cliente concordou em ${"seguir " + peloBanco(bank)} depois do imóvel reprovado ${noBanco(lr.banco)}: ⭐ ${noBanco(bank)}, card em "Documentação Recebida" e a vistoria ${doBanco(bank)} segue pelo fluxo da vistoria (com a automação da contratação desligada, a equipe recebe o passo manual com push).`);
+  await note(leadId, `🏚️ O cliente concordou em ${"seguir " + peloBanco(bank)} depois do imóvel reprovado ${noBanco(lr.banco)}: ⭐ ${noBanco(bank)}, card em "Documentação Recebida" e a vistoria ${doBanco(bank)} é pedida SOZINHA pelo CRM, mesmo com a automação da contratação desligada (Fabio 14/11: "sim, pedir sozinho").`);
   io?.to(`lead:${leadId}`).emit('lead_updated', { leadId });
 }
 

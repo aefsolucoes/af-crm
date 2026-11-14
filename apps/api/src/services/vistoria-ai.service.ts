@@ -138,8 +138,11 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     }
     return;
   }
+  // Laudo do outro banco reprovou o imóvel e o cliente aceitou seguir por este (Fabio 14/11: "sim, pedir sozinho"): a vistoria sai sozinha mesmo com a chave geral desligada.
+  const lr = cf._laudoReprovado as { status?: string; outro?: string } | undefined;
+  const forcado = lr?.status === 'ESCOLHEU' && lr?.outro === banco;
   // Chave geral desligada (Fabio 22/10: passos manuais por enquanto): nada sai sozinho — a equipe recebe a nota com o que fazer. Ligando a chave, o card segue daqui automaticamente.
-  if (!(await contractingAutoOn(accountId, leadId))) {
+  if (!forcado && !(await contractingAutoOn(accountId, leadId))) {
     const nome = BANCO[banco] || banco;
     // Santander: se a equipe já começou pelo botão do card, o CRM continua conferindo assinatura/documentos (e segura o envio à Letícia até o clique) e avisa o colaborador se faltar a CND de IPTU.
     if (banco === 'CREDIMORAR') {
@@ -168,6 +171,23 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     const { processVistoriaSantander } = require('./vistoria-santander.service') as typeof import('./vistoria-santander.service');
     const enviado = await processVistoriaSantander(accountId, leadId, io as any);
     if (enviado) await salva(leadId, { status: 'ENVIADA', banco, at: new Date().toISOString(), por: 'IA' });
+    return;
+  }
+  // 2b) Creditas depois do laudo reprovado do outro banco: e-mail ao Jonatas sozinho (pede antes o contato da vistoria ao cliente, até 24 h)
+  if (banco === 'CREDITAS' && forcado) {
+    if (st.status === 'ERRO' && st.erroAt && Date.now() - new Date(st.erroAt).getTime() < ERRO_RETRY_MS) return;
+    try {
+      const { pedirVistoriaCreditasSozinho } = require('./vistoria-creditas.service') as typeof import('./vistoria-creditas.service');
+      const r = await pedirVistoriaCreditasSozinho(accountId, leadId, io as any);
+      if (r === 'enviada') {
+        await salva(leadId, { status: 'ENVIADA', banco, at: new Date().toISOString(), por: 'IA' });
+        await note(leadId, '🤖 A IA solicitou a vistoria à Creditas sozinha (o laudo do outro banco reprovou o imóvel e o cliente aceitou seguir pela Creditas) e levou o card pra "Vistoria do Imóvel".');
+      } else if (st.status !== 'AGUARDA_CONTATO') await salva(leadId, { status: 'AGUARDA_CONTATO', banco, since: st.since || new Date().toISOString() });
+    } catch (e: any) {
+      await salva(leadId, { status: 'ERRO', banco, erroAt: new Date().toISOString(), erro: String(e?.message || e).slice(0, 200) });
+      await note(leadId, `⚠️ A IA tentou solicitar a vistoria à Creditas e não conseguiu: ${e?.message || e}. Use o botão "Solicitar vistoria Creditas" do card.`);
+      push(accountId, '⚠️ Vistoria Creditas não saiu', lead.name, leadId);
+    }
     return;
   }
   // 2) só o Inter tem solicitação automática
