@@ -402,6 +402,8 @@ export async function sendOutboundEmail(params: {
   /** HTML pronto (ex.: e-mail dos lembretes de documentação); sem ele, o layout simples a partir do texto. */
   html?: string;
   io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } };
+  /** Padrão: o lembrete com o mesmo assunto vai por e-mail só uma vez por cliente (loops de documentos e Follow Up repetem; Fabio 13/11). */
+  repetirAssunto?: boolean;
 }): Promise<{ success: true; message: Awaited<ReturnType<typeof createMessage>> } | { success: false; error: string; code?: string }> {
   const { accountId, leadId, subject, body, html, io } = params;
 
@@ -411,8 +413,9 @@ export async function sendOutboundEmail(params: {
   const to = lead.contact?.email?.trim();
   if (!to) return { success: false, code: 'NO_EMAIL', error: 'Este contato não tem e-mail cadastrado — cadastre no card do cliente.' };
 
-  // Endereço que já voltou não recebe os lembretes automáticos (Fabio 09/11).
-  const { motivoBloqueioEmail } = require('./email-bounce.service') as typeof import('./email-bounce.service');
+  // Endereço que já voltou não recebe os lembretes automáticos (Fabio 09/11) + travas de 13/11.
+  const { motivoBloqueioEmail, emailJaEnviado } = require('./email-bounce.service') as typeof import('./email-bounce.service');
+  if (!params.repetirAssunto && (await emailJaEnviado(leadId, subject))) return { success: false, code: 'EMAIL_REPEATED', error: 'E-mail não enviado: o cliente já recebeu esse e-mail.' };
   const bloqueio = await motivoBloqueioEmail(accountId, to, { automatico: true });
   if (bloqueio) return { success: false, code: 'EMAIL_BLOCKED', error: `E-mail não enviado: ${bloqueio}.` };
 

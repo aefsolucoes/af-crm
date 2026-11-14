@@ -288,11 +288,12 @@ async function executeAction(action: AutomationAction, lead: LeadForActions, con
       // "Também por e-mail": o mesmo texto vai pro e-mail do card, se houver
       // — mesmo que o WhatsApp tenha falhado (aí o e-mail vale ainda mais).
       // É um extra: não muda o resultado da ação (não trava as seguintes).
+      // Só na 1ª vez por cliente (Fabio 13/11): o template de documentação repete a cada 3 dias e cada repetição ia por e-mail, até pra caixa cheia.
       const email = lead.contact?.email?.trim();
       const customBody = action.config.emailBody ? fillVariables(String(action.config.emailBody), lead, context).trim() : '';
       if (action.config.alsoEmail === true && email && (customBody || !previewText.startsWith('Template "'))) {
         const { sendFollowUpEmail } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-        await sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: customBody || previewText.replace(/\n\n(\[[^\]]+\]\s*)+$/, ''), subject: action.config.emailSubject ? fillVariables(String(action.config.emailSubject), lead, context) : null, io: io as any });
+        await sendFollowUpEmail({ accountId: lead.accountId, leadId: lead.id, to: email, text: customBody || previewText.replace(/\n\n(\[[^\]]+\]\s*)+$/, ''), subject: action.config.emailSubject ? fillVariables(String(action.config.emailSubject), lead, context) : null, io: io as any, umaVezPorCliente: true });
       }
       return result.success;
     }

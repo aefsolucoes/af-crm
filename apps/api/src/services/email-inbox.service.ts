@@ -8,7 +8,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
-import { enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
+import { emailJaEnviado, enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
 
 /**
  * Caixa de e-mail dentro do CRM (pedido do Fabio, 2026-09-24/25): a caixa da
@@ -995,14 +995,10 @@ const PRODUCT_SUBJECT: Record<string, string> = {
  */
 export async function sendFollowUpEmail(params: {
   accountId: string; leadId: string; to: string; text: string; subject?: string | null; io: Io;
+  /** Cópia por e-mail de um template que repete: só vai se o cliente nunca recebeu e-mail com esse assunto (Fabio 13/11). */
+  umaVezPorCliente?: boolean;
 }): Promise<boolean> {
   try {
-    // Endereço que já voltou não recebe automático (Fabio 09/11).
-    const bloqueio = await motivoBloqueioEmail(params.accountId, params.to, { automatico: true });
-    if (bloqueio) {
-      console.log(`[E-mail] Automático não enviado (lead ${params.leadId}): ${bloqueio}`);
-      return false;
-    }
     const lead = await prisma.lead.findFirst({
       where: { id: params.leadId, accountId: params.accountId },
       select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } },
@@ -1016,6 +1012,13 @@ export async function sendFollowUpEmail(params: {
       .replace(/~([^~\n]+)~/g, '$1')
       .trim();
     if (!body) return false;
+    if (params.umaVezPorCliente && (await emailJaEnviado(params.leadId, subject))) return false;
+    // Endereço que já voltou não recebe automático (Fabio 09/11) + travas de 13/11 (freio de devoluções, Microsoft sem DMARC, teto por hora).
+    const bloqueio = await motivoBloqueioEmail(params.accountId, params.to, { automatico: true });
+    if (bloqueio) {
+      console.log(`[E-mail] Automático não enviado (lead ${params.leadId}): ${bloqueio}`);
+      return false;
+    }
 
     await ensureCompanyMailbox(params.accountId);
     const acc = await prisma.emailAccount.findFirst({ where: { accountId: params.accountId, userId: null } });
@@ -1024,7 +1027,7 @@ export async function sendFollowUpEmail(params: {
       return true;
     }
     const { sendOutboundEmail } = require('./message.service') as typeof import('./message.service');
-    const r = await sendOutboundEmail({ accountId: params.accountId, leadId: params.leadId, subject, body, io: params.io || undefined });
+    const r = await sendOutboundEmail({ accountId: params.accountId, leadId: params.leadId, subject, body, io: params.io || undefined, repetirAssunto: !params.umaVezPorCliente });
     return r.success;
   } catch (err: any) {
     console.warn(`[E-mail] Follow-up por e-mail (lead ${params.leadId}) falhou:`, err?.message);
