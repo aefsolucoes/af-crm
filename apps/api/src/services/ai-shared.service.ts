@@ -697,7 +697,7 @@ export interface AiExtractedAction {
   /** Texto que a IA mandou ao cliente nesta resposta (pra saber de qual banco ela prometeu "os detalhes" quando o aviso padrão já tinha ido — forwardPromisedBanks). */
   aiReply?: string | null;  /** Fabio 14/11: o cliente aceitou a emissão e não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório — último caso: confirma o
    *  endereço do imóvel com ele e, com o sim, pede a certidão pelo endereço (certidao-offer.certidaoPeloEnderecoUltimoCaso). */
-  certidaoPorEndereco?: boolean;
+  certidaoPorEndereco?: 'TEM_MATRICULA' | 'NAO_SABE' | null;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -1012,7 +1012,7 @@ export async function applyAiExtractedActions(
     // ⭐ na proposta aprovada mais recente desse banco, Valor da venda e aba Financiamento. Já escolhida: não mexe.
     // Certidão pelo ENDEREÇO só em último caso (Fabio 14/11): o cliente não tem escritura nem contrato de compra e venda. Sempre confirma o endereço com ele antes de pedir.
     if (action.certidaoPorEndereco) {
-      await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).certidaoPeloEnderecoUltimoCaso(accountId, leadId, io as any).catch((e: any) => console.error('[IA] certidão pelo endereço falhou:', e?.message));
+      await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).certidaoPeloEnderecoUltimoCaso(accountId, leadId, io as any, { temMatricula: action.certidaoPorEndereco === 'TEM_MATRICULA' }).catch((e: any) => console.error('[IA] certidão pelo endereço falhou:', e?.message));
     }
     // Cliente quer seguir pela CAIXA (Fabio 11/11 — consulta PRIMEIRO, com ou sem aprovação): consulta do nome na CAIXA na hora, com os nomes/CPFs da proposta.
     if (action.caixaPedido || action.caixaRota) {

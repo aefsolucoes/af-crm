@@ -169,7 +169,8 @@ async function acharCartorioPelaWeb(db: Db, id: string): Promise<void> {
     const atual = await db.certidaoRequest.findUnique({ where: { id }, select: { status: true } });
     if (atual?.status !== 'FIND_WEB') return;
     const cfLead = ((await db.lead.findUnique({ where: { id: r.leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
-    if (achado?.irregular && cfLead._certidaoIrregular?.resposta !== 'SIM') {
+    // O cliente já disse que o imóvel TEM matrícula registrada (Fabio 14/11: a pergunta vem antes da oferta pelo endereço): não pergunta de novo.
+    if (achado?.irregular && cfLead._certidaoIrregular?.resposta !== 'SIM' && cfLead._certidaoSemDocumento?.temMatricula !== true) {
       // Fabio 30/10: área irregular pode não ter matrícula — não pede (cada pedido é cobrança) e a equipe confirma com o cliente.
       await db.certidaoRequest.update({ where: { id }, data: { status: 'FAILED', finishedAt: new Date(), detail: `Não pedi: o endereço parece estar em ÁREA IRREGULAR — ${achado.motivo}`.slice(0, 400) } });
       const cartorioAchado = achado.numero ? `${String(achado.numero).padStart(2, '0')}º - ${r.cidade.toUpperCase()}` : 'AUTO';

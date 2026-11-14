@@ -509,7 +509,7 @@ export async function askEnderecoCertidao(accountId: string, leadId: string, opt
 /** ÚLTIMO CASO (Fabio 14/11: "pede contrato de compra e venda ou escritura pública pra ver se consegue identificar o cartório e a matrícula antes de solicitar pelo endereço;
  *  endereço seria último caso, caso o cliente não possua nenhum documento" + "sempre confirmar com o cliente o endereço antes de solicitar"): o cliente aceitou a emissão e disse
  *  que não tem escritura, contrato nem documento com a matrícula. Marca `_certidaoSemDocumento` e manda a confirmação do endereço; o pedido só sai com o "sim" (respondeEndereco). */
-export async function certidaoPeloEnderecoUltimoCaso(accountId: string, leadId: string, io: Io): Promise<void> {
+export async function certidaoPeloEnderecoUltimoCaso(accountId: string, leadId: string, io: Io, opts: { temMatricula?: boolean } = {}): Promise<void> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -521,9 +521,9 @@ export async function certidaoPeloEnderecoUltimoCaso(accountId: string, leadId: 
   if (!cf._certidaoSemDocumento) {
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
-    c._certidaoSemDocumento = { at: new Date().toISOString() };
+    c._certidaoSemDocumento = { at: new Date().toISOString(), ...(opts.temMatricula ? { temMatricula: true } : {}) }; // temMatricula: o cliente disse que o imóvel é registrado (a pesquisa de área irregular não pergunta de novo)
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
-    await note(leadId, '🏛️ O cliente aceitou a emissão da certidão e disse que não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório: vai pelo ENDEREÇO do imóvel (último caso), com o endereço confirmado por ele antes do pedido.');
+    await note(leadId, `🏛️ O cliente aceitou a emissão da certidão e disse que não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório; ${opts.temMatricula ? 'disse que o imóvel TEM matrícula registrada' : 'não sabe se o imóvel tem matrícula registrada'}. Vai pelo ENDEREÇO do imóvel (último caso), com o endereço confirmado por ele antes do pedido.`);
   }
   const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
   if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) return; // já perguntado, esperando o sim
@@ -549,8 +549,39 @@ export function classificaRespostaEndereco(texto: string): 'SIM' | 'CORRIGE' | '
   if (/^(sim|isso|correto|certo|confirmo|confirmado|exato|exatamente|e esse|esse mesmo|e isso|pode|ok|okay|positivo|esta certo|ta certo|perfeito|isso mesmo)\b/.test(t)) return 'SIM';
   return 'OUTRO';
 }
+/** Correção do endereço pelo cliente (Fabio 14/11): junta o que ele disse com o endereço perguntado. ok=true → endereço completo (CEP de 8 dígitos, rua e número);
+ *  ok=false com "falta" → o que pedir ao cliente (ex.: "Qual o CEP?"). null = não deu pra ler. */
+export async function enderecoCorrigido(pe: EnderecoAsk, texto: string): Promise<{ ok: boolean; endereco?: Partial<EnderecoCertidao>; cidade?: string; uf?: string; falta?: string } | null> {
+  const key = process.env.ANTHROPIC_API_KEY;
+  if (!key) return null;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5', max_tokens: 1500,
+      system: 'Perguntamos ao cliente se o endereço do imóvel está certo e ele respondeu corrigindo. Junte a correção com o endereço perguntado: mantenha o que ele não mudou e troque só o que ele corrigiu. Responda SÓ JSON: {"ok": true|false, "cep": "8 dígitos", "tipoLogradouro": "Rua|Avenida|Travessa|Alameda|Estrada|Rodovia|Praça|…", "logradouro": "nome da rua sem o tipo", "numero": "", "complemento": "", "bairro": "", "cidade": "", "uf": "XX", "falta": "pergunta curta ao cliente sobre o que falta, ou vazio"}. ok=true só se o endereço final tem CEP de 8 dígitos, rua e número. Se ele trocou a RUA (ou o bairro/cidade) e não disse o CEP novo, o CEP antigo não vale: ok=false e "falta": "Qual o CEP do imóvel?". Se ele só disse que está errado, sem dizer o certo: ok=false e "falta": "Rua, número, bairro e CEP.". Se ele trocou a rua, não mantenha o complemento e o bairro antigos (só os que ele disser). A resposta pode trazer mais de uma mensagem dele separadas por " / " (a correção e depois o que faltava): junte tudo. Nunca invente dado.',
+      messages: [{ role: 'user', content: `ENDEREÇO PERGUNTADO: ${enderecoTexto(pe.endereco)}${pe.endereco?.bairro ? ` — bairro ${pe.endereco.bairro}` : ''} — ${pe.cidade}/${pe.uf}\nRESPOSTA DO CLIENTE: ${texto.slice(0, 600)}` }],
+    }),
+  }).catch(() => null);
+  if (!res?.ok) return null;
+  const d: any = await res.json().catch(() => null);
+  const raw = String(d?.content?.find((b: any) => b.type === 'text')?.text || '');
+  let j: any;
+  try { j = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || ''); } catch { return null; }
+  const cep = digits(j.cep);
+  const uf = String(j.uf || '').trim().toUpperCase();
+  const ok = j.ok === true && cep.length === 8 && !!String(j.logradouro || '').trim() && !!String(j.numero || '').trim() && /^[A-Z]{2}$/.test(uf || pe.uf);
+  if (!ok) return { ok: false, falta: String(j.falta || '').trim().slice(0, 200) || undefined };
+  return {
+    ok: true,
+    cidade: String(j.cidade || '').trim() || pe.cidade, uf: uf || pe.uf,
+    endereco: { cep, tipoLogradouro: String(j.tipoLogradouro || 'Rua').trim() || 'Rua', logradouro: String(j.logradouro).trim(), numero: String(j.numero).trim(), complemento: String(j.complemento || '').trim().slice(0, 30) || undefined, bairro: String(j.bairro || '').trim() || undefined },
+  };
+}
+
 async function respondeEndereco(accountId: string, leadId: string, texto: string, pe: EnderecoAsk, io: Io): Promise<void> {
   let tipo: 'SIM' | 'CORRIGE' | 'OUTRO' | 'NAO' | 'TEM' = classificaRespostaEndereco(texto);
+  if ((pe as any).pediuCorrecaoAt && tipo === 'OUTRO' && /\d/.test(texto)) tipo = 'CORRIGE'; // pedimos o endereço certo: a resposta com número é o endereço
   if (pe.oferta) {
     // Oferta da IA (cobra um PIX do cliente): o "sim/ok" só vale respondendo à pergunta da certidão, com o card ainda esperando documentação e sem certidão em mãos.
     const t = texto.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
@@ -572,6 +603,36 @@ async function respondeEndereco(accountId: string, leadId: string, texto: string
   if (tipo === 'TEM') { await note(leadId, `🏛️ O cliente diz que TEM a certidão de ônus/matrícula e vai mandar (“${texto.slice(0, 120)}”). Nada foi pedido no ONR.`); return; }
   if (tipo === 'NAO') { await note(leadId, `🏛️ O cliente NÃO quer que a A&F emita a certidão (“${texto.slice(0, 120)}”). Nada foi pedido no ONR.`); return; }
   if (tipo === 'CORRIGE') {
+    // Fabio 14/11: "ela corrige o endereço e segue a solicitação" — o CRM aplica a correção do cliente e pede com o endereço corrigido. Sem dado suficiente: pede o endereço
+    // certo ao cliente (1 vez); a IA não entendeu → nota + push (como antes).
+    const corr = await enderecoCorrigido(pe, [(pe as any).correcaoTexto, texto].filter(Boolean).join(' / ')).catch(() => null); // junta com a correção anterior (ex.: rua nova + o CEP que pedimos)
+    if (corr && corr.ok) {
+      const novo = { ...pe.endereco, ...corr.endereco, observacao: pe.endereco?.observacao } as EnderecoCertidao;
+      const cidade = corr.cidade || pe.cidade, uf = corr.uf || pe.uf;
+      const c2 = { ...((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any> };
+      c2._certidaoEndereco = { ...(c2._certidaoEndereco || {}), endereco: novo, cidade, uf, corrigidoDe: enderecoTexto(pe.endereco) };
+      await prisma.lead.update({ where: { id: leadId }, data: { customFields: c2 as any } });
+      try {
+        const out = await createCertidaoRequest(prisma, { accountId, leadId, uf, cidade, cartorio: pe.cartorio || 'AUTO', pedidoPor: 'ENDERECO', endereco: novo, source: 'AI', userId: pe.userId, sendPix: pe.sendPix !== false });
+        if (pe.oferta) await note(leadId, `${AUTORIZOU_EMISSAO} — o cliente aceitou a emissão pelo endereço e corrigiu o endereço (“${texto.slice(0, 120)}”).`);
+        await note(leadId, `🏛️ O cliente corrigiu o endereço do imóvel: ${enderecoTexto(pe.endereco)} (${pe.cidade}/${pe.uf}) → ${enderecoTexto(novo)} (${cidade}/${uf}). Pedi a certidão de ônus pelo endereço corrigido no ONR${out.duplicate ? ' (já havia um pedido andando)' : ''}.`);
+        io?.to(`account_${accountId}`).emit('certidao_updated', { leadId });
+        if (!out.duplicate && out.agendado) await avisaPixAmanha(accountId, leadId, io);
+      } catch (e: any) { await note(leadId, `⚠️ O cliente corrigiu o endereço (${enderecoTexto(novo)}), mas não consegui pedir a certidão: ${e?.message || e}. Peça pelo card.`); }
+      return;
+    }
+    if (corr && !corr.ok && corr.falta && !(pe as any).pediuCorrecaoAt) {
+      const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+      const r = await sendOutboundWhatsApp({ accountId, leadId, content: /^rua/i.test(corr.falta) ? `Me passa o endereço certo do imóvel, por favor? ${corr.falta}` : corr.falta, io: (io || undefined) as any });
+      if (r.success) {
+        const c3 = { ...((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any> };
+        const { answeredAt: _a, resposta: _r, ...resto } = (c3._certidaoEndereco || {}) as any;
+        c3._certidaoEndereco = { ...resto, pediuCorrecaoAt: new Date().toISOString(), correcaoTexto: texto.slice(0, 400) }; // continua esperando: a próxima resposta é o endereço certo
+        await prisma.lead.update({ where: { id: leadId }, data: { customFields: c3 as any } });
+        await note(leadId, `🏛️ O cliente disse que o endereço do imóvel não é ${enderecoTexto(pe.endereco)} (“${texto.slice(0, 160)}”). Pedi o endereço certo; com ele, o CRM pede a certidão sozinho.`);
+        return;
+      }
+    }
     await note(leadId, `⚠️ O cliente NÃO confirmou o endereço da certidão: “${texto.slice(0, 300)}”. Confira e peça a certidão com o endereço certo (Jarvis: pedir_certidao com o endereço).`);
     try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Endereço da certidão', body: `${fresh?.name || 'Cliente'} corrigiu o endereço do imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
     return;
