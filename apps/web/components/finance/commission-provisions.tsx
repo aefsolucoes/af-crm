@@ -174,6 +174,34 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
   );
 }
 
+/** Símbolo do banco do processo (Fabio 14/11). "Credimorar (Inter)" = banco Inter pago pela Credimorar; "Credimorar" sozinho no Home Equity = Santander.
+ *  Sem banco no card: "?" cinza (a taxa é a padrão do produto). Banco sem imagem em public/banks (BRB…): a sigla. */
+const BANK_FILE: Array<[RegExp, string, string]> = [
+  [/inter/i, 'inter.png', 'Inter'],
+  [/creditas/i, 'creditas-simbolo.svg', 'Creditas'],
+  [/santander/i, 'santander.png', 'Santander'],
+  [/bradesco/i, 'bradesco.png', 'Bradesco'],
+  [/ita[uú]/i, 'itau.png', 'Itaú'],
+  [/caixa/i, 'caixa.png', 'CAIXA'],
+];
+function ProvisionBankIcon({ payer, product }: { payer?: string | null; product?: string | null }) {
+  const [semImagem, setSemImagem] = useState(false);
+  const banco = (/\(([^)]+)\)/.exec(payer || '') || [])[1] || payer || '';
+  const nome = /^credimorar$/i.test(banco.trim()) && /home equity/i.test(product || '') ? 'Santander' : banco.trim();
+  const hit = BANK_FILE.find(([rx]) => rx.test(nome));
+  const box = 'w-8 h-8 flex-shrink-0 rounded-lg';
+  if (hit && !semImagem) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={`/banks/${hit[1]}`} alt={hit[2]} title={payer || hit[2]} className={cn(box, 'object-contain bg-white border border-af-border p-0.5')} onError={() => setSemImagem(true)} />;
+  }
+  const sigla = nome ? nome.replace(/[^A-Za-zÀ-ú]/g, '').slice(0, 3).toUpperCase() : '?';
+  return (
+    <span title={payer || 'Banco não identificado no card — taxa padrão do produto'} className={cn(box, 'flex items-center justify-center text-[10px] font-bold', nome ? 'bg-slate-100 text-slate-600' : 'bg-amber-50 text-amber-600 border border-amber-200')}>
+      {sigla}
+    </span>
+  );
+}
+
 /** Linha de uma provisão em aberto: "Recebido" abre valor + data reais e vira Receita. */
 function ProvisionRow({ p, onEdit, onChanged }: { p: CommissionProvision; onEdit: () => void; onChanged: () => void }) {
   const router = useRouter();
@@ -212,7 +240,9 @@ function ProvisionRow({ p, onEdit, onChanged }: { p: CommissionProvision; onEdit
   return (
     <div className={cn('px-4 py-3 rounded-xl border border-af-border bg-white', p.leadSituacao === 'PERDIDO' && 'opacity-60')}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 flex items-center gap-3">
+          <ProvisionBankIcon payer={p.payer} product={p.product} />
+          <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
             <button onClick={() => router.push(`/inbox?leadId=${p.leadId}`)} className="text-sm font-medium text-slate-800 hover:text-af-mid hover:underline truncate block max-w-full text-left">
               {p.leadName}
@@ -223,6 +253,7 @@ function ProvisionRow({ p, onEdit, onChanged }: { p: CommissionProvision; onEdit
           <p className="text-[11px] text-slate-500 truncate">
             {p.leadStage}{p.payer ? ` · paga: ${p.payer}` : ''}{p.note ? ` · ${p.note}` : ''}
           </p>
+          </div>
         </div>
         <div className="text-xs text-slate-500 sm:text-right flex-shrink-0">
           {String(p.ratePct).replace('.', ',')}% de {formatCurrency(p.baseAmount)}
