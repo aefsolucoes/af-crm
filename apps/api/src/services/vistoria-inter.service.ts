@@ -204,7 +204,10 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   }
 
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
-  await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaRequestedAt: new Date().toISOString() } } });
+  const agoraIso = new Date().toISOString();
+  const cfFresh = (fresh?.customFields || {}) as Record<string, any>;
+  // _vistoriaAi como ENVIADA também (o poller da vistoria e a IA leem esse estado; pelo botão ficava "AGUARDA_EQUIPE" com a vistoria já pedida — Nalia 14/11).
+  await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...cfFresh, _vistoriaRequestedAt: agoraIso, _vistoriaAi: { ...((cfFresh._vistoriaAi || {}) as Record<string, any>), banco: 'INTER', status: 'ENVIADA', at: agoraIso, por: 'equipe' } } } });
   const reservaTxt = via !== acc.address ? ` Saiu pelo ${via} (o ${acc.address} está com erro de login no envio)${copias.length ? `, com cópia pra ${copias.join(', ')}` : ''}.` : '';
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}).${reservaTxt} Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }

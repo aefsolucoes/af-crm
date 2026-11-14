@@ -616,7 +616,10 @@ export async function generateAiAutoReply(
   // esforco: quanto o modelo raciocina antes de escrever (output_config.effort). Sem ele = o padrão do modelo (a resposta automática ao cliente segue assim).
   // O botão "Sugerir resposta" usa 'low' (Fabio 06/11, "Sim, colocar": no teste em 5 conversas reais caiu de ~18,5 s pra ~3,4 s, texto parecido, e sumiram as falhas
   // em que a IA pensava até o limite e não escrevia nada). teste = comparação do admin pela API (não pede leitura nova dos bancos nem repete a chamada se a API recusar).
-  opts: { sugestao?: boolean; botaoSugerir?: boolean; esforco?: 'low' | 'medium' | 'high'; teste?: boolean } = {},
+  // retomada (Fabio 14/11: "sempre que a IA estiver desligada e eu a ligar, ela precisa ler a conversa inteira do cliente, analisar e, se necessário, encaminhar msg com base
+  // nas últimas conversas, sem solicitar algo que o cliente já mandou ou mandar algo que já havia mandado"): instruções da retomada (retomarComIa) que vão no topo do prompt.
+  // Com ela não valem os atalhos de "ok"/despedida — a IA analisa a conversa inteira — e, no modo sugestão, ela pode ficar quieta (reply "NADA").
+  opts: { sugestao?: boolean; botaoSugerir?: boolean; esforco?: 'low' | 'medium' | 'high'; teste?: boolean; retomada?: string } = {},
 ): Promise<AiAutoReplyResult | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey || !incomingText.trim()) return null;
@@ -630,7 +633,7 @@ export async function generateAiAutoReply(
     // usufruto, sem matrícula, parcela atrasada…): não é só confirmação — a
     // IA precisa ver pra marcar Perdido (Fabio 08/10, Marcelo).
     const NOT_VIABLE_RE = /n[aã]o (é|e|seria|fica) (aceit|poss[ií]vel|vi[aá]vel)|n[aã]o d[aá] (pra|para) (seguir|fazer)|n[aã]o (conseguimos|consegue|vai dar)|precisa(ria)? (estar|ser) [^.]{0,40}(quitad|em dia|regulari|sem usufruto)|sem (matr[ií]cula|registro)/i;
-    const closing = opts.sugestao ? null : farewellReply(incomingText);
+    const closing = opts.sugestao || opts.retomada ? null : farewellReply(incomingText);
     if (closing) {
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
@@ -647,7 +650,7 @@ export async function generateAiAutoReply(
         return { reply: espera ? `${closing} ${FICO_NO_AGUARDO}` : closing, handoff: false };
       }
     }
-    if (!opts.sugestao && isAcknowledgmentOnly(incomingText)) {
+    if (!opts.sugestao && !opts.retomada && isAcknowledgmentOnly(incomingText)) {
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
         orderBy: { createdAt: 'desc' },
@@ -748,7 +751,7 @@ ${R.CREDIT_ANALYSIS_RULES}
 ${R.NO_RECEIPT_LIST_RULES}
 
 ${R.NO_REPLY_RULES}`;
-    const systemDynamic = `${opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado, String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaDe || '') || null)}
+    const systemDynamic = `${opts.retomada ? `${opts.retomada}\n\n` : opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado, String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaDe || '') || null)}
 
 ${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
 

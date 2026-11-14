@@ -1717,25 +1717,36 @@ export async function retomarComIa(accountId: string, leadId: string, io: any): 
   if (D.etapaConfere(lead.stage?.name || '', cf)) await D.checkDocsComplete(accountId, leadId, io).catch((e: any) => console.error('[IA ligada] documentos:', e?.message));
   // 3) banco do FH escolhido sem o pacote
   await (require('./fh-approval.service') as typeof import('./fh-approval.service')).retomarEscolhaFh(accountId, leadId, io).catch((e: any) => console.error('[IA ligada] FH:', e?.message));
+  // Regras da retomada (Fabio 14/11: "sempre que a IA estiver desligada e eu a ligar, ela precisa ler a conversa inteira do cliente, analisar e, se necessário, encaminhar
+  // msg com base nas últimas conversas, sem solicitar algo que o cliente já mandou ou mandar algo que já havia mandado"). Valem pra resposta ao cliente que ficou esperando
+  // e pra análise quando ele não escreveu. Antes, a IA religada respondia a última mensagem como se fosse nova (Nalia: o "Seguir com esta" de 13/11, já tratado pela equipe).
+  const REGRAS_RETOMADA = `- Leia a conversa INTEIRA (WhatsApp, e-mails e o que a equipe disse) e o contexto do card antes de decidir. Responda com base nas ÚLTIMAS conversas: o que a equipe (ou o CRM) já disse, resolveu ou encaminhou depois, IGNORE.
+- NUNCA peça documento ou informação que o cliente JÁ MANDOU (veja a conversa e a linha DOCUMENTOS do contexto), nem cobre de novo o que já foi pedido e segue em aberto — a não ser que ele pergunte.
+- NUNCA repita o que JÁ FOI MANDADO: resumo/aviso de aprovação, simulação, lista de documentos, PIX, links, explicações e perguntas que já estão na conversa.
+- Não diga que a IA estava desligada nem que é mensagem automática. Uma mensagem curta e natural, só com o que ainda falta.`;
+  const quando = (d: string | Date) => new Date(d).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
   // 4) o cliente falou por último
   const soDocsParaProposta = pendentes.length > 0 && pendentes.every((m) => m.attachments.length) && /prospec|follow|sem retorno/.test(fase); // a proposta pelos documentos pergunta o que falta
   if (pendentes.length && !soDocsParaProposta && !(await falouAlgo())) {
     const phone = [lead.contact?.whatsappPhone, lead.contact?.phone].map((x) => (x || '').trim()).find((x) => x && !x.includes('@'));
-    if (phone) await maybeAiAutoReplyCloudApi(accountId, leadId, ultimaIn.content || '(mensagem)', phone, io, lead.pipeline?.departmentId);
+    const retomada = `RETOMADA (a equipe acabou de LIGAR a IA deste card; ela estava desligada): o cliente escreveu pelo WhatsApp enquanto ela estava desligada (a última mensagem dele é de ${quando(ultimaIn.createdAt)}) e ninguém respondeu por ali. Responda SÓ se ainda for necessário:\n${REGRAS_RETOMADA}\n- Se a mensagem dele já foi atendida (pela equipe, por e-mail, pelo CRM) ou não pede resposta agora, "noReply": true.`;
+    if (phone) await maybeAiAutoReplyCloudApi(accountId, leadId, ultimaIn.content || '(mensagem)', phone, io, lead.pipeline?.departmentId, retomada);
   }
-  // 5) pendências
-  if (Object.keys(pend).length) {
-    const lista = Object.values(pend).sort((a, b) => a.em.localeCompare(b.em)).map((p) => `• ${p.o} (desde ${new Date(p.em).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })})`).join('\n');
-    const aviso = `[AVISO DO CRM — a IA deste card acabou de ser religada; o cliente NÃO escreveu nada agora] Enquanto a IA estava desligada, estas coisas ficaram por dizer ao cliente:\n${lista}\nLeia a conversa INTEIRA: o que a equipe (ou você, agora há pouco) já disse ou já resolveu depois disso, IGNORE. Se ainda sobrar algo, escreva UMA mensagem curta e natural retomando só o que falta — sem dizer que estava desligada nem que é mensagem automática. Se não sobrar nada, responda exatamente NADA.`;
-    const r = await generateAiAutoReply(accountId, leadId, aviso, [], { sugestao: true }).catch(() => null);
+  // 5) análise da conversa: as pendências de quando ela estava desligada e, sem cliente esperando, se ainda há algo necessário a dizer (o normal é nada)
+  if (Object.keys(pend).length || (!pendentes.length && !(await falouAlgo()))) {
+    const lista = Object.values(pend).sort((a, b) => a.em.localeCompare(b.em)).map((p) => `• ${p.o} (desde ${quando(p.em)})`).join('\n');
+    const aviso = `[AVISO DO CRM — a IA deste card acabou de ser religada; o cliente NÃO escreveu nada agora]${lista ? ` Enquanto a IA estava desligada, estas coisas ficaram por dizer ao cliente:\n${lista}` : ' Nada ficou registrado como pendente.'}\nAnalise a conversa e diga se ainda é NECESSÁRIO mandar algo agora.`;
+    const retomada = `RETOMADA (a equipe acabou de LIGAR a IA deste card; ela estava desligada; o cliente não escreveu agora). As ações do JSON não serão aplicadas.\n${REGRAS_RETOMADA}\n- A última palavra da conversa foi nossa${lista ? ', mas há pendências listadas na mensagem' : ''}: só escreva se ${lista ? 'sobrar alguma pendência que a conversa ainda não tratou' : 'a conversa mostrar algo que o cliente está esperando de nós e que a equipe ainda não disse'}. Na dúvida, não escreva.\n- Se não for necessário mandar nada, a "reply" é exatamente NADA.`;
+    const r = await generateAiAutoReply(accountId, leadId, aviso, [], { sugestao: true, retomada }).catch(() => null);
     const texto = String(r?.reply || '').trim();
-    if (texto && !/^nada[.!]?$/i.test(texto)) {
+    if (!lista && (!texto || /^nada[.!]?$/i.test(texto))) { /* sem pendência e nada a dizer: segue quieta */ }
+    else if (texto && !/^nada[.!]?$/i.test(texto)) {
       const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
       const env = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
       await nota(env.success ? `🤖 IA ligada: retomou o que tinha ficado parado — "${texto}"` : `🤖 IA ligada: a mensagem retomando as pendências não saiu (${(env as any).error || 'erro'}). Pendências: ${lista}`);
       if (!env.success) return; // ficam pra próxima vez
     } else await nota(`🤖 IA ligada: as pendências de quando ela estava desligada já tinham sido tratadas na conversa — nada a dizer.\n${lista}`);
-    await P.limparPendenciasIa(leadId);
+    if (lista) await P.limparPendenciasIa(leadId);
   }
   if (destravados.length) await nota(`🤖 IA ligada: voltaram a andar sozinhos ${destravados.map((k) => ({ _rendaCasal: 'a pergunta da renda do casal', _ocorrencias: 'a orientação das ocorrências no nome', _quitacaoAverbar: 'o pedido de averbar a quitação', _transferenciaAsk: 'o pedido de transferir o imóvel', _laudoAsk: 'as perguntas do laudo' } as Record<string, string>)[k] || k).join(', ')}.`);
 }
@@ -1744,11 +1755,11 @@ export async function retomarComIa(accountId: string, leadId: string, io: any): 
 // ficou sem resposta). Cada resposta em andamento deixa a marca `_iaRespondendo` no card (só essa chave, por SQL); quem termina tira a SUA marca. Marca de antes de o
 // servidor subir = resposta interrompida → `retomarRespostasInterrompidas` responde de novo, se o cliente ainda for o último a falar.
 const SERVER_BOOT_AT = Date.now();
-async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
+async function maybeAiAutoReplyCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null, retomada?: string): Promise<void> {
   const marca = new Date().toISOString();
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_iaRespondendo}', to_jsonb(${marca}::text), true) WHERE id = ${leadId}`.catch(() => {});
   try {
-    await respostaIaCloudApi(accountId, leadId, incomingText, phone, io, departmentId);
+    await respostaIaCloudApi(accountId, leadId, incomingText, phone, io, departmentId, retomada);
   } finally {
     await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_iaRespondendo' WHERE id = ${leadId} AND "customFields"->>'_iaRespondendo' = ${marca}`.catch(() => {});
   }
@@ -1827,7 +1838,7 @@ export async function retomarRespostasSemApi(io: any): Promise<void> {
   }
 }
 
-async function respostaIaCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null): Promise<void> {
+async function respostaIaCloudApi(accountId: string, leadId: string, incomingText: string, phone: string, io: any, departmentId?: string | null, retomada?: string): Promise<void> {
   try {
     const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!lead?.aiAutoReplyActive || (lead.customFields as any)?._autoPaused) return; // Stop total do cliente: a IA não responde
@@ -1881,7 +1892,7 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
         }
       }
     } catch (e: any) { console.error('[IA] conferência por "já enviei" falhou:', e?.message); }
-    const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images);
+    const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images, retomada ? { retomada } : {});
     if (!genResult) return;
     // Chegou outra mensagem enquanto a resposta era gerada (leva alguns
     // segundos): descarta esta — a da mensagem nova responde tudo, com o
