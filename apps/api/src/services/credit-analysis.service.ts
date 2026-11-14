@@ -2419,6 +2419,11 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
   try {
     if (process.env.AI_SKIP_REFRESH === '1') return { asked: false, waited: false }; // só pra teste (não cria pedido nas extensões)
     if (!PERGUNTA_DE_STATUS.test(String(p.text || ''))) return { asked: false, waited: false };
+    // Card já EM CONTRATAÇÃO com o banco escolhido (Fabio 14/11, Adriano/Cássia: "por que a IA fez essa conferência?" — o áudio falava de "dinheiro no banco" e o "Sugerir resposta" pediu leitura
+    // nova): a análise acabou; ler os portais de novo só repete a leitura — e no Credimorar FH a conferência clica de novo em "Aceitar"/"Enviar" na ação pendente. Vale a leitura salva.
+    const naContratacao = await db.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true, pipeline: { select: { name: true } } } });
+    if (/em contrata/i.test(naContratacao?.pipeline?.name || '')
+      && (!!(naContratacao?.customFields as any)?._fhChosen?.bank || !!(await db.creditAnalysis.findFirst({ where: { leadId: p.leadId, chosen: true, dryRun: false }, select: { id: true } })))) return { asked: false, waited: false };
     const ran = await db.creditAnalysis.findMany({
       where: { leadId: p.leadId, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } },
       orderBy: { updatedAt: 'desc' }, select: { bank: true, updatedAt: true },

@@ -102,11 +102,20 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   const end = await enderecoDoImovel(leadId, cf).catch(() => null);
   const itens = itensDoPedido(banco, cf, compradores, !!end || !vazio(((cf._dadosVistoriaFh || {}) as Dados).imovel?.cep));
-  if (!itens.length) { await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens: [], completoAt: new Date().toISOString() }); return true; }
+  // Documentação do imóvel (pra vistoria) e do vendedor (contratação) que ainda não chegou — vai na mesma mensagem (Fabio 14/11: "solicita toda a documentação, imóvel e vendedor, mas se ela
+  // mandar já a do imóvel já pode ir providenciando a vistoria").
+  const docs = await (require('./fh-approval.service') as typeof import('./fh-approval.service')).pedidoDocsImovelVendedor(accountId, cf).catch(() => '');
+  if (!itens.length && !docs) { await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens: [], completoAt: new Date().toISOString() }); return true; }
   const avisaEquipe = async (motivo: string) => {
     if (st.teamNoteAt && !opts.manual) return;
+    if (!itens.length) { // só a documentação do imóvel/vendedor
+      await salvaDadosSt(leadId, { teamNoteAt: new Date().toISOString() });
+      await note(leadId, `🏠 Vistoria do ${banco} (Financiamento): falta pedir ao cliente a documentação do imóvel (com ela a vistoria já pode ser pedida) e a do vendedor (pode vir depois). ${motivo}`);
+      push(accountId, `🏠 Documentos do imóvel (${banco})`, `${lead.name}: pedir ao cliente a documentação do imóvel e do vendedor`, leadId);
+      return;
+    }
     await salvaDadosSt(leadId, { teamNoteAt: new Date().toISOString() });
-    await note(leadId, `🏠 Vistoria do ${banco} (Financiamento): falta saber pelo cliente ${itens.map((i) => ({ contato: 'o contato de quem recebe o engenheiro (corretor ou vendedor)', contaComprador: `a conta do comprador no ${banco} (sem conta: abrir pelo app)`, vendedor: 'e-mail/telefone/profissão do vendedor', conta: 'a conta do vendedor pra crédito', comprador: 'profissão/e-mail dos compradores', imovel: 'o endereço completo do imóvel' } as Record<string, string>)[i]).join('; ')}. ${motivo} Preencha "Contato vistoria" no card (e os dados na anotação) quando tiver.`);
+    await note(leadId, `🏠 Vistoria do ${banco} (Financiamento): falta saber pelo cliente ${itens.map((i) => ({ contato: 'o contato de quem recebe o engenheiro (corretor ou vendedor)', contaComprador: `a conta do comprador no ${banco} (sem conta: abrir pelo app)`, vendedor: 'e-mail/telefone/profissão do vendedor', conta: 'a conta do vendedor pra crédito', comprador: 'profissão/e-mail dos compradores', imovel: 'o endereço completo do imóvel' } as Record<string, string>)[i]).join('; ')}${docs ? '; e pedir a documentação do imóvel (com ela a vistoria já pode ser pedida) e a do vendedor (pode vir depois)' : ''}. ${motivo} Preencha "Contato vistoria" no card (e os dados na anotação) quando tiver.`);
     push(accountId, `🏠 Dados da vistoria (${banco})`, `${lead.name}: pedir ao cliente o contato do corretor/vendedor`, leadId);
   };
   const { contractingAutoOn } = require('./contracting-auto.service') as typeof import('./contracting-auto.service');
@@ -117,10 +126,12 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   if (!(await whatsappWindowOpen(leadId))) { await avisaEquipe('A janela de 24 h do WhatsApp está fechada: a pergunta sai assim que o cliente responder.'); return false; }
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
-  const r = await sendOutboundWhatsApp({ accountId, leadId, content: textoPedidoDados(nome, itens, compradores.length > 1, banco), io });
+  const conteudo = itens.length ? `${textoPedidoDados(nome, itens, compradores.length > 1, banco)}${docs ? `\n\n${docs}` : ''}` : `${nome ? `${nome}, p` : 'P'}${docs.slice(1)}`;
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: conteudo, io });
   if (!r.success) return false;
-  await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens });
-  await note(leadId, `🏠 Pedi ao cliente os dados da vistoria do ${banco}: ${itens.join(', ')}. A resposta é lida e vai pro card ("Contato vistoria" e os dados do vendedor).`);
+  await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens, ...(itens.length ? {} : { completoAt: new Date().toISOString() }) });
+  if (docs) await patchCf(leadId, (c) => { c._fhDocsImovelAt = new Date().toISOString(); });
+  await note(leadId, `🏠 Pedi ao cliente ${itens.length ? `os dados da vistoria do ${banco}: ${itens.join(', ')}` : ''}${itens.length && docs ? ' e ' : ''}${docs ? 'a documentação do imóvel (com ela a vistoria já pode ser pedida) e a do vendedor (pode vir depois)' : ''}.${itens.length ? ' A resposta é lida e vai pro card ("Contato vistoria" e os dados do vendedor).' : ''}`);
   return true;
 }
 

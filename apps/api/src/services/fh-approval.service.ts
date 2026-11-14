@@ -579,7 +579,10 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
         await requestSimulationDocs(prisma as any, { accountId, leadId: lead.id, institutions: [instNova], source: 'AI', caption: `Segue a nova simulação do financiamento no ${banco} em PDF 📄` });
       } catch (e: any) { await note(lead.id, `⚠️ Não consegui pedir a simulação do ${banco} em PDF (${e?.message}). Mande à mão.`); }
     }
-    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}*${cf._fhDocsAt ? ' nessa nova proposta' : ''}. Já te mando a simulação em PDF.` });
+    // Já passou da documentação do comprador (Fabio 14/11): na mesma mensagem, a do imóvel (pra vistoria) e a do vendedor (contratação) — só o que ainda não chegou.
+    const docs = adiante ? await pedidoDocsImovelVendedor(accountId, cf).catch(() => '') : '';
+    const env = await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}*${cf._fhDocsAt ? ' nessa nova proposta' : ''}. Já te mando a simulação em PDF.${docs ? `\n\n${docs}` : ''}` });
+    if (docs && env.success) { await saveCf(lead.id, { _fhDocsImovelAt: new Date().toISOString() }); await note(lead.id, `🏠 Financiamento (${banco}): pedi ao cliente a documentação do imóvel e do vendedor que ainda não estava na pasta. Com a do imóvel, a vistoria já pode ser pedida; a do vendedor pode vir depois (Fabio 14/11).`); }
     return true;
   }
   const pausa = () => new Promise((r) => setTimeout(r, 1200));
@@ -594,7 +597,8 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   // Na escolha já vão a LISTA DE DOCUMENTOS, os PRÓXIMOS PASSOS e as TAXAS, e o card vai pra Aguardando Documentação (Fabio 27/10).
   const { texto, comRenda } = await docsBancoEscolhido(accountId, cf, banco);
   const conta = (require('./approval-notice.service') as typeof import('./approval-notice.service')).avisoContaNoBanco(banco); // Fabio 30/10: sem conta no banco, abrir pelo app
-  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.${conta ? `\n\n${conta}` : ''}\n\n${texto}` });
+  // A vistoria não espera o vendedor (Fabio 14/11): com os documentos do comprador e do imóvel ela já é pedida; os do vendedor podem vir depois (a conferência não segura por eles).
+  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Vamos seguir com o *${banco}*. Já te mando a simulação em PDF.${conta ? `\n\n${conta}` : ''}\n\n${texto}\n\nCom os seus documentos e os do imóvel eu já peço a vistoria 🏠 — os do vendedor podem vir junto ou logo depois (são pra contratação, que vem depois da vistoria).` });
   const passos = await template(accountId, 'Proximos passos financiamento');
   if (passos) { await pausa(); await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: passos }); await saveCf(lead.id, { _fhPassosAt: new Date().toISOString() }); }
   const taxas = await template(accountId, 'Taxas Financiamento Habitacional');
@@ -627,6 +631,35 @@ async function blocoImovelVendedor(accountId: string): Promise<string> {
   const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
   const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
   return `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}\n\n*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone`;
+}
+
+/** Fecho da lista de documentos do Financiamento (Fabio 14/11): a vistoria não espera o vendedor. */
+export const FECHO_VISTORIA_SEM_VENDEDOR = 'Assim que chegar a documentação do imóvel, já peço a vistoria 🏠 — a do vendedor pode vir junto ou logo depois (ela é pra contratação, que vem depois da vistoria).';
+
+/** Pedido da documentação do IMÓVEL e do VENDEDOR depois da escolha do banco, pra quem já mandou a do comprador (Fabio 14/11, Adriano/Cássia: "solicita toda a documentação, imóvel e vendedor,
+ *  mas se ela mandar já a documentação do imóvel já pode ir providenciando a vistoria para o processo não ficar parado"). Só o que ainda não está na pasta do Drive (IMOVEL com matrícula/ônus;
+ *  VENDEDOR com algum arquivo). '' = nada a pedir (ou já pedido: `_fhDocsImovelAt`). */
+export async function pedidoDocsImovelVendedor(accountId: string, cf: Cf): Promise<string> {
+  if (cf._fhDocsImovelAt || cf._fhDocsAt) return ''; // já pedida (aqui ou na lista completa que vai com a escolha do banco)
+  let temImovel = false; let temVendedor = false;
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (link) {
+    try {
+      const { extractFolderId, listAllFilesInFolderTree } = await import('./google.service');
+      const files = await listAllFilesInFolderTree(accountId, extractFolderId(link), 3);
+      temImovel = files.some((f) => /^IMOVEL/i.test(f.path) && /MATRICULA|ONUS/i.test(f.name));
+      temVendedor = files.some((f) => /^VENDEDOR/i.test(f.path));
+    } catch { /* sem leitura da pasta: pede tudo */ }
+  }
+  if (temImovel && temVendedor) return '';
+  const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
+  const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
+  const partes = [
+    !temImovel ? `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}` : '',
+    !temVendedor ? `*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone` : '',
+  ].filter(Boolean);
+  const abre = !temImovel ? 'Pra eu solicitar a vistoria do imóvel, preciso da documentação abaixo:' : 'Pra contratação, que vem depois da vistoria, vou precisar da documentação do vendedor:';
+  return `${abre}\n\n${partes.join('\n\n')}${!temImovel ? `\n\n${temVendedor ? 'Assim que chegar a documentação do imóvel, já peço a vistoria 🏠' : FECHO_VISTORIA_SEM_VENDEDOR}` : ''}`;
 }
 
 /** Lista de documentos do comprador pelo PERFIL (Respostas rápidas "Documentos comprador …" — a equipe edita lá). */

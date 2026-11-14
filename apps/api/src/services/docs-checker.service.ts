@@ -899,15 +899,22 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   // NÃO SEGURAM A VISTORIA (Fabio 14/11, Fabricio: "esses dois arquivos não são impeditivos para solicitar a vistoria, então já poderia seguir pra vistoria e avisar ao cliente que
   // será necessário encaminhar esses dois documentos depois"): comprovante de residência e descritivo da parcela — faltando ou com problema — não seguram a documentação quando são
   // o ÚNICO pendente. A documentação conta como completa (card segue pra contratação/vistoria) e o cliente ouve que precisa mandar esses dois depois.
-  const NAO_SEGURA = /comprovante de resid|descritivo d[ao] (parcela|financiamento)|extrato das presta/i;
+  // Financiamento com banco escolhido (Fabio 14/11, Adriano/Cássia): "solicita toda a documentação, imóvel e vendedor, mas se ela mandar já a documentação do imóvel já pode ir providenciando a vistoria
+  // para o processo não ficar parado" — os documentos do VENDEDOR são da contratação, que vem depois da vistoria: também não seguram.
+  const fhComBanco = /habitacional/i.test(lead.pipeline?.department?.name || '') && !fhSoComprador && !caixaRota;
+  const NAO_SEGURA = fhComBanco
+    ? /comprovante de resid|descritivo d[ao] (parcela|financiamento)|extrato das presta|vendedor/i
+    : /comprovante de resid|descritivo d[ao] (parcela|financiamento)|extrato das presta/i;
   const depois: string[] = [];
   {
     const faltaSegura = verdict && !verdict.complete ? verdict.faltando.filter((f) => !NAO_SEGURA.test(f)) : [];
-    const probSegura = (review?.problemas || []).filter((p) => !NAO_SEGURA.test(`${p.doc} ${p.texto.join(' ')}`));
+    // Problema num documento: "vendedor" só vale pelo NOME do documento (um RG do comprador cujo texto cite o vendedor continua segurando).
+    const probNaoSegura = (p: { doc: string; texto: string[] }) => NAO_SEGURA.test(`${p.doc} ${p.texto.join(' ').replace(/vendedor/gi, '')}`);
+    const probSegura = (review?.problemas || []).filter((p) => !probNaoSegura(p));
     const faltaDepois = verdict && !verdict.complete ? verdict.faltando.filter((f) => NAO_SEGURA.test(f)) : [];
-    const probDepois = (review?.problemas || []).filter((p) => NAO_SEGURA.test(`${p.doc} ${p.texto.join(' ')}`));
+    const probDepois = (review?.problemas || []).filter((p) => probNaoSegura(p));
     if (verdict && !faltaSegura.length && !probSegura.length && (faltaDepois.length || probDepois.length) && !(review?.duvidas.length) && !(review?.donoPendente.length)) {
-      const rotulo = (t: string) => /descritivo|presta/i.test(t) ? 'Descritivo da parcela do financiamento em PDF (o extrato das prestações que o app do banco gera)' : /resid/i.test(t) ? 'Comprovante de residência' : t;
+      const rotulo = (t: string) => /vendedor/i.test(t) ? t : /descritivo|presta/i.test(t) ? 'Descritivo da parcela do financiamento em PDF (o extrato das prestações que o app do banco gera)' : /resid/i.test(t) ? 'Comprovante de residência' : t;
       depois.push(...Array.from(new Set([...faltaDepois.map(rotulo), ...probDepois.map((p) => rotulo(p.doc))])));
       verdict.faltando = [];
       verdict.complete = true;
