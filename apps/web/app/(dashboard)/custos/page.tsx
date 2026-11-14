@@ -25,6 +25,7 @@ interface Overview {
   trend: { month: string; totalBrl: number; byProvider: Record<string, number> }[];
   entries: Entry[];
   providerOptions: { key: string; label: string; auto: boolean }[];
+  metaAds?: { auto: true; source: string; accounts: number } | { auto: false; reason: string };
 }
 interface MonthRow { month: string; entered: number; approved: number; docsSent: number; contracted: number }
 
@@ -102,9 +103,12 @@ export default function CustosPage() {
   const prevTotal = data?.trend.length && data.trend.length > 1 ? data.trend[data.trend.length - 2].totalBrl : null;
   const total = data?.selected.totalBrl ?? 0;
   const per = (count: number | undefined) => (count && count > 0 && total > 0 ? brl(total / count) : '—');
+  const adsBrl = data?.selected.providers.find((p) => p.provider === 'META_ADS')?.brl ?? 0;
+  const newCampaign = () => setForm({ ...EMPTY_FORM, provider: 'META_ADS', month });
 
   async function saveEntry() {
     if (!form) return;
+    if (form.provider === 'META_ADS' && !form.campaign.trim()) { toast('Digite o nome da campanha', 'error'); return; }
     setSaving(true);
     const body = {
       provider: form.provider, label: form.label, amount: Number(String(form.amount).replace(/\./g, '').replace(',', '.')), currency: form.currency,
@@ -169,13 +173,19 @@ export default function CustosPage() {
 
         {data && (
           <>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
               <Kpi
                 label={month === nowMonth() ? 'Total até agora' : 'Total do mês'}
                 value={brl(total)}
                 hint={prevTotal != null && prevTotal > 0 ? `${total >= prevTotal ? '▲' : '▼'} ${brl(Math.abs(total - prevTotal))} contra ${monthLabel(shiftMonth(month, -1), true)} (${brl(prevTotal)})` : `${usd(data.selected.providers.reduce((s, p) => s + p.usd, 0))} no câmbio usado`}
               />
-              <Kpi label="Custo por lead" value={per(row?.entered)} hint={row ? `${n0(row.entered)} cards novos no mês` : 'carregando…'} />
+              <Kpi
+                label="Campanhas (Meta Ads)"
+                value={brl(adsBrl)}
+                cls="text-[#2563eb]"
+                hint={adsBrl > 0 ? `${row?.entered ? `${brl(adsBrl / row.entered)} de campanha por lead · ` : ''}${total > 0 ? Math.round((adsBrl / total) * 100) : 0}% do total` : data.metaAds?.auto ? 'lido da Meta — nada gasto no mês' : 'lance o valor pago em cada campanha'}
+              />
+              <Kpi label="Custo por lead" value={per(row?.entered)} hint={row ? `${n0(row.entered)} cards novos no mês · inclui campanhas` : 'carregando…'} />
               <Kpi label="Custo por aprovado" value={per(row?.approved)} hint={row ? `${n0(row.approved)} aprovados (chegaram em Aguardando Documentação)` : 'carregando…'} />
               <Kpi label="Custo por contratação" value={per(row?.contracted)} hint={row ? `${n0(row.contracted)} chegaram na vistoria do imóvel` : 'carregando…'} />
             </div>
@@ -215,7 +225,7 @@ export default function CustosPage() {
                         <span className="text-[11px] text-slate-400 w-10 text-right">{pct >= 1 ? `${Math.round(pct)}%` : pct > 0 ? '<1%' : ''}</span>
                         <ChevronDown size={14} className={cn('text-slate-400 transition-transform', isOpen && 'rotate-180')} />
                       </button>
-                      {isOpen && <BlockDetail b={b} onEdit={editEntry} onDelete={removeEntry} />}
+                      {isOpen && <BlockDetail b={b} onEdit={editEntry} onDelete={removeEntry} onAddCampaign={newCampaign} metaAds={data.metaAds} />}
                     </div>
                   );
                 })}
@@ -226,7 +236,12 @@ export default function CustosPage() {
             <Card
               title="Lançamentos manuais"
               sub="Custos que o CRM não lê sozinho (Railway, campanhas da Meta, domínio…) e a fatura real de quem o CRM só estima (Anthropic). Recorrente = vale todo mês."
-              right={<Button size="sm" onClick={() => setForm({ ...EMPTY_FORM, month })}><Plus size={14} /> Novo lançamento</Button>}
+              right={
+                <div className="flex gap-2">
+                  {!data.metaAds?.auto && <Button size="sm" variant="ghost" onClick={newCampaign}><Plus size={14} /> Campanha</Button>}
+                  <Button size="sm" onClick={() => setForm({ ...EMPTY_FORM, month })}><Plus size={14} /> Novo lançamento</Button>
+                </div>
+              }
             >
               {form && (
                 <div className="border border-af-border rounded-lg p-3 mb-3 bg-slate-50 grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
@@ -235,10 +250,16 @@ export default function CustosPage() {
                       {data.providerOptions.map((p) => <option key={p.key} value={p.key}>{p.label}</option>)}
                     </select>
                   </label>
-                  <label className="flex flex-col gap-1 md:col-span-2">Descrição
-                    <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Ex.: Plano Pro, Campanha Home Equity…" className="border border-af-border rounded px-2 py-1.5 bg-white text-sm" />
-                  </label>
-                  <label className="flex flex-col gap-1">Valor
+                  {form.provider === 'META_ADS' ? (
+                    <label className="flex flex-col gap-1 md:col-span-2">Campanha
+                      <input value={form.campaign} onChange={(e) => setForm({ ...form, campaign: e.target.value })} placeholder="Nome da campanha (como está no Gerenciador de Anúncios)" className="border border-af-border rounded px-2 py-1.5 bg-white text-sm" />
+                    </label>
+                  ) : (
+                    <label className="flex flex-col gap-1 md:col-span-2">Descrição
+                      <input value={form.label} onChange={(e) => setForm({ ...form, label: e.target.value })} placeholder="Ex.: Plano Pro, Assinatura…" className="border border-af-border rounded px-2 py-1.5 bg-white text-sm" />
+                    </label>
+                  )}
+                  <label className="flex flex-col gap-1">{form.provider === 'META_ADS' ? 'Valor pago no mês' : 'Valor'}
                     <div className="flex gap-1">
                       <input value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0,00" inputMode="decimal" className="border border-af-border rounded px-2 py-1.5 bg-white text-sm w-full" />
                       <select value={form.currency} onChange={(e) => setForm({ ...form, currency: e.target.value })} className="border border-af-border rounded px-1 bg-white text-sm"><option value="BRL">R$</option><option value="USD">US$</option></select>
@@ -257,13 +278,8 @@ export default function CustosPage() {
                     <label className="flex flex-col gap-1 md:col-span-2">Tipo
                       <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} className="border border-af-border rounded px-2 py-1.5 bg-white text-sm">
                         <option value="EXTRA">Custo adicional (soma ao automático)</option>
-                        <option value="ACTUAL">Fatura real (substitui a estimativa do mês)</option>
+                        <option value="ACTUAL">{form.provider === 'META_ADS' ? 'Valor real (substitui o lido da Meta no mês)' : 'Fatura real (substitui a estimativa do mês)'}</option>
                       </select>
-                    </label>
-                  )}
-                  {form.provider === 'META_ADS' && (
-                    <label className="flex flex-col gap-1 md:col-span-2">Campanha
-                      <input value={form.campaign} onChange={(e) => setForm({ ...form, campaign: e.target.value })} placeholder="Nome da campanha" className="border border-af-border rounded px-2 py-1.5 bg-white text-sm" />
                     </label>
                   )}
                   <label className="flex flex-col gap-1 md:col-span-4">Observação
@@ -293,7 +309,7 @@ export default function CustosPage() {
             </Card>
 
             <p className="text-[11px] text-slate-400">
-              Como ler: <b>WhatsApp</b> é o valor real cobrado pela Meta (pode atrasar até 1 dia); <b>Anthropic</b> e <b>Voyage</b> são estimativas pelo uso gravado pelo CRM, a preço de tabela — confira com a fatura e lance a real aqui; o resto é o que você lançar.
+              Como ler: <b>WhatsApp</b> é o valor real cobrado pela Meta (pode atrasar até 1 dia); <b>Campanhas</b> {data.metaAds?.auto ? 'é o gasto real lido da conta de anúncios' : 'é o que você lançar por campanha'} e entra no custo por lead, por aprovado e por contratação; <b>Anthropic</b> e <b>Voyage</b> são estimativas pelo uso gravado pelo CRM, a preço de tabela — confira com a fatura e lance a real aqui; o resto é o que você lançar.
               Meses passados usam a cotação de hoje.
             </p>
           </>
@@ -303,7 +319,7 @@ export default function CustosPage() {
   );
 }
 
-function BlockDetail({ b, onEdit, onDelete }: { b: Block; onEdit: (e: Entry) => void; onDelete: (e: Entry) => void }) {
+function BlockDetail({ b, onEdit, onDelete, onAddCampaign, metaAds }: { b: Block; onEdit: (e: Entry) => void; onDelete: (e: Entry) => void; onAddCampaign: () => void; metaAds?: Overview['metaAds'] }) {
   const d = b.auto?.detail || {};
   return (
     <div className="pl-7 pr-2 pb-3 space-y-2 text-xs text-slate-600">
@@ -360,6 +376,34 @@ function BlockDetail({ b, onEdit, onDelete }: { b: Block; onEdit: (e: Entry) => 
           {d.cicloAtualUsd != null && <p className="mt-1">Ciclo atual até agora: <b>{usd(d.cicloAtualUsd)}</b>{d.cicloAte ? ` — fecha em ${d.cicloAte.split('-').reverse().join('/')} e entra no mês da cobrança` : ''}.</p>}
         </div>
       )}
+      {b.provider === 'META_ADS' && (
+        <div>
+          {b.auto && !b.auto.error ? (
+            b.auto.noData ? <p>Nenhum gasto de campanha nesse mês na conta de anúncios.</p> : (
+              <>
+                <p>Gasto <b>real</b> lido da conta de anúncios ({(d.accounts || []).map((a: any) => a.name).join(', ')}).</p>
+                <table className="mt-1 w-full max-w-xl"><tbody>
+                  {(d.campaigns || []).map((c: any, i: number) => (
+                    <tr key={c.id || i} className="border-t border-slate-100">
+                      <td className="py-1 pr-2 truncate max-w-[300px]">{c.name}{(d.accounts || []).length > 1 ? <span className="text-slate-400"> · {c.account}</span> : ''}</td>
+                      <td className="text-right w-24">{c.currency === 'USD' ? usd(c.spend) : brl(c.brl)}</td>
+                      {c.currency === 'USD' && <td className="text-right w-24 text-slate-400">{brl(c.brl)}</td>}
+                    </tr>
+                  ))}
+                </tbody></table>
+                {d.partialError && <p className="text-amber-700 mt-1">Uma conta não respondeu: {d.partialError}</p>}
+                {b.replacedAuto && <p className="text-emerald-700 mt-1">Substituído pelo valor real lançado.</p>}
+              </>
+            )
+          ) : !b.auto && (
+            <div className="space-y-1">
+              <p>Lance o valor pago em cada campanha no mês (nome + valor). Entra no total e no custo por lead, por aprovado e por contratação.</p>
+              {metaAds && !metaAds.auto && <p className="text-slate-400">Automático desligado: falta um token da Meta com a permissão <b>ads_read</b> e o id da conta de anúncios (act_…). {metaAds.reason ? `(${metaAds.reason})` : ''}</p>}
+            </div>
+          )}
+          {!(metaAds && metaAds.auto) && <button onClick={onAddCampaign} className="mt-1 text-af-mid font-medium flex items-center gap-1"><Plus size={12} /> Lançar campanha</button>}
+        </div>
+      )}
       {b.provider === 'VOYAGE' && b.auto && (
         <p>{b.auto.noData ? 'Sem uso registrado nesse mês (o registro começa agora).' : <>{n0(d.tokens || 0)} tokens em {n0(d.calls || 0)} chamadas · estimativa a US$ {d.usdPorMilhao}/milhão. A Voyage dá uma franquia grátis grande por conta: o custo real costuma ser zero.</>}</p>
       )}
@@ -375,7 +419,7 @@ function BlockDetail({ b, onEdit, onDelete }: { b: Block; onEdit: (e: Entry) => 
           ))}
         </div>
       )}
-      {!b.auto && !b.manual.length && <p>Nada lançado.</p>}
+      {!b.auto && !b.manual.length && b.provider !== 'META_ADS' && <p>Nada lançado.</p>}
     </div>
   );
 }
