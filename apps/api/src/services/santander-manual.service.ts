@@ -20,7 +20,12 @@ export type SantManual = {
   /** Lembrete da janela de 24 h (Fabio 14/11): a última mensagem do cliente (ISO) em cuja janela o CRM já perguntou "até quando manda" — uma vez por janela. */
   janela?: string;
   templateFalhou?: string; forwardedAt?: string; forwardDe?: string; forwardFalhou?: string; forwardSkip?: string; incompletoSig?: string; confiraNoteAt?: string;
+  /** Documentação completa (Fabio 14/11, Lucas): com a IA ligada o envio pelo portal sai sozinho; com ela desligada fica o botão "Enviar documentos" no card. */
+  prontoAt?: string;
+  /** Envio da análise manual pelo PORTAL do Credimorar (a extensão anexa os documentos, escreve o comentário de defesa e clica em "Enviar"). */
+  portal?: PortalEnvio;
 };
+export type PortalEnvio = { status: 'FILA' | 'RODANDO' | 'OK' | 'ERRO'; pedidoEm: string; por: string; inicio?: string; fim?: string; erro?: string; enviados?: string[]; comentario?: string; docIds?: string[]; avisoFila?: string };
 
 const ESPERA_ULTIMO_ARQUIVO_MS = 10 * 60_000; // o cliente costuma mandar os arquivos em sequência
 const ESPERA_CLASSIFICAR_MS = 6 * 3600_000; // arquivo que a leitura não classificou em 6 h: não segura mais o pedido de conferência à equipe
@@ -49,6 +54,10 @@ async function pushDono(accountId: string, leadId: string, title: string, body: 
 
 const ITENS_PADRAO = ['Os documentos de comprovação de renda'];
 const norm = (s: string) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/\s+/g, ' ').trim();
+/** FGTS e CTPS NÃO entram na análise manual do Santander (Fabio 14/11, Lucas: "FGTS NÃO PRECISA SER SOLICITADO, SEMPRE QUE HOUVER ANÁLISE MANUAL NO SANTANDER SERÃO OS
+ *  DOCUMENTOS MENOS O FGTS, CTPS TAMBÉM NÃO PRECISA") — nem no pedido ao cliente, nem na conferência, nem no e-mail. Pura. */
+const FORA_DO_SANTANDER = /\bFGTS\b|\bCTPS\b|CARTEIRA DE TRABALHO/;
+export const semFgtsCtps = (itens: string[]): string[] => itens.filter((i) => !FORA_DO_SANTANDER.test(norm(i)));
 /** "Santander" / "Bradesco (Financiamento)" — rótulo das notas. */
 const rotulo = (s: { banco?: string; produto?: string }) => `${s.banco || 'Santander'}${s.produto === 'FH' ? ' (Financiamento)' : ''}`;
 const bankDe = (s: { produto?: string }) => (s.produto === 'FH' ? 'CREDIMORAR_FH' : 'CREDIMORAR');
@@ -60,7 +69,7 @@ export async function itensRendaPerfilFh(accountId: string, cf: Record<string, a
     const { perfilTemplate } = require('./fh-approval.service') as typeof import('./fh-approval.service');
     const t = await prisma.messageTemplate.findFirst({ where: { accountId, name: { equals: perfilTemplate(cf), mode: 'insensitive' } }, select: { body: true } });
     const linha = (String(t?.body || '').split('\n').find((l) => /renda/i.test(l)) || '').replace(/^[^A-Za-zÀ-ú0-9]*renda[^:]*:\s*/i, '').trim();
-    const itens = linha.split(/\s*,\s*|\s+e\s+(?=[A-ZÀ-Ú0-9])/).map((x) => x.replace(/\.$/, '').trim()).filter((x) => x.length > 1);
+    const itens = semFgtsCtps(linha.split(/\s*,\s*|\s+e\s+(?=[A-ZÀ-Ú0-9])/).map((x) => x.replace(/\.$/, '').trim()).filter((x) => x.length > 1));
     return itens.length ? itens : ITENS_PADRAO;
   } catch { return ITENS_PADRAO; }
 }
@@ -72,7 +81,7 @@ export async function pedirDocumentosSantanderManual(p: { accountId: string; lea
   const cf = (lead.customFields || {}) as Record<string, any>;
   const st = (cf._santanderManual || {}) as SantManual;
   if (st.proposta === p.numero && st.askedAt) return null; // já pedi os documentos desta proposta
-  const itens = p.itens.length ? p.itens : ITENS_PADRAO;
+  const itens = semFgtsCtps(p.itens).length ? semFgtsCtps(p.itens) : ITENS_PADRAO;
   const extra: Partial<SantManual> = p.produto ? { produto: p.produto, banco: p.banco } : {};
   const rot = rotulo(p.produto ? p : st);
   const { santanderManualClientText: textoBase } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
@@ -127,11 +136,11 @@ export function faltandoParaSantanderManual(itens: string[], tipos: string[], re
   const faltando: string[] = [], naoConferidos: string[] = [];
   for (const item of itens.length ? itens : ITENS_PADRAO) {
     const n = norm(item);
-    if (/OPCIONAL|DEMAIS DOCUMENTOS/.test(n)) continue;
+    if (/OPCIONAL|DEMAIS DOCUMENTOS/.test(n) || FORA_DO_SANTANDER.test(n)) continue; // FGTS/CTPS: o Santander não pede (Fabio 14/11)
     let ok: boolean | null = null;
     if (/HOLERITE|CONTRACHEQUE/.test(n)) ok = conta(/^CONTRACHEQUE\b/) >= (relaxar ? 1 : /\b3\b|TRES|ULTIMOS/.test(n) ? 3 : 1);
-    else if (/IRPF|IMPOSTO DE RENDA/.test(n) && /EXTRATO/.test(n)) ok = conta(/^(RECIBO )?IMPOSTO DE RENDA\b/) >= 1 && conta(/^EXTRATO BANCARIO\b/) >= 1;
-    else if (/IRPF|IMPOSTO DE RENDA/.test(n)) ok = conta(/^(RECIBO )?IMPOSTO DE RENDA\b/) >= 1;
+    else if (/IRPF|IMPOSTO DE RENDA|\bIR\b/.test(n) && /EXTRATO/.test(n)) ok = conta(/^(RECIBO )?IMPOSTO DE RENDA\b/) >= 1 && conta(/^EXTRATO BANCARIO\b/) >= 1;
+    else if (/IRPF|IMPOSTO DE RENDA|\bIR\b/.test(n)) ok = conta(/^(RECIBO )?IMPOSTO DE RENDA\b/) >= 1;
     else if (/EXTRATO/.test(n)) ok = conta(/^EXTRATO BANCARIO\b/) >= 1;
     else if (/RENDA/.test(n)) ok = conta(RENDA) >= 1;
     else if (/IDENTIDADE|\bRG\b|\bCNH\b/.test(n)) ok = conta(/^(RG|CNH)\b/) >= 1;
@@ -140,6 +149,7 @@ export function faltandoParaSantanderManual(itens: string[], tipos: string[], re
     else if (/IPTU/.test(n)) ok = conta(/^(CND IPTU|CAPA IPTU|GUIA IPTU|CERTIDAO DE CADASTRO IMOBILIARIO)\b/) >= 1;
     else if (/CASAMENTO|NASCIMENTO|ESTADO CIVIL/.test(n)) ok = conta(/^CERTIDAO DE (CASAMENTO|NASCIMENTO|OBITO|UNIAO)\b/) >= 1;
     if (ok === null) naoConferidos.push(item);
+    else if (!ok && /SE HOUVER|SE TIVER|SE USAR/.test(n)) naoConferidos.push(item); // "IR + recibo (se houver)": não segura o envio
     else if (!ok) faltando.push(item);
   }
   return { faltando, naoConferidos };
@@ -180,20 +190,25 @@ export async function processSantanderManual(io?: Io): Promise<void> {
       } catch (e: any) { console.error('[Santander manual] pedido segurado:', e?.message || e); }
     }
   }
-  // 2) Encaminhar à Letícia (no horário comercial dos avisos).
+  // Envio pelo portal sem retorno da extensão (fora do horário também).
+  await envioPortalParado().catch((e: any) => console.error('[Santander manual] portal parado:', e?.message || e));
+  // 2) Documentação completa → envio pelo portal (no horário comercial dos avisos).
   if (!inNoticeWindow()) return;
-  const ids = await prisma.$queryRaw<{ id: string; accountId: string }[]>`SELECT id, "accountId" FROM "Lead" WHERE status = 'OPEN' AND archived = false AND "customFields"->'_santanderManual'->>'askedAt' IS NOT NULL AND "customFields"->'_santanderManual'->>'forwardedAt' IS NULL AND "customFields"->'_santanderManual'->>'forwardFalhou' IS NULL AND "customFields"->'_santanderManual'->>'forwardSkip' IS NULL`;
+  const ids = await prisma.$queryRaw<{ id: string; accountId: string }[]>`SELECT id, "accountId" FROM "Lead" WHERE status = 'OPEN' AND archived = false AND "customFields"->'_santanderManual'->>'askedAt' IS NOT NULL AND "customFields"->'_santanderManual'->>'prontoAt' IS NULL AND "customFields"->'_santanderManual'->'portal' IS NULL AND "customFields"->'_santanderManual'->>'forwardedAt' IS NULL AND "customFields"->'_santanderManual'->>'forwardFalhou' IS NULL AND "customFields"->'_santanderManual'->>'forwardSkip' IS NULL`;
   for (const l of ids) await encaminharSeCompleto(l.accountId, l.id, io).catch((e: any) => console.error('[Santander manual] encaminhar:', e?.message || e));
   // 3) Lembrete antes de a janela de 24 h fechar, com o pedido ainda em aberto (Fabio 14/11).
   for (const l of ids) await janelaSantanderManual(l.accountId, l.id, io).catch((e: any) => console.error('[Santander manual] janela:', e?.message || e));
+  // 4) Documentação completa esperando o botão e a IA do card foi ligada depois: o envio sai sozinho (Fabio 14/11: "SE A IA ESTIVER LIGADA VAI SOZINHO").
+  const prontos = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE status = 'OPEN' AND archived = false AND "aiAutoReplyActive" = true AND COALESCE(("customFields"->>'_autoPaused'), '') = '' AND "customFields"->'_santanderManual'->>'prontoAt' IS NOT NULL AND "customFields"->'_santanderManual'->'portal' IS NULL AND "customFields"->'_santanderManual'->>'forwardSkip' IS NULL`;
+  for (const l of prontos) await pedirEnvioPortal(l.id, 'automático (IA ligada)').catch((e: any) => console.error('[Santander manual] envio automático:', e?.message || e));
 }
 
 /** Itens que o banco pediu: os gravados no pedido; pedido antigo (sem `itens`, ex.: jorge 13/11) → a leitura do portal ("ANÁLISE MANUAL ABERTA … DOCUMENTOS"); sem nada, a lista genérica. */
 async function itensDoPedido(accountId: string, leadId: string, cf: Record<string, any>, st: SantManual): Promise<string[]> {
-  if (st.itens?.length) return st.itens;
+  if (semFgtsCtps(st.itens || []).length) return semFgtsCtps(st.itens || []);
   const lida = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: bankDe(st), dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
   const { parseDocumentosExigidos, docDoPortal } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-  const itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
+  const itens = semFgtsCtps((parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal));
   if (itens.length) return itens;
   return st.produto === 'FH' ? itensRendaPerfilFh(accountId, cf) : ITENS_PADRAO;
 }
@@ -206,7 +221,7 @@ async function janelaSantanderManual(accountId: string, leadId: string, io?: Io)
   if (!lead || !lead.aiAutoReplyActive) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const st = (cf._santanderManual || {}) as SantManual;
-  if (!st.askedAt || st.forwardedAt || st.forwardSkip || cf._autoPaused || (lead.tags || []).includes('Pediu pra parar lembretes')) return;
+  if (!st.askedAt || st.forwardedAt || st.forwardSkip || st.prontoAt || st.portal || cf._autoPaused || (lead.tags || []).includes('Pediu pra parar lembretes')) return;
   const ultimaIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (!ultimaIn) return;
   const { podePerguntarDocs, clienteEsperandoResposta } = require('./docs-loop.service') as typeof import('./docs-loop.service');
@@ -287,7 +302,192 @@ async function encaminharSeCompleto(accountId: string, leadId: string, io?: Io):
     }
     return;
   }
-  await enviarParaLeticia(accountId, leadId, lead.name, cf, st, docs, tiposPorId, naoConferidos, io);
+  // DOCUMENTAÇÃO COMPLETA (Fabio 14/11, Lucas: "ENVIAR QUANDO RECEBER A DOCUMENTAÇÃO COMPLETA, SE A IA ESTIVER LIGADA VAI SOZINHO, SE NÃO, DEIXE UM BOTÃO DE ENVIAR DOCUMENTOS NO
+  // CARD… A EXTENSÃO ABRE O SISTEMA E ENCAMINHA"): a extensão do Credimorar anexa os documentos na Análise manual do portal, escreve o comentário de defesa e clica em "Enviar";
+  // depois o CRM avisa a Letícia por e-mail, com os documentos. Antes ia só o e-mail, pedindo que ELA anexasse e enviasse.
+  await salvar(leadId, { prontoAt: new Date().toISOString() });
+  const ia = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true } });
+  if (ia?.aiAutoReplyActive && !cf._autoPaused) {
+    await pedirEnvioPortal(leadId, 'automático (IA ligada)');
+    return;
+  }
+  const ondeBotao = st.produto === 'FH' ? 'aba Financiamento, linha do Santander' : 'aba Financiamento, bloco Análises de crédito';
+  await note(leadId, `📎 ${rot} (análise manual): o cliente mandou a documentação completa (${tipos.length ? Array.from(new Set(tipos)).join('; ') : `${docs.length} arquivo(s)`}). A IA deste card está DESLIGADA, então não enviei sozinho: clique em "📤 Enviar documentos" no card (${ondeBotao}) — a extensão do Credimorar anexa no portal, escreve o comentário de defesa e envia pra análise manual; depois aviso a Letícia.`);
+  await pushDono(accountId, leadId, `📎 ${rot} manual: documentação completa`, `${lead.name}: clique em "Enviar documentos" no card`);
+}
+
+// ─── ENVIO PELO PORTAL (Fabio 14/11) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type DocPortal = { id: string; fileName: string; mimeType: string; tipo: string; slot: 'HOLERITE' | 'IRPF' | 'EXTRATO' | 'OUTROS' };
+/** Quais arquivos do cliente vão pro portal e em que vaga: os 3 contracheques mais novos, a declaração e o recibo do IR mais novos, até 3 extratos e outros comprovantes de renda
+ *  (DECORE, pró-labore, extrato do INSS…). Nunca FGTS/CTPS nem documento pessoal/do imóvel — a análise manual é de RENDA. Mesmo nome de arquivo mandado duas vezes vai uma vez. Pura. */
+export function escolherDocsPortal(arqs: { id: string; fileName: string | null; mimeType: string; createdAt: Date | string; tipo: string }[]): DocPortal[] {
+  const novos = [...arqs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const vistos = new Set<string>();
+  const out: DocPortal[] = [];
+  const pega = (rx: RegExp, slot: DocPortal['slot'], max: number) => {
+    let n = 0;
+    for (const a of novos) {
+      const t = norm(a.tipo);
+      if (n >= max || !rx.test(t)) continue;
+      const chave = norm(a.fileName || a.id);
+      if (vistos.has(chave) || out.some((o) => o.id === a.id)) continue;
+      vistos.add(chave);
+      out.push({ id: a.id, fileName: a.fileName || a.id, mimeType: a.mimeType, tipo: a.tipo, slot });
+      n++;
+    }
+  };
+  pega(/^CONTRACHEQUE\b/, 'HOLERITE', 3);
+  pega(/^IMPOSTO DE RENDA\b/, 'IRPF', 1);
+  pega(/^RECIBO IMPOSTO DE RENDA\b/, 'IRPF', 1);
+  pega(/^EXTRATO BANCARIO\b/, 'EXTRATO', 3);
+  pega(/^(DECORE|PGDAS|DEFIS|HISTORICO INSS|PRO.?LABORE)\b/, 'OUTROS', 3);
+  return out;
+}
+
+/** "Comentário de defesa" que a extensão escreve no portal: só fatos do card e dos arquivos (nada de renda digitada, que pode estar desatualizada no card). Pura. */
+export function comentarioDefesa(p: { nome: string; fh: boolean; valor: number; imovel: number; docs: DocPortal[] }): string {
+  const brl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const qtd = (s: DocPortal['slot']) => p.docs.filter((d) => d.slot === s).length;
+  const partes = [
+    qtd('HOLERITE') ? `${qtd('HOLERITE') > 1 ? `${qtd('HOLERITE')} últimos holerites` : 'holerite'}` : '',
+    p.docs.some((d) => /^IMPOSTO DE RENDA/.test(norm(d.tipo))) ? `declaração do Imposto de Renda${p.docs.some((d) => /^RECIBO IMPOSTO/.test(norm(d.tipo))) ? ' com recibo de entrega' : ''}` : '',
+    qtd('EXTRATO') ? 'extrato da conta corrente' : '',
+    qtd('OUTROS') ? 'demais comprovantes de renda' : '',
+  ].filter(Boolean);
+  const lista = partes.length > 1 ? `${partes.slice(0, -1).join(', ')} e ${partes[partes.length - 1]}` : partes[0] || 'documentos de renda';
+  const pct = p.valor > 0 && p.imovel > 0 ? Math.round((p.valor / p.imovel) * 100) : 0;
+  const operacao = p.valor > 0
+    ? `${p.fh ? 'Financiamento' : 'Crédito com garantia de imóvel'} de ${brl(p.valor)}${p.imovel > 0 ? ` ${p.fh ? 'para a compra de imóvel' : 'sobre imóvel'} de ${brl(p.imovel)}${pct ? ` (${pct}% do valor do imóvel)` : ''}` : ''}. `
+    : '';
+  return `Cliente ${p.nome}. ${operacao}Encaminhamos para análise manual a comprovação de renda do cliente: ${lista}, em anexo. A documentação confirma a renda e a capacidade de pagamento; pedimos a reavaliação da proposta.`.replace(/\s+/g, ' ').trim();
+}
+
+/** Arquivos do cliente com a classificação já guardada (`_docInfo`), sem figurinha/print. */
+async function arquivosClassificados(leadId: string, cf: Record<string, any>) {
+  const { isStickerAttachment, isScreenshotAttachment } = require('./received-docs.service') as typeof import('./received-docs.service');
+  const atts = (await prisma.messageAttachment.findMany({ where: { leadId, message: { direction: 'INBOUND' } }, orderBy: { createdAt: 'asc' }, select: { id: true, fileName: true, mimeType: true, createdAt: true, driveFileId: true, data: true } }))
+    .filter(filtroArquivo).filter((a) => !isStickerAttachment(a as any) && !isScreenshotAttachment(a as any));
+  const info = (cf._docInfo || {}) as Record<string, string>;
+  return atts.map((a) => ({ ...a, tipo: String(info[a.id] || '').split('|')[0] })).filter((a) => a.tipo && a.tipo !== 'IGNORAR');
+}
+
+/** Põe o envio na fila da extensão (botão do card ou documentação completa com a IA ligada). Devolve o erro em texto, ou null quando ficou na fila. */
+export async function pedirEnvioPortal(leadId: string, por: string): Promise<string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, accountId: true, status: true, customFields: true } });
+  if (!lead || lead.status !== 'OPEN') return 'card fechado';
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._santanderManual || {}) as SantManual;
+  if (!st.askedAt || !st.proposta) return 'este card não tem análise manual do Santander aberta';
+  if (st.portal && (st.portal.status === 'FILA' || st.portal.status === 'RODANDO')) return 'o envio já está na fila da extensão';
+  if (st.portal?.status === 'OK') return `os documentos já foram enviados pelo portal em ${new Date(st.portal.fim || st.portal.pedidoEm).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}`;
+  const docs = escolherDocsPortal(await arquivosClassificados(leadId, cf));
+  if (!docs.length) return 'não achei os documentos de renda do cliente (contracheque, IR, extrato) — confira a aba Documentos';
+  const now = new Date().toISOString();
+  await salvar(leadId, { portal: { status: 'FILA', pedidoEm: now, por }, ...(st.prontoAt ? {} : { prontoAt: now }) });
+  await note(leadId, `📤 ${rotulo(st)} (análise manual): pedi à extensão do Credimorar pra anexar no portal ${docs.length} documento(s) (${docs.map((d) => d.fileName).join('; ')}), escrever o comentário de defesa e enviar pra análise manual — ${por}. Quando terminar, aviso a Letícia por e-mail.`);
+  return null;
+}
+
+/** Fila da extensão (`/credit-analysis/queue`, caps "manual"): um envio por vez, do produto do banco que pergunta (CREDIMORAR = Home Equity, CREDIMORAR_FH = Financiamento). */
+export async function claimEnviosPortal(accountId: string, bank: string, limit = 1): Promise<Record<string, unknown>[]> {
+  if (bank !== 'CREDIMORAR' && bank !== 'CREDIMORAR_FH') return [];
+  const fh = bank === 'CREDIMORAR_FH';
+  const rows = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false AND "customFields"->'_santanderManual'->'portal'->>'status' = 'FILA' AND (COALESCE("customFields"->'_santanderManual'->>'produto', '') = 'FH') = ${fh} ORDER BY "customFields"->'_santanderManual'->'portal'->>'pedidoEm' ASC LIMIT ${limit}`;
+  const out: Record<string, unknown>[] = [];
+  for (const { id } of rows) {
+    const lead = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, customFields: true } });
+    if (!lead) continue;
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    const st = (cf._santanderManual || {}) as SantManual;
+    const falha = async (erro: string) => { await salvar(id, { portal: { ...(st.portal as PortalEnvio), status: 'ERRO', fim: new Date().toISOString(), erro } }); await note(id, `⚠️ ${rotulo(st)} (análise manual): não mandei a extensão enviar pelo portal — ${erro}.`); };
+    const docs = escolherDocsPortal(await arquivosClassificados(id, cf));
+    if (!docs.length) { await falha('não achei os documentos de renda do cliente'); continue; }
+    // Onde abrir: FH = a simulação do Credimorar (nº da linha CREDIMORAR_FH); HE = o link da proposta que a extensão gravou ao abrir a análise manual ("… Proposta: https://…").
+    let simId = '', href = '';
+    if (fh) {
+      const r = await prisma.creditAnalysis.findFirst({ where: { leadId: id, bank: 'CREDIMORAR_FH', dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
+      simId = String(r?.proposalNumber || '').replace(/\D/g, '');
+      if (!simId) { await falha('não achei o nº da simulação do Financiamento no Credimorar'); continue; }
+    } else {
+      const r = await prisma.creditAnalysis.findFirst({ where: { leadId: id, bank: 'CREDIMORAR', dryRun: false, detail: { contains: 'bpo.credimorar.me' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+      href = (/https:\/\/bpo\.credimorar\.me\/\S+/.exec(r?.detail || '') || [''])[0].replace(/[).,;]+$/, '');
+      if (!href) { await falha('não achei o link da proposta no Credimorar (rode "Conferir Santander" no card)'); continue; }
+    }
+    const row = fh ? null : await prisma.creditAnalysis.findFirst({ where: { leadId: id, bank: 'CREDIMORAR', dryRun: false, proposalNumber: st.proposta }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true } });
+    const num = (v: unknown) => { const n = Number(String(v ?? '').replace(/[^\d,.-]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')); return Number.isFinite(n) ? n : 0; };
+    const nome = String(cf.participante_1 || lead.name || '').replace(/\s+/g, ' ').trim();
+    const comentario = comentarioDefesa({ nome, fh, valor: Number(row?.requestedValue || 0) || num(cf.valor_credito), imovel: num(cf.valor_imovel), docs });
+    await salvar(id, { portal: { ...(st.portal as PortalEnvio), status: 'RODANDO', inicio: new Date().toISOString(), comentario, docIds: docs.map((d) => d.id) } });
+    out.push({ leadId: id, leadName: lead.name, produto: fh ? 'FH' : 'HE', banco: (st.banco || 'Santander').split(' e ')[0], proposta: st.proposta, simId, href, comentario, docs });
+  }
+  return out;
+}
+
+/** A extensão devolve o envio: OK → nota + push + e-mail à Letícia com os documentos; erro → nota + push (o botão do card volta a valer). */
+export async function resultadoEnvioPortal(accountId: string, leadId: string, body: { ok?: boolean; erro?: string; enviados?: string[]; amostra?: string }, io?: Io): Promise<void> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._santanderManual || {}) as SantManual;
+  const portal = (st.portal || { pedidoEm: new Date().toISOString(), por: 'extensão' }) as PortalEnvio;
+  const rot = rotulo(st);
+  const fim = new Date().toISOString();
+  if (!body.ok) {
+    const erro = String(body.erro || 'sem retorno da extensão').slice(0, 300);
+    await salvar(leadId, { portal: { ...portal, status: 'ERRO', fim, erro } });
+    await note(leadId, `⚠️ ${rot} (análise manual): a extensão NÃO conseguiu enviar pelo portal do Credimorar — ${erro}.${body.amostra ? `\n\nTela: ${String(body.amostra).slice(0, 600)}` : ''}\n\nConfira a proposta no Credimorar; pra tentar de novo, clique em "📤 Enviar documentos" no card.`);
+    await pushDono(accountId, leadId, `⚠️ ${rot} manual: envio pelo portal falhou`, `${lead.name}: ${erro}`.slice(0, 160));
+    return;
+  }
+  const enviados = (body.enviados || []).map((s) => String(s).slice(0, 120)).slice(0, 20);
+  await salvar(leadId, { portal: { ...portal, status: 'OK', fim, enviados } });
+  await note(leadId, `📤 ${rot} (análise manual): documentos ANEXADOS no portal do Credimorar e ENVIADOS pra análise manual da proposta ${st.proposta} (${enviados.length} arquivo(s): ${enviados.join('; ')}).\nComentário de defesa: "${portal.comentario || ''}"`);
+  await pushDono(accountId, leadId, `📤 ${rot}: enviado pra análise manual`, `${lead.name}: proposta ${st.proposta}`);
+  // E-mail à Letícia com os mesmos arquivos (Fabio 14/11: "mandar e-mail à Letícia com a documentação, pra ela fazer a defesa").
+  if (st.forwardedAt) return;
+  const ids = new Set(portal.docIds || []);
+  const atts: Anexo[] = (await prisma.messageAttachment.findMany({ where: { leadId, id: { in: Array.from(ids) } }, orderBy: { createdAt: 'asc' }, select: { id: true, fileName: true, mimeType: true, createdAt: true, driveFileId: true, data: true } }));
+  const tipos = ((cf._docInfo || {}) as Record<string, string>);
+  await enviarParaLeticia(accountId, leadId, lead.name, cf, st, atts, tipos, [], io, portal.comentario || '');
+}
+
+/** Envio na fila há 2 h sem a extensão pegar, ou rodando há 20 min sem resultado: avisa a equipe (uma vez). Nunca reenvia sozinho — o "Enviar" pode já ter ido. */
+async function envioPortalParado(): Promise<void> {
+  const rows = await prisma.$queryRaw<{ id: string; accountId: string }[]>`SELECT id, "accountId" FROM "Lead" WHERE status = 'OPEN' AND "customFields"->'_santanderManual'->'portal'->>'status' IN ('FILA', 'RODANDO') AND "customFields"->'_santanderManual'->'portal'->>'avisoFila' IS NULL`;
+  for (const r of rows) {
+    const lead = await prisma.lead.findUnique({ where: { id: r.id }, select: { name: true, customFields: true } });
+    const st = (((lead?.customFields || {}) as Record<string, any>)._santanderManual || {}) as SantManual;
+    const p = st.portal;
+    if (!lead || !p) continue;
+    const rot = rotulo(st);
+    if (p.status === 'RODANDO' && p.inicio && Date.now() - Date.parse(p.inicio) > 20 * 60_000) {
+      await salvar(r.id, { portal: { ...p, status: 'ERRO', fim: new Date().toISOString(), erro: 'a extensão começou e não devolveu o resultado' } });
+      await note(r.id, `⚠️ ${rot} (análise manual): a extensão começou a enviar pelo portal e não devolveu o resultado em 20 min. Confira no Credimorar se a análise manual foi enviada; se não, clique em "📤 Enviar documentos" de novo.`);
+      await pushDono(r.accountId, r.id, `⚠️ ${rot} manual: confira o envio`, `${lead.name}: a extensão não devolveu o resultado`);
+    } else if (p.status === 'FILA' && Date.now() - Date.parse(p.pedidoEm) > 2 * 3600_000) {
+      await salvar(r.id, { portal: { ...p, avisoFila: new Date().toISOString() } });
+      await note(r.id, `⏳ ${rot} (análise manual): o envio pelo portal está na fila há mais de 2 h e a extensão do Credimorar não pegou. Confira se ela está aberta e logada.`);
+      await pushDono(r.accountId, r.id, `⏳ ${rot} manual: extensão não pegou o envio`, lead.name);
+    }
+  }
+}
+
+/** Estado pro card (botão "Enviar documentos"): o que o banco pediu, o que falta pela leitura e o envio pelo portal. */
+export async function estadoSantanderManual(leadId: string): Promise<Record<string, unknown> | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const st = (cf._santanderManual || {}) as SantManual;
+  if (!lead || !st.askedAt || !st.proposta) return null;
+  const arqs = await arquivosClassificados(leadId, cf);
+  const novos = arqs.filter((a) => a.createdAt.getTime() > Date.parse(st.askedAt!));
+  const { faltando } = faltandoParaSantanderManual(semFgtsCtps(st.itens || []), novos.map((a) => a.tipo), !!st.prontoAt);
+  return {
+    produto: st.produto === 'FH' ? 'FH' : 'HE', banco: st.banco || 'Santander', proposta: st.proposta, askedAt: st.askedAt, itens: semFgtsCtps(st.itens || []),
+    faltando: st.prontoAt ? [] : faltando, prontoAt: st.prontoAt || null, docs: escolherDocsPortal(arqs).map((d) => d.fileName),
+    portal: st.portal ? { status: st.portal.status, pedidoEm: st.portal.pedidoEm, fim: st.portal.fim || null, erro: st.portal.erro || null, por: st.portal.por } : null,
+    forwardedAt: st.forwardedAt || null, segurado: !!st.forwardSkip, aiOn: !!lead.aiAutoReplyActive,
+  };
 }
 
 async function bytesDoAnexo(accountId: string, a: Anexo): Promise<Buffer | null> {
@@ -296,7 +496,9 @@ async function bytesDoAnexo(accountId: string, a: Anexo): Promise<Buffer | null>
   try { const { downloadDriveFile } = await import('./google.service'); return await downloadDriveFile(accountId, a.driveFileId, a.mimeType); } catch { return null; }
 }
 
-async function enviarParaLeticia(accountId: string, leadId: string, leadName: string, cf: Record<string, any>, st: SantManual, docs: Anexo[], tipos: Record<string, string>, naoConferidos: string[], io?: Io): Promise<void> {
+/** `comentarioPortal` preenchido = a extensão JÁ anexou e enviou pelo portal (Fabio 14/11): o e-mail avisa a Letícia, com os documentos, pra ela acompanhar/reforçar a defesa. */
+async function enviarParaLeticia(accountId: string, leadId: string, leadName: string, cf: Record<string, any>, st: SantManual, docs: Anexo[], tipos: Record<string, string>, naoConferidos: string[], io?: Io, comentarioPortal?: string): Promise<void> {
+  const viaPortal = comentarioPortal !== undefined;
   const { VISTORIA_SANTANDER_TO, enviarComReserva } = require('./vistoria-santander.service') as typeof import('./vistoria-santander.service');
   // Todos os documentos do cliente (Fabio 13/11: "ENCAMINHA TODOS OS DOCUMENTOS"), em até 3 e-mails de 10 anexos / 14 MB; o resto vai pelo link da pasta do Drive.
   const lotes: { filename: string; contentType: string; content: Buffer }[][] = [[]];
@@ -344,17 +546,20 @@ async function enviarParaLeticia(accountId: string, leadId: string, leadName: st
       const corpo = [
         'Olá, Letícia, tudo bem?', '',
         `A proposta ${banco} nº ${st.proposta} do cliente ${nomeCliente} (${fh ? 'financiamento habitacional' : 'crédito com garantia de imóvel'}${valor > 0 ? `, ${brl(valor)}` : ''}) não passou na análise automática e ficou em ANÁLISE MANUAL no portal.`,
-        `O cliente já enviou os documentos — seguem em anexo${parte}:`,
+        ...(viaPortal && i === 0 ? ['Já anexamos os documentos do cliente no portal do Credimorar e ENVIAMOS a proposta pra análise manual, com este comentário de defesa:', `"${comentarioPortal}"`, ''] : []),
+        `${viaPortal ? 'Os mesmos documentos seguem em anexo' : 'O cliente já enviou os documentos — seguem em anexo'}${parte}:`,
         ...lote.map((f) => `• ${f.filename}`), '',
         ...(i === 0 && (foraDoEmail.length || naoConferidos.length) ? [
           ...(foraDoEmail.length ? [`Não couberam no e-mail: ${foraDoEmail.join('; ')}${link ? ` — estão na pasta do cliente: ${link}` : ''}.`] : []),
           ...(naoConferidos.length ? [`${fh ? 'Também pedimos ao cliente' : 'O portal também pediu'}: ${naoConferidos.join('; ')}.`] : []),
           '',
         ] : []),
-        'Você consegue atuar no processo pra gente? Anexar os documentos no portal, fazer o comentário de defesa e enviar pra análise manual.', '',
+        viaPortal
+          ? 'Você consegue acompanhar a análise manual e reforçar a defesa com o Santander, se precisar?'
+          : 'Você consegue atuar no processo pra gente? Anexar os documentos no portal, fazer o comentário de defesa e enviar pra análise manual.', '',
         'Qualquer dúvida, estou à disposição.', 'Obrigado!',
       ].join('\n');
-      const env = await enviarComReserva(accountId, { to: [VISTORIA_SANTANDER_TO], cc: [], subject: `Análise manual ${banco}${fh ? ' - Financiamento' : ''} - ${nomeCliente.toUpperCase()} - proposta ${st.proposta}${parte}`, body: corpo, replyToId: null, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments: lote });
+      const env = await enviarComReserva(accountId, { to: [VISTORIA_SANTANDER_TO], cc: [], subject: `Análise manual ${banco}${fh ? ' - Financiamento' : ''} - ${nomeCliente.toUpperCase()} - proposta ${st.proposta}${viaPortal ? ' - enviada pelo portal' : ''}${parte}`, body: corpo, replyToId: null, leadId, io: (io || ({ to: () => ({ emit: () => {} }) })) as any, attachments: lote });
       de = env.de;
       enviados.push(...lote.map((f) => f.filename));
       if (env.falhas.length) await note(leadId, `⚠️ ${rot} (análise manual): a caixa ${env.falhas.map((f) => f.split(':')[0]).join(' e ')} não conseguiu enviar (${env.falhas.join(' | ')}); o e-mail saiu pela ${env.de}.`);
@@ -366,6 +571,6 @@ async function enviarParaLeticia(accountId: string, leadId: string, leadName: st
     return;
   }
   await salvar(leadId, { forwardedAt: new Date().toISOString(), forwardDe: de });
-  await note(leadId, `📨 ${rot} (análise manual): documentos encaminhados à Letícia (${VISTORIA_SANTANDER_TO}, de ${de}) pedindo que ela atue no processo da proposta ${st.proposta} — ${enviados.length} anexo(s): ${enviados.join('; ')}.${foraDoEmail.length ? `\nNão couberam no e-mail: ${foraDoEmail.join('; ')}${link ? ' (link da pasta no e-mail)' : ''}.` : ''}`);
+  await note(leadId, `📨 ${rot} (análise manual): ${viaPortal ? 'avisei a Letícia que a análise manual foi enviada pelo portal' : 'documentos encaminhados à Letícia pedindo que ela atue no processo'} (${VISTORIA_SANTANDER_TO}, de ${de}) — proposta ${st.proposta}, ${enviados.length} anexo(s): ${enviados.join('; ')}.${foraDoEmail.length ? `\nNão couberam no e-mail: ${foraDoEmail.join('; ')}${link ? ' (link da pasta no e-mail)' : ''}.` : ''}`);
   await pushDono(accountId, leadId, `📨 ${rot} manual: documentos à Letícia`, `${leadName}: proposta ${st.proposta}`);
 }

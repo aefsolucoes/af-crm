@@ -776,6 +776,7 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   let itens = (parseDocumentosExigidos(row.detail)?.itens || []).map(docDoPortal);
   // FH: o que o portal pediu (a extensão escolhe "Análise manual" e lê, como no HE); sem essa leitura, a renda do PERFIL do comprador (Respostas rápidas "Documentos comprador …").
   if (fh.length && !pareceDocumento(itens)) itens = await (require('./santander-manual.service') as typeof import('./santander-manual.service')).itensRendaPerfilFh(lead.accountId, cf);
+  itens = (require('./santander-manual.service') as typeof import('./santander-manual.service')).semFgtsCtps(itens); // FGTS e CTPS não entram na análise manual (Fabio 14/11)
   const abriu = SANTANDER_MANUAL.test(row.detail || '');
   const extra = fh.length ? { produto: 'FH', banco } : {};
   const salvar = async (patch: Record<string, any>) => {
@@ -787,8 +788,8 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {
     const conteudo = fh.length
-      ? `🏦 ${banco} (Financiamento): a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente — Contatar consultor) e foi pra ANÁLISE MANUAL. ${abriu ? 'A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".' : 'A extensão NÃO conseguiu escolher "Análise manual" no portal: escolha no Credimorar.'}${itens.length ? ` Documentos pedidos ao cliente: ${itens.join('; ')}.` : ''} Quando ele mandar tudo, encaminho os documentos à Letícia (Credimorar) pra ela atuar no processo.`
-      : `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).`;
+      ? `🏦 ${banco} (Financiamento): a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente — Contatar consultor) e foi pra ANÁLISE MANUAL. ${abriu ? 'A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".' : 'A extensão NÃO conseguiu escolher "Análise manual" no portal: escolha no Credimorar.'}${itens.length ? ` Documentos pedidos ao cliente: ${itens.join('; ')}.` : ''} Com a documentação completa, a extensão anexa no portal, escreve o comentário de defesa e envia pra análise manual (IA ligada: sozinho; desligada: botão "Enviar documentos" no card) e eu aviso a Letícia.`
+      : `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal.${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Com a documentação completa, a extensão anexa no portal, escreve o comentário de defesa e envia pra análise manual (IA ligada: sozinho; desligada: botão "Enviar documentos" no card) e eu aviso a Letícia.`;
     await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(lead.accountId, { title: `🏦 ${banco}${fh.length ? ' (Financiamento)' : ''} pede análise manual`, body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});

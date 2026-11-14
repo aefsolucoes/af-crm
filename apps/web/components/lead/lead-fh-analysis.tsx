@@ -7,6 +7,7 @@ import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
 import { cn } from '@/lib/utils';
+import { SantanderManualEnvio } from './santander-manual-envio';
 
 /* Bloco "Financiamento" dentro do card (aba Financiamento) dos cards do Financiamento Habitacional (Fabio 29/10, Jaime: o bloco mostrava os bancos do
  * Home Equity com "—"). Situação de cada banco (Credimorar: Bradesco, Santander; nosso portal: Inter; portal Itaú Imóveis: Itaú; CAIXA/BRB), rodar/conferir e o PDF da simulação. */
@@ -166,6 +167,7 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
                       <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', tom(b.status))}>{b.status}</span>
                     </div>
                     <p className="mt-0.5 text-[11px] leading-snug text-slate-500 whitespace-pre-wrap break-words">{b.texto.replace(/^[^,—]+[,—]\s*/, '').slice(0, 220)}</p>
+                    {nome === 'Santander' && <SantanderManualEnvio leadId={leadId} produto="FH" />}
                     {(proposta || (aprovado && PDF[nome])) && (
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
                         {proposta && (escolhida

@@ -10,6 +10,7 @@ import { pingExtensions } from '@/lib/credit-extensions';
 import { NotifyClientModal } from '@/components/credit/notify-modal';
 import { BANKS, Badge, STATUS, useLeadAnalyses, sameWho, overrideSummary, PropostasRodadas, propostasRodadas, OpcoesCreditas, type Analysis, type Bank } from '@/components/credit/shared';
 import { formatCurrency } from '@/lib/utils';
+import { SantanderManualEnvio } from './santander-manual-envio';
 
 /* Bloco "Análises de crédito" dentro do card (aba Financiamento). Mostra o último resultado de
  * cada banco, dispara nova análise e escolhe a proposta. Ver a aba /analise-credito. */
@@ -196,6 +197,9 @@ export function LeadCreditAnalysis({ leadId, onChanged }: { leadId: string; onCh
           Ver na Análise de Crédito <ExternalLink size={10} />
         </Link>
       </div>
+
+      {/* Santander em análise manual (Fabio 14/11): documentos anexados e enviados pelo portal do Credimorar — sozinho com a IA ligada; com ela desligada, por este botão. */}
+      <SantanderManualEnvio leadId={leadId} produto="HE" className="mb-2" />
 
       {/* Documentação completa e 2+ bancos aprovados sem ⭐ (Fabio 12/11): as propostas vão ao cliente com o botão "Seguir com esta" — sozinhas com a IA ligada; com ela desligada, por aqui. */}
       {data.choicePending && (

@@ -427,6 +427,18 @@ export async function aiCardState(leadId: string): Promise<string> {
     if (jogo) partes.push(ca.aiRendaLinha({ exigida: jogo.rendaNecessaria, motivo: jogo.rendaMotivo }));
   }
 
+  // Análise manual do Santander/Bradesco (santander-manual.service): em que pé está e o PRAZO (Fabio 14/11: "O PRAZO PARA ESSA ANÁLISE É DE ATÉ 5 DIAS ÚTEIS, CASO O CLIENTE PERGUNTE").
+  {
+    const sm = cf._santanderManual as { askedAt?: string; prontoAt?: string; banco?: string; portal?: { status?: string; fim?: string }; forwardedAt?: string } | undefined;
+    if (sm?.askedAt) {
+      const banco = sm.banco || 'Santander';
+      const pe = sm.portal?.status === 'OK'
+        ? `os documentos JÁ FORAM ENVIADOS ao banco pra análise manual em ${new Date(sm.portal.fim || Date.now()).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — agora é aguardar o retorno do banco`
+        : sm.prontoAt ? 'a documentação pedida já chegou completa e está sendo encaminhada ao banco' : 'o banco pediu os documentos de renda pra análise manual e ainda falta chegar parte deles';
+      partes.push(`ANÁLISE MANUAL ${banco.toUpperCase()}: ${pe}. PRAZO: a análise manual do banco leva ATÉ 5 DIAS ÚTEIS depois do envio dos documentos — informe só se o cliente perguntar; não prometa resultado. FGTS e CTPS NÃO são pedidos nessa análise.`);
+    }
+  }
+
   // Saldo devedor real acima do limite (Fabio 05/11, Fernanda Karita): a IA não pode dizer que o crédito segue aprovado.
   const sdB = cf._saldoDevedor?.bloqueio as { motivo?: string; limite?: number; saldo?: number; valorImovel?: number; aprovado?: number | null; avisado?: boolean } | undefined;
   if (sdB?.saldo) {

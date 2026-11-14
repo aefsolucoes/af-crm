@@ -8,6 +8,7 @@ import { sendRejectionAndClose } from '../services/credit-auto.service';
 import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.service';
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { pedirBuscaPortal, claimBuscas, resultadoBusca, escolherDoPortal } from '../services/busca-portal.service';
+import { claimEnviosPortal, pedirEnvioPortal, resultadoEnvioPortal, estadoSantanderManual } from '../services/santander-manual.service';
 import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
@@ -404,7 +405,9 @@ router.get('/queue', async (req: AuthRequest, res: Response) => {
     // `liberadoAte`: a extensão também tem a trava de 07h–22h; com isto ela sabe que pode trabalhar fora do horário até essa hora.
     // Busca de propostas no portal pedida no card (Fabio 05/11) — só leitura; extensão que avisa saber atender (caps inclui "busca").
     const buscas = caps.includes('busca') && req.query.claim !== '0' ? await claimBuscas(req.user!.accountId, bank, 1) : [];
-    res.json({ items, docs, buscas, liberadoAte: lib ? lib.toISOString() : null });
+    // Análise manual do Santander pelo portal (Fabio 14/11): anexar os documentos, comentário de defesa e "Enviar" — extensão que avisa saber atender (caps inclui "manual").
+    const manuais = caps.includes('manual') && req.query.claim !== '0' && (!foraDoHorario() || lib) ? await claimEnviosPortal(req.user!.accountId, bank, 1) : [];
+    res.json({ items, docs, buscas, manuais, liberadoAte: lib ? lib.toISOString() : null });
   } catch (err) { fail(res, err, 'Erro ao buscar a fila'); }
 });
 
@@ -551,6 +554,31 @@ router.post('/busca-portal', async (req: AuthRequest, res: Response) => {
     emit(req, { leadId });
     res.json({ ok: true });
   } catch (err) { fail(res, err, 'Erro ao pedir a busca no portal'); }
+});
+// Análise manual do Santander pelo portal (Fabio 14/11): estado pro card, botão "Enviar documentos" e o resultado que a extensão devolve.
+router.get('/santander-manual/:leadId', async (req: AuthRequest, res: Response) => {
+  try {
+    const ok = await prisma.lead.count({ where: { id: req.params.leadId, accountId: req.user!.accountId } });
+    if (!ok) return res.status(404).json({ error: 'card não encontrado' });
+    res.json({ estado: await estadoSantanderManual(req.params.leadId) });
+  } catch (err) { fail(res, err, 'Erro ao ler a análise manual'); }
+});
+router.post('/santander-manual/enviar', async (req: AuthRequest, res: Response) => {
+  const leadId = String(req.body?.leadId || '');
+  try {
+    const ok = leadId ? await prisma.lead.count({ where: { id: leadId, accountId: req.user!.accountId } }) : 0;
+    if (!ok) return res.status(404).json({ error: 'card não encontrado' });
+    const nome = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+    const erro = await pedirEnvioPortal(leadId, `botão "Enviar documentos" (${nome})`);
+    if (erro) return res.status(400).json({ error: erro });
+    emit(req, { leadId });
+    res.json({ ok: true });
+  } catch (err) { fail(res, err, 'Erro ao pedir o envio pelo portal'); }
+});
+router.post('/santander-manual/resultado', async (req: AuthRequest, res: Response) => {
+  const leadId = String(req.body?.leadId || '');
+  if (!leadId) return res.status(400).json({ error: 'leadId obrigatório' });
+  try { await resultadoEnvioPortal(req.user!.accountId, leadId, req.body || {}, req.app.get('io')); emit(req, { leadId }); res.json({ ok: true }); } catch (err) { fail(res, err, 'Erro ao gravar o envio pelo portal'); }
 });
 router.post('/busca-portal/:leadId/resultado', async (req: AuthRequest, res: Response) => {
   const bank = String(req.body?.bank || 'INTER').toUpperCase();
