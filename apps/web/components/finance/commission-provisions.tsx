@@ -141,7 +141,7 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Comissão (%)</label>
               <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="1 ou 5" className={inputCls} />
-              <p className="text-[10px] text-slate-400 mt-0.5">Home Equity: Inter 3–5% (produção do mês) · Creditas 5% · Santander 2,5% · CAIXA 1% — Financiamento: Bradesco 0,9–1% · Inter/Itaú 0,8% · Santander 0,8–0,9% · BRB 1% · CAIXA 0,4% (0,8% × 50%)</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Home Equity: Inter 3–5% (produção do mês) · Creditas 5% · Santander 2,5% · CAIXA 1% — Financiamento: Bradesco 0,9–1% · Inter 0,8% · Itaú 0,8% (Credimorar) / 1% (direto) · Santander 0,8–0,9% · BRB 1–1,25% · CAIXA 0,4% (0,8% × 50%)</p>
             </div>
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Valor previsto (R$)</label>

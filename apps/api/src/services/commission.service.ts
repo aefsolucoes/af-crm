@@ -9,7 +9,9 @@ import { prisma } from '../lib/prisma';
  *  - Financiamento Habitacional, tabela do Credimorar: Bradesco 0,9% até R$ 2 mi/mês e 1% acima; Inter 0,8%; Itaú 0,8%; Santander 0,8% até
  *      R$ 2 mi/mês e 0,9% acima. O Inter vale o mesmo 0,8% no Credimorar e no código direto (Fabio: "são os mesmos"). Banco não identificado: 0,8%.
  *  - CAIXA (Fabio 14/11): a CAIXA paga 0,8% do financiamento e a A&F fica com 50% disso → 0,4% (processo de R$ 1 mi = R$ 8 mil, A&F recebe R$ 4 mil).
- *  - BRB: 1% (Fabio 14/11; as notas de setembro batem: Yago e Debora, 1% do financiamento). Home Equity da CAIXA: 1%.
+ *  - BRB (contrato de correspondente, tabela vigente desde out/2020): 1% do financiamento; acima de R$ 3 mi contratados no mês, 1,25%. Só processo novo (portabilidade não paga).
+ *  - Itaú DIRETO (portal Itaú Imóveis, contrato de 17/09/2026): 1% fixo sobre o valor liberado (Repasse: R$ 1.200 por contrato — não entra na %). Itaú pela Credimorar segue 0,8%.
+ *  - Home Equity da CAIXA: 1%.
  *  - Outros setores (ex.: Consórcio): 1%. */
 type Faixa = { ate?: number; pct: number };
 const HOME_EQUITY: Record<string, Faixa[]> = {
@@ -24,7 +26,8 @@ const FINANCIAMENTO: Record<string, Faixa[]> = {
   ITAU: [{ pct: 0.8 }],
   SANTANDER: [{ ate: 2_000_000, pct: 0.8 }, { pct: 0.9 }],
   CAIXA: [{ pct: 0.4 }], // 0,8% × 50%
-  BRB: [{ pct: 1 }],
+  BRB: [{ ate: 3_000_000, pct: 1 }, { pct: 1.25 }],
+  ITAU_DIRETO: [{ pct: 1 }], // contrato direto com o Itaú (17/09/2026)
 };
 const FH_BANCO_NOME: Record<string, string> = { BRADESCO: 'Bradesco', INTER: 'Inter', ITAU: 'Itaú', SANTANDER: 'Santander', CAIXA: 'CAIXA', BRB: 'BRB' };
 
@@ -69,6 +72,7 @@ export function commissionRatePct(departmentName?: string | null, bank?: string 
     return bank && HOME_EQUITY[bank] ? naFaixa(HOME_EQUITY[bank], producao) : 5;
   }
   if (ehFinanciamento(departmentName)) {
+    if (bank === 'ITAU_FH') return naFaixa(FINANCIAMENTO.ITAU_DIRETO, producao); // Itaú direto ≠ Itaú pela Credimorar
     const b = bancoFinanciamento(bank, opts.instituicao);
     return b ? naFaixa(FINANCIAMENTO[b], producao) : 0.8;
   }
