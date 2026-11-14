@@ -349,7 +349,7 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
 // Recado pra quando o cliente responder (Fabio 14/11, Cleci): conversa de 24 h fechada → o texto fica guardado no card e sai sozinho quando ele responder
 // (recado-ao-abrir.service). Reabrir a conversa (template de atualização) continua sendo um envio à parte.
 router.post('/recado-ao-abrir', async (req: AuthRequest, res: Response) => {
-  const { leadId, content } = (req.body || {}) as { leadId?: string; content?: string };
+  const { leadId, content, docsSemRespostaHoras } = (req.body || {}) as { leadId?: string; content?: string; docsSemRespostaHoras?: number };
   if (!leadId || !String(content || '').trim()) return res.status(400).json({ error: 'leadId e content são obrigatórios' });
   try {
     const perms = await loadPerms(req);
@@ -358,7 +358,7 @@ router.post('/recado-ao-abrir', async (req: AuthRequest, res: Response) => {
     if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
     const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
     const { guardarRecadoAoAbrir } = require('../services/recado-ao-abrir.service') as typeof import('../services/recado-ao-abrir.service');
-    await guardarRecadoAoAbrir(lead.id, String(content), u?.name || 'equipe');
+    await guardarRecadoAoAbrir(lead.id, String(content), u?.name || 'equipe', { docsSemRespostaHoras: Number(docsSemRespostaHoras) || 0 });
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao guardar o recado' }); }
 });
