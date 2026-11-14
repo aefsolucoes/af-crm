@@ -491,7 +491,7 @@ Como decidir:
 3. Itens marcados "se usar" ou "se houver" não são obrigatórios.
 4. RG ou CNH servem como documento de identificação; certidão de nascimento ou de casamento servem como comprovante de estado civil. CPF (Fabio 14/11, regra GERAL — FH, HE e qualquer produto): o CPF à parte só é cobrado de quem não tem o número em nenhum documento recebido — CNH e CIN sempre trazem o CPF, e o RG/carteira que mostra o número do CPF também supre (linha "CPF" abaixo). HOME EQUITY (Fabio 27/10): de cada participante só se pedem RG/CNH e comprovante de residência (+ os documentos do imóvel) — NUNCA ponha certidão de nascimento/casamento, CPF ou renda em "faltando" na lista "Documentos Home Equity", mesmo que uma versão antiga da lista cite. A documentação completa é só da CAIXA (e das listas do Financiamento Habitacional).
 5. Cônjuges/companheiros: um comprovante de residência e uma certidão de casamento servem para os dois (moram juntos), a não ser que a conversa diga que moram em endereços diferentes.
-5a. COMPROVANTE DE RESIDÊNCIA EM NOME DE OUTRA PESSOA (Fabio 14/11, regra geral: "comprovante de endereço no nome da mãe pode ser usado normalmente, não precisa solicitar um novo no nome dela"): conta/comprovante no nome da mãe, do pai, do cônjuge, de parente ou do locador VALE como comprovante de residência do participante. NUNCA ponha em "faltando" um "comprovante de residência em nome do cliente" quando já chegou um comprovante de residência.
+5a. COMPROVANTE DE RESIDÊNCIA (Fabio 14/11, regra geral): vale no nome do PRÓPRIO participante, do CÔNJUGE/companheiro ou do PAI/MÃE (filiação do RG/CNH) — "comprovante de endereço no nome da mãe pode ser usado normalmente". Não peça outro no nome do cliente quando chegou um desses. No nome de OUTRA pessoa (irmão, tio, amigo, locador, empresa) NÃO vale: em "faltando", peça um comprovante no nome do participante, do cônjuge ou dos pais.
 6. Se o cliente disse na conversa que algo não se aplica a ele, considere.
 7. CERTIDÃO DE ÔNUS REAIS e MATRÍCULA do imóvel é ITEM ESSENCIAL (sem ela a contratação não conclui). A "Certidão de Cadastro Imobiliário" da PREFEITURA (inscrição imobiliária, proprietários, endereço) NÃO é certidão de ônus nem matrícula: não conta como recebida pra este item (ela só ajuda com a "Inscrição Imobiliária"). Qualquer arquivo de matrícula/ônus do CARTÓRIO recebido (mesmo consulta, antigo ou parcial) conta como recebido; se o cliente JÁ trouxe a certidão/matrícula, ela basta — a A&F NÃO emite outra. Escritura pública ou contrato de compra e venda NÃO substituem a certidão, mas trazem o número da matrícula (normalmente a escritura pública) e permitem à A&F emiti-la, SE o cliente autorizar. Se NÃO chegou, ponha em "faltando" ("Certidão de ônus/matrícula — ou escritura/documento com o número da matrícula") — a menos que a linha "Cliente autorizou a A&F a emitir a certidão" seja Sim: aí vai em "emitir" e não em "faltando". O que sobra do imóvel (o item do IPTU: inscrição imobiliária OU capa do IPTU) continua obrigatório.
 8c. "autorizouEmissao": true SÓ se na CONVERSA RECENTE o atendente ofereceu emitir a certidão de ônus/matrícula (o custo só é dito se o cliente perguntar) e o cliente aceitou/autorizou; caso contrário false.
@@ -724,6 +724,24 @@ async function perguntarProtegidos(accountId: string, leadId: string, io: Io): P
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔒 Perguntei ao cliente o que são os arquivos protegidos por senha (${pend.map(([, v]) => v.fileName).join('; ')}). Eles ficam na pasta do Drive como "VERIFICAR - …" pra você conferir depois.` } }).catch(() => {});
 }
 
+const nomeNorm = (s: unknown) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z ]/g, ' ').replace(/\s+/g, ' ').trim();
+/** Quem pode estar no comprovante de residência (Fabio 14/11): os participantes, os cônjuges e os pais (ficha cadastral + filiação lida no RG/CNH + certidão de casamento). */
+export function nomesAceitosNoComprovante(cf: Record<string, any>, leadName: string): string[] {
+  const out: unknown[] = [leadName, cf.participante_1, cf.participante_2, cf.nome_social_1, cf.nome_social_2];
+  for (const p of (cf._fichaCadastral?.participantes || []) as any[]) out.push(p?.nome, p?.mae, p?.pai, p?.conjuge?.nome ?? p?.conjuge);
+  for (const r of Object.values((cf._docReview || {}) as Record<string, any>)) {
+    if (/CERTIDAO DE CASAMENTO/.test(nomeNorm(r?.tipo))) out.push(...String(r?.titular || '').split(';'));
+    if (r?.filiacao) out.push(...String(r.filiacao).split(';'));
+  }
+  return Array.from(new Set(out.map(nomeNorm).filter((n) => n.length > 3)));
+}
+/** Chegou comprovante de residência (OK) no nome do cliente, do cônjuge ou dos pais? Pura. */
+export function comprovanteNoNomeCerto(cf: Record<string, any>, leadName: string): boolean {
+  const aceitos = nomesAceitosNoComprovante(cf, leadName);
+  return Object.values((cf._docReview || {}) as Record<string, any>).some((r: any) => /COMPROVANTE DE RESID/.test(nomeNorm(r?.tipo)) && r.resultado !== 'PROBLEMA'
+    && String(r.titular || '').split(';').some((t) => aceitos.some((a) => mesmaPessoa(t.trim(), a))));
+}
+
 /** A IA do card está ligada AGORA (lido na hora do envio — a conferência demora e a equipe pode ter desligado nesse meio-tempo; Fabio 14/11). */
 async function iaLigadaAgora(leadId: string): Promise<boolean> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
@@ -902,9 +920,9 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   // o ÚNICO pendente. A documentação conta como completa (card segue pra contratação/vistoria) e o cliente ouve que precisa mandar esses dois depois.
   // Financiamento com banco escolhido (Fabio 14/11, Adriano/Cássia): "solicita toda a documentação, imóvel e vendedor, mas se ela mandar já a documentação do imóvel já pode ir providenciando a vistoria
   // para o processo não ficar parado" — os documentos do VENDEDOR são da contratação, que vem depois da vistoria: também não seguram.
-  // Comprovante de residência no nome de OUTRA pessoa (mãe, cônjuge, parente) vale normalmente (Fabio 14/11, Nalia: "não precisa solicitar um novo no nome dela"): com um comprovante
-  // já recebido, o "comprovante em nome de <cliente>" sai da lista — um comprovante que realmente não chegou continua sendo cobrado.
-  if (verdict && !verdict.complete && (review?.ok || []).some((d: string) => /comprovante de resid/i.test(d))) {
+  // Comprovante de residência vale no nome do cliente, do CÔNJUGE ou dos PAIS (Fabio 14/11, Nalia: "ou nome do cliente, esposo, ou dos pais"): com um comprovante desses já
+  // recebido, o "comprovante em nome de <cliente>" sai da lista — um comprovante que não chegou (ou no nome de outra pessoa) continua sendo cobrado.
+  if (verdict && !verdict.complete && comprovanteNoNomeCerto(cfLead, lead.name)) {
     const antes = verdict.faltando.length;
     verdict.faltando = verdict.faltando.filter((f) => !/comprovante de resid[^;]*\bem nome\b/i.test(f));
     if (antes !== verdict.faltando.length && !verdict.faltando.length && !(review?.problemas.length) && !(review?.duvidas.length) && !(review?.donoPendente.length)) verdict.complete = true;

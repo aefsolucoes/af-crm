@@ -145,24 +145,27 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
 
   if (p.dryRun) return { verdict, clientText, action: clientText ? 'ENVIOU' : 'EQUIPE_DECIDE', dryRun: true, detail: `${gravameTxt}${ressalvaTxt}`.trim() };
 
-  // Apartamento com a certidão do TERRENO/empreendimento (Fabio 14/11): pede a da unidade (ou avisa a equipe) e esta não vai ao cliente.
-  const doTerreno = await (require('./matricula-unidade.service') as typeof import('./matricula-unidade.service')).conferirMatriculaDaUnidade({ accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, matricula: p.matricula, pdf: p.pdf, io: p.io })
-    .catch((e: any) => { console.error('[Certidão] matrícula da unidade:', e?.message); return false; });
-  if (doTerreno) return { verdict, clientText: null, action: 'EQUIPE_DECIDE', dryRun: false, detail: 'certidão do terreno/empreendimento — tratada pela matrícula da unidade' };
-
-  // ── equipe decide (encerrada / ilegível) ────────────────────────────────────────────────────
-  if (!clientText) {
+  // TODA certidão emitida por nós vai ao cliente (Fabio 14/11). Apartamento com a certidão do TERRENO/empreendimento: o CRM pede a da unidade (ou avisa a equipe) e a do
+  // terreno vai com a explicação. Matrícula encerrada / PDF ilegível: a equipe confere, e a certidão vai ao cliente com um texto neutro.
+  const textoTerreno = await (require('./matricula-unidade.service') as typeof import('./matricula-unidade.service')).conferirMatriculaDaUnidade({ accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, matricula: p.matricula, pdf: p.pdf, io: p.io })
+    .catch((e: any) => { console.error('[Certidão] matrícula da unidade:', e?.message); return null; });
+  const matTxt = p.matricula ? ` (matrícula ${p.matricula})` : '';
+  const textoNeutro = verdict.kind === 'ENCERRADA'
+    ? `${nome}, saiu a certidão do imóvel${matTxt}. Segue em anexo. Ela mostra que essa matrícula foi encerrada (o imóvel ganhou uma matrícula nova), então a gente vai conferir e te avisa por aqui o próximo passo.`
+    : `${nome}, saiu a certidão de ônus do imóvel${matTxt}. Segue o documento em anexo.`;
+  if (!textoTerreno && !clientText) {
     const motivo = verdict.kind === 'ENCERRADA'
       ? `a matrícula${verdict.matricula ? ` ${verdict.matricula}` : ''} foi ENCERRADA${verdict.detalhe ? ` — ${verdict.detalhe}` : ''}; precisa de nova certidão com o número novo`
       : 'a IA não conseguiu ler o proprietário/a matrícula neste PDF';
-    await note(db, p.leadId, `⚠️ Certidão de ônus salva no Drive, mas NÃO foi enviada ao cliente: ${motivo}. Confira o PDF antes de falar com ele.`);
+    await note(db, p.leadId, `⚠️ Certidão de ônus salva no Drive e encaminhada ao cliente com um texto neutro, mas precisa de conferência: ${motivo}. Confira o PDF.`);
     pushAll(p.accountId, '⚠️ Certidão de ônus precisa de conferência', `${lead.name} — ${verdict.kind === 'ENCERRADA' ? 'matrícula encerrada' : 'não consegui ler o proprietário'}`, p.leadId);
-    return { verdict, clientText, action: 'EQUIPE_DECIDE', dryRun: false };
   }
+  const texto = textoTerreno || clientText || textoNeutro;
 
   // ── nota + push pra equipe ────────────────────────────────────────────────────────────────────
   const quem = 'dono' in verdict && verdict.dono ? verdict.dono : 'não identificado';
-  if (verdict.kind === 'OUTRO_NOME') {
+  if (textoTerreno || !clientText) { /* já anotado acima / pela conferência da matrícula da unidade */ }
+  else if (verdict.kind === 'OUTRO_NOME') {
     await note(db, p.leadId, `⚠️ ATENÇÃO: a certidão de ônus da matrícula ${p.matricula} está no nome de ${verdict.empresa ? 'uma EMPRESA, ' : ''}${quem}${verdict.parente ? ' (parente de 1º grau?)' : ''}, e NÃO no de um participante do card. O cliente será avisado.${gravameTxt}${ressalvaTxt}`);
     pushAll(p.accountId, '⚠️ Certidão de ônus em outro nome', `${lead.name} — imóvel no nome de ${titleCase(quem)}`, p.leadId);
   } else {
@@ -171,8 +174,8 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
 
   // ── cliente: janela aberta = texto + PDF; fechada = template "Olá, tudo bem?" e o resto sai quando ele responder ─────────
   if (await windowOpen(db, p.leadId)) {
-    const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, text: clientText, io: p.io, buffers: enviar });
-    if (s.ok) { await note(db, p.leadId, '📨 Certidão de ônus encaminhada ao cliente pelo WhatsApp.'); return { verdict, clientText, action: 'ENVIOU', dryRun: false }; }
+    const s = await sendTextAndPdf(db, { accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, text: texto, io: p.io, buffers: enviar });
+    if (s.ok) { await note(db, p.leadId, '📨 Certidão de ônus encaminhada ao cliente pelo WhatsApp.'); return { verdict, clientText: texto, action: 'ENVIOU', dryRun: false }; }
     await note(db, p.leadId, `⚠️ Não consegui encaminhar a certidão de ônus ao cliente: ${s.error}. Mande o PDF da pasta IMOVEL à mão.`);
     pushAll(p.accountId, '⚠️ Certidão não foi enviada ao cliente', `${lead.name}: ${String(s.error).slice(0, 80)}`, p.leadId);
     return { verdict, clientText, action: 'FALHOU', dryRun: false, detail: s.error };
@@ -184,7 +187,7 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
     return { verdict, clientText, action: 'FALHOU', dryRun: false, detail: t.error };
   }
   const fresh = await db.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
-  await db.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _certidaoPending: { requestId: p.requestId, text: clientText, names: enviar.map((x) => x.fileName), at: new Date().toISOString() } } } });
+  await db.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _certidaoPending: { requestId: p.requestId, text: texto, names: enviar.map((x) => x.fileName), at: new Date().toISOString() } } } });
   await note(db, p.leadId, '📨 Janela de 24 h fechada: mandei o template "Olá, tudo bem?". Quando o cliente responder, o CRM envia o aviso e a certidão de ônus.');
   return { verdict, clientText, action: 'TEMPLATE_E_PENDENTE', dryRun: false };
 }
