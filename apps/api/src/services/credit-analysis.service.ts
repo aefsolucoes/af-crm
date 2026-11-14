@@ -745,37 +745,59 @@ export const docDoPortal = (t: string): string => {
   if (/irpf|imposto de renda/i.test(x)) return 'Declaração de Imposto de Renda (IRPF) do último exercício + extrato da conta corrente dos últimos 3 meses';
   return x;
 };
-export function santanderManualClientText(nome: string | null, saudar: boolean, itens: string[]): string {
+export function santanderManualClientText(nome: string | null, saudar: boolean, itens: string[], o: { banco?: string; fh?: boolean } = {}): string {
   const lista = itens.length ? itens : ['Os documentos de comprovação de renda'];
-  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Sobre o seu crédito: a proposta não passou na análise automática do Santander, mas o banco liberou a *análise manual* (feita por um analista), que é o caminho pra conseguir uma resposta. Pra encaminhar ao banco, preciso que você me envie por aqui:\n${lista.map((i) => `• ${i}`).join('\n')}\n\nAssim que eu receber, encaminho ao banco e te aviso o retorno. 😊`;
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Sobre o seu ${o.fh ? 'financiamento' : 'crédito'}: a proposta não passou na análise automática do ${o.banco || 'Santander'}, mas o banco liberou a *análise manual* (feita por um analista), que é o caminho pra conseguir uma resposta. Pra encaminhar ao banco, preciso que você me envie por aqui:\n${lista.map((i) => `• ${i}`).join('\n')}\n\nAssim que eu receber, encaminho ao banco e te aviso o retorno. 😊`;
 }
+/** Financiamento (CREDIMORAR_FH — Fabio 14/11, Lucas Henrique: "o mesmo fluxo do HE para o FH, usa-se o mesmo sistema… a diferença é que agora tem Bradesco"): os bancos do Credimorar
+ *  (Bradesco e Santander) que estão em "Enviar Documentos" na lista "BANCOS [Banco: situação, proposta N | …]" da leitura. Pura (testável). */
+export function bancosAnaliseManualFh(detail?: string | null): { banco: string; proposta: string }[] {
+  const out: { banco: string; proposta: string }[] = [];
+  const rx = /\b(Bradesco|Santander)\s*:\s*Enviar Documentos(?:\s*,\s*proposta\s*(\d{5,}))?/gi;
+  for (let m = rx.exec(String(detail || '')); m; m = rx.exec(String(detail || ''))) {
+    const banco = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+    if (!out.some((b) => b.banco === banco)) out.push({ banco, proposta: m[2] || '' });
+  }
+  return out;
+}
+/** Lista do portal que parece mesmo de documentos (no FH a leitura da tela pode pegar outra seção): senão, vale a lista de renda do perfil. Pura. */
+const pareceDocumento = (itens: string[]) => itens.length > 0 && itens.every((i) => /holerite|contracheque|imposto|irpf|extrato|renda|comprovante|declara|ctps|carteira|pr[oó].?labore|decore|aposentad|benef/i.test(i));
 async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; dryRun: boolean; detail?: string | null; proposalNumber?: string | null; accountId: string }): Promise<void> {
-  if (row.dryRun || row.bank !== 'CREDIMORAR' || !SANTANDER_MANUAL.test(row.detail || '')) return;
+  const fh = row.bank === FH_BANK ? bancosAnaliseManualFh(row.detail) : [];
+  if (row.dryRun || !(fh.length || (row.bank === 'CREDIMORAR' && SANTANDER_MANUAL.test(row.detail || '')))) return;
   const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { id: true, name: true, accountId: true, aiAutoReplyActive: true, status: true, customFields: true } });
   if (!lead || lead.status !== 'OPEN') return;
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
-  const numero = row.proposalNumber || (/proposta\s+(\d{6,})/i.exec(row.detail || '') || [])[1] || 'sem-numero';
+  const banco = fh.length ? fh.map((b) => b.banco).join(' e ') : 'Santander';
+  const numero = fh.length ? fh[0].proposta || row.proposalNumber || 'sem-numero' : row.proposalNumber || (/proposta\s+(\d{6,})/i.exec(row.detail || '') || [])[1] || 'sem-numero';
   const st = (cf._santanderManual || {}) as { proposta?: string; teamAt?: string; askedAt?: string };
   if (st.proposta === numero && st.askedAt) return; // já pedi os documentos ao cliente desta proposta
-  const itens = (parseDocumentosExigidos(row.detail)?.itens || []).map(docDoPortal);
+  let itens = (parseDocumentosExigidos(row.detail)?.itens || []).map(docDoPortal);
+  // FH: o que o portal pediu (a extensão escolhe "Análise manual" e lê, como no HE); sem essa leitura, a renda do PERFIL do comprador (Respostas rápidas "Documentos comprador …").
+  if (fh.length && !pareceDocumento(itens)) itens = await (require('./santander-manual.service') as typeof import('./santander-manual.service')).itensRendaPerfilFh(lead.accountId, cf);
+  const abriu = SANTANDER_MANUAL.test(row.detail || '');
+  const extra = fh.length ? { produto: 'FH', banco } : {};
   const salvar = async (patch: Record<string, any>) => {
     const fresh = await db.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
     const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
-    c._santanderManual = { ...(c._santanderManual || {}), proposta: numero, ...patch };
+    c._santanderManual = { ...(c._santanderManual || {}), proposta: numero, ...extra, ...patch };
     await db.lead.update({ where: { id: lead.id }, data: { customFields: c as any } });
   };
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {
-    await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).` } }).catch(() => {});
+    const conteudo = fh.length
+      ? `🏦 ${banco} (Financiamento): a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente — Contatar consultor) e foi pra ANÁLISE MANUAL. ${abriu ? 'A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".' : 'A extensão NÃO conseguiu escolher "Análise manual" no portal: escolha no Credimorar.'}${itens.length ? ` Documentos pedidos ao cliente: ${itens.join('; ')}.` : ''} Quando ele mandar tudo, encaminho os documentos à Letícia (Credimorar) pra ela atuar no processo.`
+      : `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Depois que o cliente mandar: anexe no portal, escreva o "Comentário de defesa" e clique em ENVIAR (o envio é sempre manual).`;
+    await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(lead.accountId, { title: '🏦 Santander pede análise manual', body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
+    sendPushToAccount(lead.accountId, { title: `🏦 ${banco}${fh.length ? ' (Financiamento)' : ''} pede análise manual`, body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
     await salvar({ teamAt: new Date().toISOString() });
   }
   // Cliente (Fabio 13/11, Claudemir): conversa aberta → lista de documentos; janela de 24 h fechada → template de atualização + o pedido guardado pra quando ele responder.
   // Com a IA desligada / STOP TOTAL / fora das 07h–21h fica o texto pronto na nota (o tick do santander-manual.service pede depois, dentro do horário).
   // Quando ele mandar tudo, o mesmo serviço encaminha os documentos à Letícia (Credimorar).
   const { pedirDocumentosSantanderManual } = require('./santander-manual.service') as typeof import('./santander-manual.service');
-  await pedirDocumentosSantanderManual({ accountId: lead.accountId, leadId: lead.id, numero, itens });
+  await pedirDocumentosSantanderManual({ accountId: lead.accountId, leadId: lead.id, numero, itens, ...(fh.length ? { produto: 'FH' as const, banco } : {}) });
 }
 
 /** Quais bancos ainda estão "em jogo" pra este cliente (informativo) e se a COMPROVAÇÃO DE RENDA é exigida (regra em `rendaExigida`, Fabio 14/11). Em jogo = banco com aprovação (a última decisão
