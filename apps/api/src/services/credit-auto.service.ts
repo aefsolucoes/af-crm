@@ -254,13 +254,21 @@ async function startNewFhLeads(accountId: string, enabledAt: Date) {
       continue;
     }
     // Construção (terreno/lote + obra — Fabio 05/11, Cleide): só pela CAIXA e com financiado acima de R$ 200 mil; os bancos privados do FH não rodam.
-    { const { ehConstrucaoFh, financiadoFh, textoConstrucao } = require('./construcao-fh.service') as typeof import('./construcao-fh.service');
+    { const { ehConstrucaoFh, financiadoFh, textoConstrucao, CONSTRUCAO_MIN_FINANCIADO } = require('./construcao-fh.service') as typeof import('./construcao-fh.service');
       if (ehConstrucaoFh(proposta.content, cf)) {
-        const txt = textoConstrucao(financiadoFh(proposta.content, cf));
+        const financiado = financiadoFh(proposta.content, cf);
+        const txt = textoConstrucao(financiado);
         await saveCf(l.id, { _fhAutoStartedAt: new Date().toISOString() });
         await addNote(l.id, txt);
         const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
         sendPushToAccount(accountId, { title: `🏗️ ${l.name}: construção`, body: txt.slice(0, 160), leadId: l.id }).catch(() => {});
+        // O crédito é pela CAIXA → consulta do nome ANTES de qualquer documento (Fabio 14/11, Phillipi: "sempre que o crédito for pela CAIXA, precisa rodar a consulta para
+        // saber se o cliente possui alguma restrição"). Sem restrição, o CRM pede a documentação da CAIXA e o card entra na rota (caixa-screening.consultaLimpa).
+        if (financiado > CONSTRUCAO_MIN_FINANCIADO) {
+          const { pedirConsultaCaixa } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');
+          const r = await pedirConsultaCaixa(accountId, l.id, { origem: 'construcao' }).catch((e: any) => ({ ok: false, erro: e?.message }));
+          if (r.ok) await addNote(l.id, '🏦 Construção = CAIXA: a consulta do nome na CAIXA entrou na fila. A documentação só é pedida depois do resultado (sem restrição); com restrição, sai a orientação Serasa/SCPC/protesto.');
+        }
         continue;
       } }
     // Inter do Financiamento roda no NOSSO portal (Fabio 29/10: "os financiamentos habitacionais devem ser feitos no nosso Inter"; a extensão do Credimorar desmarca o Inter de lá).
@@ -1100,7 +1108,8 @@ export async function processCreditAutomation(io: any): Promise<void> {
       { const { processQuestionariosInter } = require('./inter-questionario.service') as typeof import('./inter-questionario.service'); await processQuestionariosInter(s.accountId, io as any).catch((e: any) => console.error('[Questionário Inter]', e?.message)); } // vistoria do Inter concluída → questionário da contratação (Fabio 30/10)
       { const { processFichasCadastrais } = require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service'); await processFichasCadastrais(s.accountId, io).catch((e: any) => console.error('[Ficha cadastral]', e?.message)); } // Documentação Recebida → ficha de cadastro lida do Drive (Fabio 29/10)
       { const { processFilaCaixa } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); await processFilaCaixa(s.accountId).catch((e: any) => console.error('[CAIXA] fila:', e?.message)); } // ficha pronta + cliente vai pela CAIXA → fila da extensão (Fabio 29/10)
-      { const { processDocLoop } = require('./docs-loop.service') as typeof import('./docs-loop.service'); await processDocLoop(s.accountId, io).catch((e: any) => console.error('[Loop de documentos]', e?.message)); } // loop de lembretes de Aguardando Documentação (Fabio 28/10)
+      { const { processDocLoop } = require('./docs-loop.service') as typeof import('./docs-loop.service'); await processDocLoop(s.accountId, io).catch((e: any) => console.error('[Loop de documentos]', e?.message)); }
+      { const { processCaixaDocsLoop } = require('./caixa-docs-loop.service') as typeof import('./caixa-docs-loop.service'); await processCaixaDocsLoop(s.accountId, io).catch((e: any) => console.error('[CAIXA docs]', e?.message)); } // 3 lembretes da documentação da CAIXA, 1 por dia → Follow Up (Fabio 14/11) // loop de lembretes de Aguardando Documentação (Fabio 28/10)
       { const { processJanelaDocs } = require('./docs-loop.service') as typeof import('./docs-loop.service'); await processJanelaDocs(s.accountId, io).catch((e: any) => console.error('[Janela da documentação]', e?.message)); } // pergunta quando manda os documentos antes da janela de 24 h fechar (Fabio 08/11)
       { const { processDocsDepois } = require('./docs-loop.service') as typeof import('./docs-loop.service'); await processDocsDepois(s.accountId, io).catch((e: any) => console.error('[Docs pra depois]', e?.message)); } // lembrete do comprovante/descritivo que ficou pra depois da vistoria (Fabio 14/11)
       { const { processPropostaAdiante } = require('./proposta-adiante.service') as typeof import('./proposta-adiante.service'); await processPropostaAdiante(s.accountId, io).catch((e: any) => console.error('[Proposta adiante]', e?.message)); } // proposta de novo de quem já está adiante → avisa a etapa (Fabio 08/11)

@@ -18,7 +18,7 @@ export async function temAprovacao(leadId: string, cf: Record<string, any>): Pro
 }
 
 /** Quem pediu a CAIXA: a IA da conversa (cliente com a IA ligada), o cliente com a IA desligada, a equipe escrevendo na conversa ou o botão "Consultar na CAIXA" do card. */
-export type OrigemCaixa = 'ia' | 'cliente' | 'equipe' | 'botao';
+export type OrigemCaixa = 'ia' | 'cliente' | 'equipe' | 'botao' | 'construcao';
 /** Resultado SEM restrição de um pedido da CAIXA: o que vai ao cliente (status PENDING → ENVIADO, ou EQUIPE quando a IA está desligada / a conversa fechou). */
 type Limpo = { consultadoEm: string; status: 'PENDING' | 'ENVIADO' | 'EQUIPE' | 'SO_NOTA'; texto: string; habite: 'TEM' | 'NAO_TEM' | null; rota: boolean; at: string; enviadoAt?: string };
 /** `_caixaPedido` no card. */
@@ -30,6 +30,7 @@ const POR_ORIGEM: Record<OrigemCaixa, string> = {
   cliente: 'automático — o cliente pediu a CAIXA (IA do card desligada)',
   equipe: 'automático — a equipe combinou a CAIXA na conversa',
   botao: 'botão "Consultar na CAIXA"',
+  construcao: 'automático — construção no Financiamento é só pela CAIXA',
 };
 /** Etapa "Análise CAIXA" do funil de Vendas (HE e FH, Fabio 11/11): onde o card espera documentação, cadastro e avaliação da CAIXA. */
 export const ETAPA_CAIXA_RE = /^an[aá]lise\s+caixa/i;
@@ -39,7 +40,16 @@ async function gravaPedido(leadId: string, pedido: Pedido): Promise<void> {
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaPedido}', ${JSON.stringify(pedido)}::jsonb, true) WHERE id = ${leadId}`;
 }
 /** A equipe (conversa ou botão), o cliente que ia pela CAIXA por fora e o Financiamento Habitacional pulam a trava "documentação da CAIXA só depois de uma aprovação". */
-const pedidoLiberado = (p: Pedido | undefined) => !!p && (!!p.concorrente || p.origem === 'equipe' || p.origem === 'botao');
+const pedidoLiberado = (p: Pedido | undefined) => !!p && (!!p.concorrente || p.origem === 'equipe' || p.origem === 'botao' || p.origem === 'construcao');
+
+/** Card de CONSTRUÇÃO do Financiamento (terreno/lote + obra, ou obra em terreno próprio): só pela CAIXA (construcao-fh). Ainda não existe imóvel pronto, então o Habite-se não se aplica. */
+async function ehConstrucao(leadId: string, cf: Record<string, any>, fh: boolean): Promise<boolean> {
+  if (!fh) return false;
+  const { ehConstrucaoFh } = require('./construcao-fh.service') as typeof import('./construcao-fh.service');
+  if (ehConstrucaoFh('', cf)) return true;
+  const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Financiamento Habitacional' }, OR: [{ content: { contains: 'Proposta' } }, { content: { contains: 'PROPOSTA' } }] }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  return ehConstrucaoFh(String(prop?.content || ''), cf);
+}
 
 /** CONSULTA PRIMEIRO (Fabio 11/11: "Sempre que um cliente quiser seguir pela CAIXA, ele informar ou a gente, o CRM deve fazer uma consulta para buscar ocorrências" +
  *  "Assim ele evita de encaminhar documentação à toa"; substitui a pergunta de nome limpo de 01/11): o cliente (IA ligada ou desligada), a equipe na conversa ou o botão
@@ -113,14 +123,20 @@ export async function consultaLimpa(accountId: string, leadId: string, io?: Io):
   const saud = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   let texto = `${saud ? `${saud}, c` : 'C'}onsultei aqui na CAIXA e não apareceu nenhuma restrição no nome.`;
   let rota = false;
-  if (habite === 'NAO_TEM') texto += ' Só que a CAIXA não aceita imóvel residencial sem Habite-se, então por lá não dá pra seguir.';
+  // CONSTRUÇÃO (Fabio 14/11, Phillipi: "sempre que o crédito for pela CAIXA, precisa rodar a consulta"): o crédito já é pela CAIXA e ainda não existe imóvel pronto —
+  // nada de Habite-se; sem restrição, a documentação da CAIXA e a rota (etapa Análise CAIXA, lembretes de documentação).
+  if (await ehConstrucao(leadId, cf, fh)) {
+    texto = `${saud ? `${saud}, c` : 'C'}omo é construção, o seu financiamento é pela CAIXA. Consultei aqui na CAIXA e não apareceu nenhuma restrição no seu nome. Pra dar entrada na análise, a CAIXA pede a documentação antes: ${DOCS_CAIXA}. O que você já mandou por aqui não precisa mandar de novo.`;
+    habite = null;
+    rota = true;
+  } else if (habite === 'NAO_TEM') texto += ' Só que a CAIXA não aceita imóvel residencial sem Habite-se, então por lá não dá pra seguir.';
   else if (habite === 'TEM' && podeDocs) { texto += ` Pra seguir pela CAIXA, ela pede a documentação antes da análise: ${DOCS_CAIXA}. O que você já mandou por aqui não precisa mandar de novo.`; rota = true; }
   else if (habite === 'TEM') texto += ' Primeiro sai o resultado dos bancos parceiros; com uma aprovação, dá pra seguir pela CAIXA também.';
   else texto += ' O imóvel tem Habite-se? A CAIXA só aceita imóvel residencial com Habite-se.';
   const limpo: Limpo = { consultadoEm, status: jaNaRota ? 'SO_NOTA' : 'PENDING', texto, habite, rota, at: new Date().toISOString() };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_caixaPedido,limpo}', ${JSON.stringify(limpo)}::jsonb, true) WHERE id = ${leadId}`;
   await nota(leadId, `✅ CAIXA: a consulta do nome NÃO mostrou restrição (pedido: ${pedido.por || 'CAIXA'}). ${jaNaRota ? 'O card já está na rota da CAIXA (a documentação já foi pedida): nada novo vai ao cliente.' : `Vou avisar o cliente: “${texto}”`}`);
-  avisa(accountId, `✅ ${lead.name}: nome sem restrição na CAIXA`, jaNaRota ? 'Card já na rota da CAIXA.' : habite ? 'O cliente vai receber o resultado.' : 'O CRM vai perguntar do Habite-se.', leadId);
+  avisa(accountId, `✅ ${lead.name}: nome sem restrição na CAIXA`, jaNaRota ? 'Card já na rota da CAIXA.' : habite || rota ? 'O cliente vai receber o resultado.' : 'O CRM vai perguntar do Habite-se.', leadId);
   if (!jaNaRota) await enviarAvisoLimpo(accountId, leadId, io);
 }
 
@@ -132,7 +148,7 @@ export async function enviarAvisoLimpo(accountId: string, leadId: string, io?: I
   const lp = pedido?.limpo;
   if (!lead || !pedido || !lp || lp.status !== 'PENDING' || cf._autoPaused || cf._caixaTeste) return; // _caixaTeste: modo teste (Fabio 11/11)
   const marca = (patch: Partial<Limpo>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_caixaPedido,limpo}', ${JSON.stringify({ ...lp, ...patch })}::jsonb, true) WHERE id = ${leadId}`;
-  const rota = async () => { if (lp.rota) await entrarRotaCaixa(accountId, leadId, 'Consulta da CAIXA sem restrição + imóvel com Habite-se', io, { concorrente: !!pedido.concorrente, liberado: true }).catch((e) => console.error('[CAIXA] rota:', e?.message)); };
+  const rota = async () => { if (lp.rota) await entrarRotaCaixa(accountId, leadId, lp.habite ? 'Consulta da CAIXA sem restrição + imóvel com Habite-se' : 'Consulta da CAIXA sem restrição (construção: só pela CAIXA)', io, { concorrente: !!pedido.concorrente, liberado: true }).catch((e) => console.error('[CAIXA] rota:', e?.message)); };
   const praEquipe = async (porque: string) => {
     await marca({ status: 'EQUIPE' });
     await nota(leadId, `🏦 Consulta da CAIXA sem restrição, mas ${porque}: mande você ao cliente. Texto pronto:\n“${lp.texto}”${lp.rota ? '\nO card entrou na rota da CAIXA (etapa Análise CAIXA): a documentação da CAIXA é conferida quando chegar.' : ''}`);
@@ -147,7 +163,7 @@ export async function enviarAvisoLimpo(accountId: string, leadId: string, io?: I
   const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: lp.texto, io: io as any });
   if (!env.success) return; // tenta no próximo minuto
   await marca({ status: 'ENVIADO', enviadoAt: new Date().toISOString() });
-  await nota(leadId, `📨 Mandei ao cliente o resultado da consulta da CAIXA (sem restrição)${lp.habite ? '' : ' e perguntei do Habite-se'}. A IA cuida da resposta.`);
+  await nota(leadId, `📨 Mandei ao cliente o resultado da consulta da CAIXA (sem restrição)${lp.rota ? ' e pedi a documentação da CAIXA' : lp.habite ? '' : ' e perguntei do Habite-se'}. A IA cuida da resposta.`);
   await rota();
 }
 
@@ -162,6 +178,13 @@ export async function processAvisosLimpos(accountId: string, io?: Io): Promise<v
 /** Bloco do prompt da IA da conversa sobre o pedido da CAIXA (consulta em andamento ou sem restrição). '' fora disso — a restrição tem o bloco dela (caixa-ocorrencias). */
 export async function aiConsultaCaixaBloco(leadId: string, cf: Record<string, any>): Promise<string> {
   const pedido = cf._caixaPedido as Pedido | undefined;
+  // Na rota da CAIXA com a documentação ainda incompleta (Fabio 14/11: "com a IA ligada, sabe que ele já preencheu a proposta, porém seguirá pela CAIXA e precisa da
+  // documentação?"): vale também no Follow Up, pra onde o card vai depois dos 3 lembretes sem resposta (caixa-docs-loop).
+  const cadastrados = cf._caixaCadastro?.cadastros && typeof cf._caixaCadastro.cadastros === 'object' ? Object.keys(cf._caixaCadastro.cadastros).length : 0;
+  if (cf._caixaRota && !cf._caixaDocsAt && !cadastrados) return `--- CAIXA: AGUARDANDO A DOCUMENTAÇÃO DO CLIENTE (Fabio 14/11) ---
+O cliente JÁ PREENCHEU a proposta e segue pela CAIXA${cf._caixaRota.motivo && /constru/i.test(String(cf._caixaRota.motivo)) ? ' (é construção: no Financiamento, construção é só pela CAIXA)' : ''}. A consulta do nome na CAIXA já foi feita e a documentação da CAIXA já foi pedida: ${DOCS_CAIXA}.
+Mesmo que o card esteja em Follow Up ou Lead Sem Retorno, o assunto é a DOCUMENTAÇÃO: NUNCA mande o link da proposta nem peça pra preencher a proposta de novo, e não pergunte do Habite-se nem se o nome está limpo.
+Se ele perguntar o que falta, peça só o que ainda NÃO chegou (confira o bloco DOCUMENTOS DESTE CLIENTE). Se disser que manda depois, pergunte até quando consegue mandar.`;
   if (!pedido || cf._caixaRota) return '';
   const lp = pedido.limpo;
   if (!lp) {

@@ -77,6 +77,20 @@ router.post('/:leadId/card/consulta', requirePermission('funnel_manage'), async 
     res.json({ ok: true, mensagem: r.ja ? 'O card já tinha consulta da CAIXA: usei o resultado que existe' : 'Consulta do nome na CAIXA na fila da extensão' });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a consulta na CAIXA' }); }
 });
+// Documentação da CAIXA já pedida à mão (Fabio 14/11, Phillipi: "já rodei, fiz a solicitação da documentação e o cliente não encaminhou … ele vai para Análise CAIXA"):
+// põe o card na rota da CAIXA — etapa Análise CAIXA, conferência dos documentos e os 3 lembretes diários (caixa-docs-loop). Exige a consulta do nome já feita e sem restrição.
+router.post('/:leadId/card/rota', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const cf = (lead.customFields || {}) as Record<string, any>;
+    if (!cf._caixaCadastro?.consultadoEm) return res.status(400).json({ error: 'Faça antes a consulta do nome na CAIXA ("Consultar na CAIXA")' });
+    if (cf._ocorrencias?.consultadoEm && cf._ocorrencias.consultadoEm === cf._caixaCadastro.consultadoEm) return res.status(400).json({ error: 'A consulta da CAIXA mostrou restrição no nome' });
+    const { entrarRotaCaixa } = require('../services/caixa-screening.service') as typeof import('../services/caixa-screening.service');
+    const ok = await entrarRotaCaixa(req.user!.accountId, req.params.leadId, `documentação da CAIXA pedida pela equipe (${await nomeDe(req)})`, req.app.get('io'), { liberado: true });
+    res.json({ ok: true, mensagem: ok ? 'Card na rota da CAIXA (Análise CAIXA)' : 'O card já estava na rota da CAIXA' });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pôr na rota da CAIXA' }); }
+});
 // O clique é a autorização da Avaliação de Risco pra este cliente (Fabio 31/10: só com o OK dele) — registrada no card (avaliacao.autorizacao + anotação).
 // `denovo` (Fabio 03/11, Jézer/Fernanda depois da autorização do PV): roda a Avaliação de Risco de novo — a anterior vai pro histórico e o resultado é consultado de novo.
 router.post('/:leadId/card/analise', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {

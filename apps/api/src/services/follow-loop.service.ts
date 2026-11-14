@@ -166,6 +166,10 @@ async function executarPasso(
     const { sendProsseguir } = require('./prosseguir.service') as typeof import('./prosseguir.service');
     return sendProsseguir(accountId, l.id, 'loop do Follow Up', io);
   }
+  // Veio da rota da CAIXA (Fabio 14/11: 3 lembretes da documentação sem retorno → Follow Up, "daí ele segue o fluxo do Follow Up"): o cliente JÁ preencheu a proposta —
+  // no lugar do "conclua a proposta", o lembrete da documentação da CAIXA (mesmo ritmo do Follow Up). Respondeu → volta pra Análise CAIXA (caixa-docs-loop).
+  { const cx = require('./caixa-docs-loop.service') as typeof import('./caixa-docs-loop.service');
+    if (cx.followDaCaixa(cf)) return cx.enviarFollowDocsCaixa(accountId, l.id, l.name, cf, passo.tipo, io); }
   const lembrete = FOLLOW_LEMBRETES[passo.tipo];
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || 'tudo bem';
