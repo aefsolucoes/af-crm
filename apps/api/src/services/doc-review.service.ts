@@ -87,7 +87,7 @@ const SYSTEM = `Você é a conferente de documentos de um correspondente bancár
 "dono":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, escritura): nome do proprietário ATUAL — se forem vários (casal, herdeiros, sócios), TODOS, separados por ponto e vírgula; senão vazio>","donoSituacao":"<SÓ documento do imóvel em Home Equity: PARTICIPANTE | OUTRO_SEM_RELACAO | PARENTE_1GRAU | EMPRESA; senão vazio>","donoMenor":"<SÓ documento do IMÓVEL (matrícula, ônus, escritura): nome(s) do(s) proprietário(s) ATUAL(is) que o documento mostra ser MENOR de 18 anos, separados por ponto e vírgula; senão vazio>",
 "enderecoImovel":"<SÓ documento do IMÓVEL (matrícula, ônus, IPTU, cadastro imobiliário, escritura): endereço do imóvel como está escrito (logradouro, número, complemento/apto, bairro); senão vazio>","inscricao":"<SÓ IPTU/guia/carnê/cadastro imobiliário: inscrição imobiliária exatamente como aparece; senão vazio>",
 "metragens":<true SÓ se o documento é OFICIAL DA PREFEITURA do município (capa/guia/carnê de IPTU, certidão de IPTU, cadastro imobiliário/BCI) E MOSTRA a área do terreno e/ou a área construída; matrícula, escritura e qualquer documento de cartório NÃO contam; senão false>,
-"atraso":"<SÓ DESCRITIVO DA PARCELA: se mostra parcela VENCIDA SEM PAGAMENTO ou cobrança de mora/multa/encargos por atraso, descreva curto (ex.: parcela 21, venc. 24/09/2026, sem pagamento); senão vazio>",
+"atraso":"<SÓ DESCRITIVO DA PARCELA: SÓ quando o atraso é RELEVANTE — a parcela vencida sem pagamento MAIS ANTIGA venceu há 6 MESES ou mais, ou há 6 ou mais parcelas vencidas em aberto (Fabio 14/11: atraso de poucos dias/meses é irrelevante). Descreva curto começando pela data da MAIS ANTIGA (ex.: venc. 24/03/2026, 7 parcelas em aberto); atraso menor que isso: vazio>",
 "gravame":"<SÓ MATRICULA ou CERTIDAO DE ONUS: se constar alienação fiduciária, hipoteca ou penhora ainda VIGENTE (sem averbação de cancelamento/baixa), escreva curto: TIPO - CREDOR - valor original (data), ex.: ALIENACAO FIDUCIARIA - CAIXA - R$ 86.692 (11/06/2024); senão vazio>",
 "observacao":"<detalhe INTERNO útil pra equipe (ex.: constam ônus ou alienação fiduciária na matrícula, validade do documento); senão vazio>","duvida":"<SÓ se resultado DUVIDA: a pergunta objetiva pra equipe, 1 a 2 frases, dizendo o que você viu e o que precisa saber; senão vazio>","regra":"<SÓ quando a equipe já respondeu: a regra geral, em 1 frase, que vale pra OUTROS clientes; se foi só sobre este caso, vazio>"}
 
@@ -280,7 +280,14 @@ async function lerAnexo(accountId: string, att: Att, context: string, opts: { le
     // Descritivo da parcela em FOTO/print: o banco pede o PDF que o app do banco gera (Fabio 30/10) — mesmo que a leitura tenha dado OK.
     const ehDescritivo = isDescritivoParcela(cleanText(j.tipo, 50));
     const descritivoImagem = ehDescritivo && !isPdf && resultado === 'OK';
-    const atraso = ehDescritivo ? cleanText(j.atraso, 200) : '';
+    let atraso = ehDescritivo ? cleanText(j.atraso, 200) : '';
+    // Atraso só conta a partir de ~6 meses (Fabio 14/11: "não precisa questionar o cliente, atraso irrelevante; atraso relevante seria algo em torno de 6 meses ou mais"):
+    // se a data da parcela vencida mais antiga é de menos de 180 dias e não há 6+ parcelas em aberto, não é atraso pra nós.
+    {
+      const v = /(\d{2})\/(\d{2})\/(\d{4})/.exec(atraso);
+      const qtd = Number((/(\d+)\s*parcelas?\s*(vencidas|em aberto|em atraso)/i.exec(atraso) || [])[1] || 0);
+      if (atraso && v && Date.now() - Date.UTC(+v[3], +v[2] - 1, +v[1]) < 180 * 86_400_000 && qtd < 6) atraso = '';
+    }
     // Escritura: só informação (se houve a transferência) — nunca vira pedido ao cliente (Fabio 13/11).
     const ehEscritura = /^ESCRITURA/.test(cleanText(j.tipo, 50).toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, ''));
     const resultadoFinal = encerrada || descritivoImagem ? 'PROBLEMA' : resultado === 'PROBLEMA' && ((ehCapaIptu && !problemas.length) || ehEscritura) ? 'OK' : resultado;
@@ -682,7 +689,7 @@ export async function reviewReceivedDocs(accountId: string, leadId: string, opts
     const atr = novas.find((n) => n.r.atraso);
     if (atr && !freshCf._parcelaAtrasoAt) {
       marcador = { ...marcador, _parcelaAtrasoAt: new Date().toISOString() };
-      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ PARCELA EM ATRASO no descritivo da parcela do financiamento ("${atr.arquivo}"): ${atr.r.atraso}. Com parcela em atraso não fazemos Home Equity — confira o documento e fale com o cliente (ele precisa regularizar antes de seguir).` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ PARCELA EM ATRASO (6 meses ou mais) no descritivo da parcela do financiamento ("${atr.arquivo}"): ${atr.r.atraso}. Com parcela em atraso não fazemos Home Equity — confira o documento e fale com o cliente (ele precisa regularizar antes de seguir).` } }).catch(() => {});
       (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `⚠️ ${lead.name}`, body: 'Descritivo da parcela mostra parcela em atraso — conferir', leadId }).catch(() => {});
     }
     // CONFERE O NÚMERO (Fabio 16/10): a matrícula/certidão lida tem que bater com a que o CLIENTE mandou (ou ser a mesma renumerada). Se não bate, o erro pode ser NOSSO (pedimos o número errado):

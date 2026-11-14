@@ -806,6 +806,25 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     if (verdict.emitir.length) await offer.ensureCertidaoRequest(accountId, leadId).catch((e: any) => console.error('[Certidão] pedido ONR:', e?.message || e));
     else if (verdict.emitirPendente.length) await offer.maybeOfferCertidao(accountId, leadId, io, { porEnderecoOk: true }).catch((e: any) => console.error('[Certidão] oferta:', e?.message || e));
   }
+  // NÃO SEGURAM A VISTORIA (Fabio 14/11, Fabricio: "esses dois arquivos não são impeditivos para solicitar a vistoria, então já poderia seguir pra vistoria e avisar ao cliente que
+  // será necessário encaminhar esses dois documentos depois"): comprovante de residência e descritivo da parcela — faltando ou com problema — não seguram a documentação quando são
+  // o ÚNICO pendente. A documentação conta como completa (card segue pra contratação/vistoria) e o cliente ouve que precisa mandar esses dois depois.
+  const NAO_SEGURA = /comprovante de resid|descritivo d[ao] (parcela|financiamento)|extrato das presta/i;
+  const depois: string[] = [];
+  {
+    const faltaSegura = verdict && !verdict.complete ? verdict.faltando.filter((f) => !NAO_SEGURA.test(f)) : [];
+    const probSegura = (review?.problemas || []).filter((p) => !NAO_SEGURA.test(`${p.doc} ${p.texto.join(' ')}`));
+    const faltaDepois = verdict && !verdict.complete ? verdict.faltando.filter((f) => NAO_SEGURA.test(f)) : [];
+    const probDepois = (review?.problemas || []).filter((p) => NAO_SEGURA.test(`${p.doc} ${p.texto.join(' ')}`));
+    if (verdict && !faltaSegura.length && !probSegura.length && (faltaDepois.length || probDepois.length) && !(review?.duvidas.length) && !(review?.donoPendente.length)) {
+      const rotulo = (t: string) => /descritivo|presta/i.test(t) ? 'Descritivo da parcela do financiamento em PDF (o extrato das prestações que o app do banco gera)' : /resid/i.test(t) ? 'Comprovante de residência' : t;
+      depois.push(...Array.from(new Set([...faltaDepois.map(rotulo), ...probDepois.map((p) => rotulo(p.doc))])));
+      verdict.faltando = [];
+      verdict.complete = true;
+      if (review) review.problemas = [];
+      console.log(`[Docs] ${lead.name} (${leadId}): só falta o que não segura a vistoria (${depois.join('; ')}) — documentação conta como completa`);
+    }
+  }
   const faltando = verdict && !verdict.complete ? verdict.faltando : [];
   const faltaTxt = faltando.length ? `\n\nAinda falta mandar:\n${faltando.map((f) => `• ${f}`).join('\n')}` : '';
 
@@ -935,6 +954,13 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
     ? await sendOutboundWhatsApp({ accountId, leadId, content: `${DOCS_COMPLETE_MESSAGE}${obsCertidao}`, io: io || undefined })
     : { success: false, error: 'IA desligada no card (a equipe avisa o cliente)' };
   if (!sent.success && lead.aiAutoReplyActive) console.error(`[Docs] ${lead.name}: aviso ao cliente não foi enviado:`, sent.error);
+  if (depois.length) {
+    const textoDepois = `Pra seguir com a vistoria do imóvel já está tudo certo! 😊 Só vou precisar que você me mande depois:\n${depois.map((d) => `• ${d}`).join('\n')}\n\nPode mandar quando conseguir, por aqui mesmo.`;
+    const foi = (await iaLigadaAgora(leadId)) ? await sendOutboundWhatsApp({ accountId, leadId, content: textoDepois, io: io || undefined }) : { success: false };
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsDepois}', ${JSON.stringify({ itens: depois, at: new Date().toISOString(), avisado: !!foi.success })}::jsonb, true) WHERE id = ${leadId}`;
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📎 Documentação conta como completa pra vistoria; ficaram pra depois: ${depois.join('; ')}. ${foi.success ? 'O cliente foi avisado de que precisa mandar depois.' : 'NÃO avisei o cliente (IA desligada) — avise você.'}` } }).catch(() => {});
+    if (!foi.success) (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `📎 ${lead.name}: documentos pra depois`, body: depois.join('; ').slice(0, 150), leadId }).catch(() => {});
+  }
 
   await prisma.note.create({
     data: {
