@@ -1040,7 +1040,13 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   const pedido = ped ? {
     em: ped.at || null,
     por: ped.por || null,
-    resultado: ped.limpo ? 'limpo' : (c.consultadoEm && cf._ocorrencias?.consultadoEm === c.consultadoEm) ? 'ocorrencia' : 'andamento',
+    // Pedido de antes de 11/11 (Fernando Souza, 10/11): a consulta voltou, mas o `limpo` só passou a ser gravado depois — o resultado vem da própria consulta
+    // (feita depois do pedido), senão o card fica "em andamento" pra sempre.
+    resultado: ped.limpo ? 'limpo'
+      : (c.consultadoEm && cf._ocorrencias?.consultadoEm === c.consultadoEm) ? 'ocorrencia'
+      : (c.consultadoEm && Object.values(c.consultas || {}).some((x: any) => /constam ocorr/i.test(String(x?.texto || '')))) ? 'ocorrencia'
+      : (c.consultadoEm && (!ped.at || Date.parse(c.consultadoEm) >= Date.parse(ped.at))) ? 'limpo'
+      : 'andamento',
   } : null;
   // Botão "Consultar aprovação na CAIXA" (Fabio 14/11: "um botão que consulta a proposta do cliente nos bancos… abre a Caixa Aqui e consulta o cliente"): a extensão abre
   // Formulários Enviados pelo CPF do tomador e registra o que estiver lá (avaliação rodada pelo CRM ou direto no Caixa Aqui).
