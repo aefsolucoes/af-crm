@@ -28,7 +28,10 @@ function tomador(cf: Cf): { nome: string; cpf: string } | null {
   if (t) return { nome: String(t.nome || ''), cpf: String(t.cpf || '').replace(/\D/g, '') };
   const ps: any[] = Array.isArray(cf._fichaCadastral?.participantes) ? cf._fichaCadastral.participantes : [];
   const p = ps.find((x, i) => (Number(x?.ordem) || i + 1) === 1);
-  return p ? { nome: String(p.nome || ''), cpf: String(p.cpf || '').replace(/\D/g, '') } : null;
+  if (p) return { nome: String(p.nome || ''), cpf: String(p.cpf || '').replace(/\D/g, '') };
+  // Sem ficha de cadastro (Fabio 14/11, botão "Consultar aprovação na CAIXA" em card que rodou direto no Caixa Aqui): o 1º participante do card.
+  const cpf1 = String(cf.cpf_1 || '').replace(/\D/g, '');
+  return cpf1.length === 11 ? { nome: String(cf.participante_1 || ''), cpf: cpf1 } : null;
 }
 
 /** Botão/pedido "consultar o resultado": só pra avaliação já ENVIADA à CAIXA pelo CRM. Erro em texto quando não dá.

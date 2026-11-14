@@ -1,7 +1,7 @@
 'use client';
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { UserPlus, ShieldCheck, RotateCcw, Search } from 'lucide-react';
+import { UserPlus, ShieldCheck, RotateCcw, Search, FileSearch } from 'lucide-react';
 import api from '@/lib/api';
 import { cn, formatCurrency } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
@@ -21,6 +21,9 @@ interface Estado {
   mostrar: boolean;
   /** Botão "Consultar na CAIXA" (Fabio 11/11): card aberto, sem pedido da CAIXA ainda. */
   podeConsultar?: boolean;
+  /** Botão "Consultar aprovação na CAIXA" (Fabio 14/11): a extensão abre o Caixa Aqui (Formulários Enviados) e consulta o cliente pelo CPF. */
+  podeConsultarAprovacao?: boolean;
+  consultaAprov?: { status: string; pedidoEm: string | null; fim: string | null; por: string | null; foraDoCrm: boolean } | null;
   pedido?: { em: string | null; por: string | null; resultado: 'andamento' | 'limpo' | 'ocorrencia' } | null;
   produto: 'HE' | 'FH';
   fechado: string | null;
@@ -93,7 +96,7 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
     queryKey: ['caixa-card', leadId],
     queryFn: async () => (await api.get(`/api/caixa-cadastro/${leadId}/card`)).data,
     // Na fila/rodando: atualiza sozinho pra o botão liberar quando a extensão terminar.
-    refetchInterval: (q) => ([q.state.data?.cadastro?.trava, q.state.data?.analise?.trava].some((t) => t?.tipo === 'andamento') ? 20_000 : false),
+    refetchInterval: (q) => ([q.state.data?.cadastro?.trava, q.state.data?.analise?.trava].some((t) => t?.tipo === 'andamento') || ['FILA', 'RODANDO'].includes(String(q.state.data?.consultaAprov?.status || '')) ? 20_000 : false),
   });
   // Consulta do nome na CAIXA antes de qualquer documento (Fabio 11/11: "ele informar ou a gente") — a extensão consulta em Oportunidades de Negócios.
   async function consultar() {
@@ -118,13 +121,46 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
       <Search size={11} /> Consultar na CAIXA
     </button>
   );
+  // Consulta da aprovação no Caixa Aqui (Fabio 14/11): avaliação rodada pelo CRM ou direto no portal — o resultado fica registrado no card.
+  async function consultarAprovacao() {
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/api/caixa-cadastro/${leadId}/card/consultar-aprovacao`);
+      toast(data?.mensagem || 'Consulta da aprovação na fila da CAIXA');
+      refetch();
+      queryClient.invalidateQueries({ queryKey: ['caixa-painel'] });
+      onDone?.();
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Não consegui pedir a consulta agora', 'error');
+    } finally { setBusy(false); }
+  }
+  const ca = estado?.consultaAprov;
+  const consultandoAprov = !!ca && ['FILA', 'RODANDO'].includes(ca.status);
+  const botaoAprovacao = (estado?.podeConsultarAprovacao || consultandoAprov) ? (
+    <button
+      onClick={consultarAprovacao}
+      disabled={busy || consultandoAprov}
+      title={consultandoAprov ? 'A extensão está consultando no Caixa Aqui' : 'Abre o Caixa Aqui (Formulários Enviados), procura o cliente pelo CPF e registra no card o resultado da avaliação (aprovada, condicionada, reprovada, em processamento) e as condições. Nada é enviado ao cliente.'}
+      className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-[#005CA9] hover:bg-blue-100 disabled:opacity-50"
+    >
+      {consultandoAprov ? <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping" /><span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" /></span> : <FileSearch size={11} />}
+      {consultandoAprov ? 'Consultando aprovação…' : 'Consultar aprovação na CAIXA'}
+    </button>
+  ) : null;
+  const linhaAprov = ca && ca.status && ca.status !== 'AGUARDANDO_NOVA_AVALIACAO'
+    ? `${consultandoAprov ? (ca.status === 'FILA' ? 'na fila' : 'consultando') : curto(ca.status.replace(/^\s*RESULTADO:\s*/i, ''))} · ${quando(ca.fim || ca.pedidoEm)}${ca.foraDoCrm ? ' (rodada fora do CRM)' : ''}`
+    : null;
   if (!estado?.mostrar) {
-    if (!estado?.podeConsultar) return null;
+    if (!estado?.podeConsultar && !botaoAprovacao) return null;
     return (
-      <div className="mt-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-2">
-        <span className="flex h-4 w-4 items-center justify-center rounded text-[8px] font-bold text-white" style={{ background: '#005CA9' }}>CX</span>
-        <span className="text-xs text-slate-500 mr-auto">Cliente quer seguir pela CAIXA?</span>
-        {botaoConsulta}
+      <div className="mt-3 rounded-lg border border-slate-200 bg-white p-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="flex h-4 w-4 items-center justify-center rounded text-[8px] font-bold text-white" style={{ background: '#005CA9' }}>CX</span>
+          <span className="text-xs text-slate-500 mr-auto">{estado?.podeConsultar ? 'Cliente quer seguir pela CAIXA?' : 'CAIXA'}</span>
+          {estado?.podeConsultar && botaoConsulta}
+          {botaoAprovacao}
+        </div>
+        {linhaAprov && <p className="mt-1 truncate text-xs text-slate-600" title={ca?.status}><span className="text-slate-400">Aprovação:</span> {linhaAprov}</p>}
       </div>
     );
   }
@@ -203,10 +239,12 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
         )}
         <p className="truncate text-slate-600" title={linhaCadastro}><span className="text-slate-400">Cadastro:</span> {linhaCadastro}</p>
         <p className="truncate text-slate-600" title={linhaAnalise}><span className="text-slate-400">Análise:</span> {linhaAnalise}</p>
+        {consultandoAprov && <p className="truncate text-slate-600"><span className="text-slate-400">Aprovação:</span> {linhaAprov}</p>}
         {estado.fechado && <p className="text-[11px] text-amber-700">{estado.fechado}</p>}
       </div>
       <div className="mt-2 flex flex-wrap gap-2">
         {estado.podeConsultar && botaoConsulta}
+        {botaoAprovacao}
         {botao('cadastro', 'Cadastro CAIXA', 'Rodar o cadastro deste cliente na CAIXA (Caixa Aqui) pela extensão', UserPlus)}
         {denovo
           ? botao('analise', 'Rodar análise CAIXA de novo', 'Rodar de novo a Avaliação de Risco que deu erro (ex.: depois da autorização do PV) — a extensão reabre a mesma avaliação e clica em Avançar', RotateCcw)

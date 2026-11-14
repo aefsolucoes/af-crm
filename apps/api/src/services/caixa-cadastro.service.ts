@@ -1042,7 +1042,12 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
     por: ped.por || null,
     resultado: ped.limpo ? 'limpo' : (c.consultadoEm && cf._ocorrencias?.consultadoEm === c.consultadoEm) ? 'ocorrencia' : 'andamento',
   } : null;
-  if (!mostrar) return { mostrar: false, podeConsultar };
+  // Botão "Consultar aprovação na CAIXA" (Fabio 14/11: "um botão que consulta a proposta do cliente nos bancos… abre a Caixa Aqui e consulta o cliente"): a extensão abre
+  // Formulários Enviados pelo CPF do tomador e registra o que estiver lá (avaliação rodada pelo CRM ou direto no Caixa Aqui).
+  const rr = cf._caixaResultado as Cf | undefined;
+  const consultaAprov = rr ? { status: String(rr.status || ''), pedidoEm: rr.pedidoEm || null, fim: rr.fim || null, por: rr.por || null, foraDoCrm: rr.foraDoCrm === true } : null;
+  const podeConsultarAprovacao = !l.isGroup && !cardFechado(l) && !['FILA', 'RODANDO'].includes(String(rr?.status || ''));
+  if (!mostrar) return { mostrar: false, podeConsultar, podeConsultarAprovacao, consultaAprov };
   const ps = participantesDa(cf);
   const q = ficha ? participantesDaAvaliacao(ps) : null;
   const av = c.avaliacao as Cf | undefined;
@@ -1055,6 +1060,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   return {
     mostrar: true,
     podeConsultar,
+    podeConsultarAprovacao,
+    consultaAprov,
     pedido,
     produto: he ? 'HE' : 'FH',
     fechado: cardFechado(l),

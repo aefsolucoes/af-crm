@@ -69,6 +69,18 @@ router.post('/:leadId/card/cadastro', requirePermission('funnel_manage'), async 
 });
 // Botão "Consultar na CAIXA" (Fabio 11/11: "Sempre que um cliente quiser seguir pela CAIXA, ele informar ou a gente, o CRM deve fazer uma consulta para buscar ocorrências"):
 // consulta do nome em Oportunidades de Negócios antes de qualquer documento. Sem restrição → o cliente fica sabendo e o CRM pergunta do Habite-se; com restrição → Serasa/SCPC/protesto.
+// Botão "Consultar aprovação na CAIXA" (Fabio 14/11): avaliação ENVIADA pelo CRM → consulta normal (o resultado segue o fluxo de sempre); sem isso → rodada direto no
+// Caixa Aqui (foraDoCrm): a extensão consulta Formulários Enviados pelo CPF e SÓ registra (nota + card + push), sem avisar o cliente.
+router.post('/:leadId/card/consultar-aprovacao', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+    if (!l) return res.status(404).json({ error: 'Card não encontrado' });
+    const enviadaPeloCrm = /^ENVIADA/i.test(String(((l.customFields || {}) as any)._caixaCadastro?.avaliacao?.status || ''));
+    const erro = await pedirConsultaResultado(req.user!.accountId, req.params.leadId, `botão "Consultar aprovação na CAIXA" (${await nomeDe(req)})`, { foraDoCrm: !enviadaPeloCrm }).catch((e) => e?.message || 'erro');
+    if (erro) return res.status(400).json({ error: erro });
+    res.json({ ok: true, mensagem: `Consulta da aprovação na CAIXA na fila: a extensão abre o Caixa Aqui (Formulários Enviados) e procura o cliente pelo CPF.${enviadaPeloCrm ? '' : ' O resultado só é registrado no card (nada vai ao cliente).'}` });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a consulta' }); }
+});
 router.post('/:leadId/card/consulta', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   try {
     const { pedirConsultaCaixa } = require('../services/caixa-screening.service') as typeof import('../services/caixa-screening.service');
