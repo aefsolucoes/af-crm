@@ -695,7 +695,9 @@ export interface AiExtractedAction {
    *  e pede a documentação pra rodar lá). Entra na rota mesmo sem aprovação nos bancos parceiros. */
   caixaConcorrente?: boolean;
   /** Texto que a IA mandou ao cliente nesta resposta (pra saber de qual banco ela prometeu "os detalhes" quando o aviso padrão já tinha ido — forwardPromisedBanks). */
-  aiReply?: string | null;
+  aiReply?: string | null;  /** Fabio 14/11: o cliente aceitou a emissão e não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório — último caso: confirma o
+   *  endereço do imóvel com ele e, com o sim, pede a certidão pelo endereço (certidao-offer.certidaoPeloEnderecoUltimoCaso). */
+  certidaoPorEndereco?: boolean;
 }
 
 /** Tag usada pra excluir o lead de lembretes automáticos recorrentes
@@ -1008,6 +1010,10 @@ export async function applyAiExtractedActions(
 
     // Cliente disse com qual banco vai seguir (Fabio 28/10: "a proposta que o cliente for seguir deve preencher o valor da venda"): mesma ação do botão "Seguir com esta" —
     // ⭐ na proposta aprovada mais recente desse banco, Valor da venda e aba Financiamento. Já escolhida: não mexe.
+    // Certidão pelo ENDEREÇO só em último caso (Fabio 14/11): o cliente não tem escritura nem contrato de compra e venda. Sempre confirma o endereço com ele antes de pedir.
+    if (action.certidaoPorEndereco) {
+      await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).certidaoPeloEnderecoUltimoCaso(accountId, leadId, io as any).catch((e: any) => console.error('[IA] certidão pelo endereço falhou:', e?.message));
+    }
     // Cliente quer seguir pela CAIXA (Fabio 11/11 — consulta PRIMEIRO, com ou sem aprovação): consulta do nome na CAIXA na hora, com os nomes/CPFs da proposta.
     if (action.caixaPedido || action.caixaRota) {
       await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).pedirConsultaCaixa(accountId, leadId, { concorrente: !!action.caixaConcorrente, origem: 'ia', io: io as any }).catch((e: any) => console.error('[IA] consulta da CAIXA falhou:', e?.message));

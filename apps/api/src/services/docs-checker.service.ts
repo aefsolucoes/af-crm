@@ -680,9 +680,16 @@ ${history}`;
   // Escritura com a matrícula identificada (Fabio 20/10): a certidão NÃO é cobrada do cliente — a IA se OFERECE pra emitir pelo ONR (certidao-offer.service) e só emite quando ele aceita.
   const { certidaoFromDocs, enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
   // Sem matrícula (Fabio 30/10): com o endereço completo do imóvel a IA também se oferece (pelo endereço) em vez de cobrar a certidão do cliente.
-  const ofertavel = !autorizou && emitirBruto.length > 0 && (!!certidaoFromDocs(cfAll) || !!(await enderecoDoImovel(leadId, cfAll).catch(() => null)));
-  const faltandoFinal = [...(verdict.faltando || []), ...(autorizou || ofertavel ? [] : emitirBruto)];
-  const out = { leadName: lead.name, complete: verdict.complete === true && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
+  // Endereço só em ÚLTIMO CASO (Fabio 14/11): sem a matrícula nos documentos, primeiro a escritura pública ou o contrato de compra e venda; o endereço só pra quem disse que não tem nenhum dos dois.
+  const temMatricula = !!certidaoFromDocs(cfAll);
+  const semDocumento = !!cfAll._certidaoSemDocumento;
+  const ofertavel = !autorizou && emitirBruto.length > 0 && (temMatricula || (semDocumento && !!(await enderecoDoImovel(leadId, cfAll).catch(() => null))));
+  // Autorizou a emissão, mas ainda sem a matrícula e sem dizer que não tem escritura/contrato: a certidão ainda não sai — fica faltando a escritura ou o contrato.
+  const pedidoAndando = autorizou && emitirBruto.length > 0 && !temMatricula ? !!(await prisma.certidaoRequest.findFirst({ where: { leadId, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } })) : false;
+  const precisaEscritura = autorizou && emitirBruto.length > 0 && !temMatricula && !semDocumento && !pedidoAndando;
+  const ITEM_ESCRITURA = 'Escritura pública ou contrato de compra e venda do imóvel (pra identificar a matrícula e o cartório e emitir a certidão de ônus)';
+  const faltandoFinal = [...(verdict.faltando || []), ...(precisaEscritura ? [ITEM_ESCRITURA] : autorizou || ofertavel ? [] : emitirBruto)];
+  const out = { leadName: lead.name, complete: verdict.complete === true && !precisaEscritura && (autorizou || !emitirBruto.length), listaUsada: verdict.listaUsada, faltando: faltandoFinal, emitir: autorizou && !precisaEscritura ? emitirBruto : [], emitirPendente: ofertavel ? emitirBruto : [], receivedText };
   // Painel de documentos do card (Fabio 03/11): guarda o resultado desta conferência (só a chave, jsonb_set) — o painel mostra o que falta sem chamar a IA de novo.
   const snap = { em: new Date().toISOString(), listaUsada: out.listaUsada || '', completo: out.complete, faltando: out.faltando, emitir: out.emitir, emitirPendente: out.emitirPendente };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsConferencia}', ${JSON.stringify(snap)}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});

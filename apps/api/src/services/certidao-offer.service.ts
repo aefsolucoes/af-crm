@@ -198,7 +198,8 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   if (!/home equity/i.test(dept) && !(/habitacional/i.test(dept) && /^inter$/i.test(String(cf._fhChosen?.bank || '')) && !cf._optouCaixa)) return false;
   if (temCertidaoEmMaos(cf)) return false;
   const d = certidaoFromDocs(cf);
-  if (!d) return opts.porEnderecoOk ? maybeOfferPorEndereco(accountId, leadId, lead, cf, io) : false;
+  // Endereço só em ÚLTIMO CASO (Fabio 14/11): antes pede a escritura pública ou o contrato de compra e venda; só quem disse que não tem nenhum dos dois (_certidaoSemDocumento) vai pelo endereço.
+  if (!d) return opts.porEnderecoOk && cf._certidaoSemDocumento ? maybeOfferPorEndereco(accountId, leadId, lead, cf, io) : false;
   const oferta = cf._certidaoOffer as { matricula?: string; at?: string } | undefined;
   if (oferta?.matricula === d.matricula) return false; // já ofereci (aceitou, recusou ou está esperando a resposta)
   const ativo = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
@@ -274,6 +275,13 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
   if (!d) {
     // Sem matrícula nos documentos (o cliente não sabe): pede POR ENDEREÇO (Fabio 29/10). Cartório 'AUTO': cidade com um só, a extensão escolhe; com mais de um,
     // o CRM pergunta ao cliente qual é; se ele não souber, a equipe confere no mapa do registro de imóveis.
+    // Caminho automático (Fabio 14/11): o endereço é o ÚLTIMO caso — só pra quem disse que não tem escritura pública nem contrato de compra e venda — e SEMPRE com o endereço
+    // confirmado pelo cliente antes do pedido ("sempre confirmar com o cliente o endereço antes de solicitar"). O botão do card/Jarvis (manual) é decisão da equipe.
+    if (!opts.manual && !opts.porEndereco) {
+      if (!cf._certidaoSemDocumento) return { created: false, why: 'sem a matrícula nos documentos: falta a escritura pública ou o contrato de compra e venda pra identificar a matrícula e o cartório' };
+      await certidaoPeloEnderecoUltimoCaso(accountId, leadId, null);
+      return { created: false, why: 'endereço do imóvel enviado ao cliente pra confirmar antes do pedido' };
+    }
     const e = await enderecoDoImovel(leadId, cf);
     if (!e) return { created: false, why: 'não achei a matrícula nos documentos nem o endereço completo do imóvel (CEP, rua, número, cidade/UF)' };
     if (!opts.manual && !(await contractingAutoOn(accountId, leadId))) {
@@ -339,7 +347,7 @@ export async function askClientCartorio(accountId: string, req: { id: string; le
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const saud = (await conversationActive(req.leadId)) ? '' : `Oi${nome ? `, ${nome}` : ''}! `;
-  const texto = `${saud}Pra pedir a certidão ${req.endereco ? 'do seu imóvel' : `da matrícula ${req.matricula}`} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\n${req.endereco ? 'Você sabe qual deles atende o seu bairro (aparece no contrato, escritura ou carnê do IPTU)?' : 'Na sua escritura ou matrícula aparece qual deles?'} Se não souber, sem problema, é só me avisar.`;
+  const texto = `${saud}Pra pedir a certidão ${req.endereco ? 'do seu imóvel' : `da matrícula ${req.matricula}`} preciso saber o cartório de registro de imóveis. Em ${req.cidade} o portal tem estas opções:\n${opcoes.map((o) => `• ${o}`).join('\n')}\n\n${req.endereco ? 'Você sabe qual deles atende o seu bairro (aparece na escritura pública ou no contrato de compra e venda)?' : 'Na sua escritura ou matrícula aparece qual deles?'} Se não souber, sem problema, é só me avisar.`;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId: req.leadId, content: texto, io: (io || undefined) as any });
   if (!r.success) return false;
@@ -496,6 +504,42 @@ export async function askEnderecoCertidao(accountId: string, leadId: string, opt
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
   await note(leadId, `🏛️ Perguntei ao cliente se o endereço do imóvel é ${enderecoTexto(e.endereco)} (${e.cidade}/${e.uf}). Confirmando, o CRM pede a certidão de ônus pelo endereço sozinho.`);
   return { ok: true, texto };
+}
+
+/** ÚLTIMO CASO (Fabio 14/11: "pede contrato de compra e venda ou escritura pública pra ver se consegue identificar o cartório e a matrícula antes de solicitar pelo endereço;
+ *  endereço seria último caso, caso o cliente não possua nenhum documento" + "sempre confirmar com o cliente o endereço antes de solicitar"): o cliente aceitou a emissão e disse
+ *  que não tem escritura, contrato nem documento com a matrícula. Marca `_certidaoSemDocumento` e manda a confirmação do endereço; o pedido só sai com o "sim" (respondeEndereco). */
+export async function certidaoPeloEnderecoUltimoCaso(accountId: string, leadId: string, io: Io): Promise<void> {
+  const lead = await carrega(leadId);
+  if (!lead || lead.accountId !== accountId) return;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  if (cf._autoPaused) return;
+  if (/pr[eé].?an[aá]lise/i.test(lead.stage?.name || '')) return; // antes da aprovação não se fala de documento do imóvel (Fabio 21/10)
+  if (await jaTemCertidaoValida(leadId, cf)) return; // já mandou a certidão: nada a emitir
+  if (certidaoFromDocs(cf)) return; // a matrícula já está nos documentos: o pedido vai pelo número (conferência)
+  if (await prisma.certidaoRequest.findFirst({ where: { leadId, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } })) return; // já há pedido andando
+  if (!cf._certidaoSemDocumento) {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    c._certidaoSemDocumento = { at: new Date().toISOString() };
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+    await note(leadId, '🏛️ O cliente aceitou a emissão da certidão e disse que não tem escritura pública, contrato de compra e venda nem documento com a matrícula e o cartório: vai pelo ENDEREÇO do imóvel (último caso), com o endereço confirmado por ele antes do pedido.');
+  }
+  const pe = cf._certidaoEndereco as EnderecoAsk | undefined;
+  if (pe?.askedAt && !pe.answeredAt && Date.now() - new Date(pe.askedAt).getTime() < 7 * 86_400_000) return; // já perguntado, esperando o sim
+  const e = await enderecoDoImovel(leadId, cf);
+  if (!e) {
+    await note(leadId, '⚠️ Certidão pelo endereço (o cliente não tem escritura nem contrato): não achei o endereço completo do imóvel (CEP, rua, número, cidade/UF) na proposta nem nos documentos. Confirme o endereço com o cliente e peça pelo Jarvis ou pelo botão do card.');
+    try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏛️ Certidão pelo endereço', body: `${lead.name}: sem escritura/contrato e sem endereço completo do imóvel`, leadId }).catch(() => {}); } catch { /* aviso */ }
+    return;
+  }
+  if (!(await contractingAutoOn(accountId, leadId))) {
+    await manualStep({ accountId, leadId, leadName: lead.name, step: 'certidao-endereco-ultimo-caso', pushTitle: '🏛️ Certidão pelo endereço', pushBody: `${lead.name}: sem escritura/contrato — confirmar o endereço e pedir`,
+      note: `🏛️ O cliente aceitou a emissão e não tem escritura nem contrato de compra e venda. Passo manual (automação da contratação desligada): confirme com ele o endereço do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) e peça a certidão pelo endereço (Jarvis ou botão do card).` });
+    return;
+  }
+  const r = await askEnderecoCertidao(accountId, leadId, { endereco: e.endereco, cidade: e.cidade, uf: e.uf, cartorio: 'AUTO', sendPix: true }, io);
+  if (!r.ok) await note(leadId, `⚠️ Certidão pelo endereço: não consegui mandar ao cliente a confirmação do endereço (${r.erro}). Confirme com ele e peça pelo card.`);
 }
 
 /** Resposta do cliente à confirmação do endereço. SIM → pede a certidão; correção/"não" → nota + push pra equipe (o CRM não reescreve o endereço sozinho); outro assunto → continua esperando. Pura nas regras. */

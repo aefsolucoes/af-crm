@@ -1904,14 +1904,14 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     const aindaLigada = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!aindaLigada?.aiAutoReplyActive || (aindaLigada.customFields as any)?._autoPaused) { console.log(`[IA] ${leadId}: IA desligada durante a geração — resposta descartada`); return; }
     if (mine && (await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', sentByUserId: { not: null }, createdAt: { gt: mine.createdAt } }, select: { id: true } }))) { console.log(`[IA] ${leadId}: a equipe respondeu durante a geração — resposta descartada`); return; }
-    const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, resumeOn, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente } = genResult;
+    const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, resumeOn, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente, certidaoPorEndereco } = genResult;
     // Banco que a IA marcou pra rodar + rede de segurança (Fabio 26/10): banco citado como "em análise" no texto que vai ao cliente também roda (só os que nunca rodaram — requestBankRunForAi confere).
     const { bancosEmAnaliseNoTexto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     const runBanks = Array.from(new Set([...(genResult.runBanks || []), ...(genResult.noReply ? [] : bancosEmAnaliseNoTexto(reply))]));
 
     if (genResult.noReply) {
-      if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
-        await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente }, io);
+      if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank || caixaPedido || caixaRota || certidaoPorEndereco || (extractedFields && Object.keys(extractedFields).length)) {
+        await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente, certidaoPorEndereco }, io);
       }
       // CAIXA aprovada pelo simulador do site e o cliente diz que simulou no site com valor/parcela maior (Fabio 11/11): "não informar nada ao cliente e
       // fazer um push informando o colaborador" — anotação no card + push só pro responsável (sem responsável, pra conta).
@@ -1987,8 +1987,8 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     // Mover etapa / marcar Perdido / preencher dados do card — independente
     // do handoff (pode marcar Perdido no mesmo turno em que encerra, por ex.).
     // chooseBank/caixaPedido/caixaRota sozinhos também aplicam (Fabio 01/11: a rota da CAIXA não chegava aqui).
-    if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulateFinal || chooseBank || caixaPedido || caixaRota || (extractedFields && Object.keys(extractedFields).length)) {
-      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate: simulateFinal, chooseBank, caixaPedido, caixaRota, caixaConcorrente, aiReply: reply }, io);
+    if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulateFinal || chooseBank || caixaPedido || caixaRota || certidaoPorEndereco || (extractedFields && Object.keys(extractedFields).length)) {
+      await applyAiExtractedActions(accountId, leadId, { moveToStage, moveReason, resumeOn, markLost, stopFollowUp, extractedFields, runAnalysis, runBanks, sendSimulation, sendApproval, simulate: simulateFinal, chooseBank, caixaPedido, caixaRota, caixaConcorrente, certidaoPorEndereco, aiReply: reply }, io);
     }
 
     // Cliente quer ligação num horário: abre o popup pra equipe confirmar se
