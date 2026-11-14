@@ -521,11 +521,13 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   return true;
 }
 
-/** Documentos pra seguir com o banco escolhido: aprovado no automático e sem pedido de renda = só RG/CNH e comprovante de residência + imóvel + vendedor (Fabio 27/10). */
+/** Documentos pra seguir com o banco escolhido: aprovado no automático e sem pedido de renda = só RG/CNH e comprovante de residência + imóvel + vendedor (Fabio 27/10).
+ *  Renda só se ESSE banco pediu (aprovado condicional ou a resposta pede renda) ou a equipe marcou `_rendaExigida` (Fabio 14/11: antes, banco sem leitura no resumo ou qualquer "documentação"
+ *  no texto já punha a renda). */
 async function docsBancoEscolhido(accountId: string, cf: Cf, banco: string): Promise<{ texto: string; comRenda: boolean }> {
-  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const { parseBancosFinanciamento, fhBancoPediuRenda } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const status = parseBancosFinanciamento(cf._fhResumo)[banco];
-  const pediuRenda = !status || !/^aprovad[oa]$/i.test(status.status.trim()) || /renda|holerite|contracheque|extrato|imposto de renda|documenta[cç][aã]o/i.test(status.texto.replace(/^[^—]*—/, ''));
+  const pediuRenda = !cf._rendaDispensada && (!!cf._rendaExigida || fhBancoPediuRenda(status));
   const perfil = pediuRenda ? (await template(accountId, perfilTemplate(cf))) : null;
   const renda = perfil ? (perfil.split('\n').find((l) => /renda/i.test(l)) || '').replace(/^\W*renda\s*:?\s*/i, '').trim() : '';
   return { texto: `Para continuar, preciso dos documentos abaixo:\n\n*Comprador:*\n• Documento de identificação (RG ou CNH)\n• Comprovante de residência${renda ? `\n• Renda: ${renda}` : ''}\n\n${await blocoImovelVendedor(accountId)}`, comRenda: !!renda };

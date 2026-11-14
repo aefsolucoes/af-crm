@@ -427,18 +427,11 @@ export async function buildDocsText(accountId: string, options: ApprovalOption[]
   }
   // RENDA SÓ QUANDO O BANCO PEDE (Fabio 27/10 — revoga o "renda SEMPRE na lista" de 17/10): a seção só entra se a resposta de um banco aprovado pediu documento de renda
   // (ou a equipe marcou `_rendaExigida` no card). Aí vão os itens que o banco pediu + a lista padrão de renda.
-  const { bancoPediuRenda } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  // Fabio 14/11: a mesma regra de toda a documentação (`rendaExigida`: CAIXA/BRB ou a aprovação pediu; `_rendaExigida`/`_rendaDispensada` da equipe).
+  const { bancoPediuRenda, bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const itensBanco = options.flatMap((o) => o.documentos?.itens || []);
   let pediuRenda = bancoPediuRenda(itensBanco);
-  if (!pediuRenda && leadId) {
-    const l1 = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-    const cf1 = (l1?.customFields || {}) as Record<string, any>;
-    if (cf1._rendaExigida && !cf1._rendaDispensada) pediuRenda = true;
-    else if (!cf1._rendaDispensada) {
-      const aprov = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, select: { detail: true, conditions: true } });
-      pediuRenda = bancoPediuRenda(aprov.map((a) => `${a.detail || ''} ${a.conditions || ''}`));
-    }
-  }
+  if (!pediuRenda && leadId) pediuRenda = (await bancosEmJogo(prisma, leadId).catch(() => null))?.rendaNecessaria === true;
   const renda: string[] = pediuRenda ? [...(parsed.renda.length ? parsed.renda : FALLBACK_RENDA)] : [];
   if (pediuRenda) for (const d of itensBanco) if (!renda.some((x) => normN(x) === normN(d))) renda.push(d); // + o que o banco pediu de renda (aprovado a menor)
   const lista = pessoais.map((d) => `• ${d}`).join('\n');

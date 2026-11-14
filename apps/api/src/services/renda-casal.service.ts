@@ -47,6 +47,13 @@ export function textoPergunta(saudacao: string, rc: Rc, quemFalaEOTitular: boole
     : `${saudacao ? `${saudacao}, r` : 'R'}ecebi a comprovação de renda só de ${a}. Vai ser apenas ${a} a compor a renda, ou ${outro} também vai compor?`;
 }
 
+/** Renda exigida neste card (`rendaExigida` em credit-analysis). Falha na leitura = true (o comportamento de antes). */
+async function rendaExigidaNoCard(leadId: string): Promise<boolean> {
+  const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const j = await bancosEmJogo(prisma, leadId).catch(() => null);
+  return !j || j.rendaNecessaria;
+}
+
 /** Manda a pergunta (07h–21h). Conversa fechada: template de atualização; quando ele responder, a pergunta sai no próximo minuto. */
 async function perguntar(accountId: string, leadId: string, io?: any): Promise<void> {
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
@@ -57,6 +64,12 @@ async function perguntar(accountId: string, leadId: string, io?: any): Promise<v
   if (!casalComRendaDeUm(cf)) {
     await salva(leadId, { status: 'NA', fichaAt: String(cf._fichaCadastral?.at || ''), at: new Date().toISOString() });
     await note(leadId, '👥 Renda do casal: pergunta cancelada — o cônjuge está na ficha só pro cadastro da CAIXA (sem renda), não como participante do card. Nada mais será perguntado ao cliente sobre isso.');
+    return;
+  }
+  // Renda não exigida (Fabio 14/11: só CAIXA/BRB ou quando a aprovação do banco pede): não tem por que perguntar quem compõe a renda nem pedir a renda do outro.
+  if (!(await rendaExigidaNoCard(leadId))) {
+    await salva(leadId, { status: 'NA', fichaAt: String(cf._fichaCadastral?.at || ''), at: new Date().toISOString() });
+    await note(leadId, '👥 Renda do casal: não perguntei ao cliente — nenhum banco pediu renda e ele não segue pela CAIXA/BRB (Fabio 14/11: renda só quando o banco exige).');
     return;
   }
   // Template de atualização da ÁREA do card (o do Home Equity dizia "crédito com garantia de imóvel" pra cliente do Financiamento).

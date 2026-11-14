@@ -778,15 +778,13 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   await pedirDocumentosSantanderManual({ accountId: lead.accountId, leadId: lead.id, numero, itens });
 }
 
-/** Quais bancos ainda estão "em jogo" pra este cliente (informativo) e se a COMPROVAÇÃO DE RENDA continua necessária. ATENÇÃO (Fabio 20/10, caso Luiz Fernando): a dispensa de renda foi dita pra ESSE cliente
- *  ("a documentação de renda foi solicitada pro Santander; como ele não vai seguir pelo Santander, seria pelo Inter") — NÃO é regra geral (a regra de 17/10 continua: renda na lista). Por isso a renda só é
- *  dispensada quando o card tem a marca explícita `_rendaDispensada` (a equipe/IA põe caso a caso). Em jogo = banco com aprovação (a última decisão não é reprovação) ou com proposta enviada e ainda sem
- *  resultado — a análise manual do Santander ("Enviar Documentos") NÃO conta, e `cf._bancosFora` (bancos descartados pelo cliente/equipe) tira o banco. */
-export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: string[]; rendaNecessaria: boolean; texto: string }> {
-  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+/** Quais bancos ainda estão "em jogo" pra este cliente (informativo) e se a COMPROVAÇÃO DE RENDA é exigida (regra em `rendaExigida`, Fabio 14/11). Em jogo = banco com aprovação (a última decisão
+ *  não é reprovação) ou com proposta enviada e ainda sem resultado — a análise manual do Santander ("Enviar Documentos") NÃO conta, e `cf._bancosFora` (bancos descartados pelo cliente/equipe) tira o banco. */
+export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: string[]; rendaNecessaria: boolean; rendaMotivo: string; texto: string }> {
+  const lead = await db.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } });
   const cf = (lead?.customFields || {}) as Record<string, any>;
   const fora: string[] = Array.isArray(cf._bancosFora) ? cf._bancosFora : [];
-  const rows = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, source: true } });
+  const rows = await db.creditAnalysis.findMany({ where: { leadId, dryRun: false, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, kind: true, status: true, detail: true, conditions: true, source: true } });
   const nomes: Record<string, string> = { INTER: 'Inter', CREDITAS: 'Creditas', CREDIMORAR: 'Santander' };
   const emJogo: string[] = [];
   const partes: string[] = [];
@@ -803,16 +801,63 @@ export async function bancosEmJogo(db: Db, leadId: string): Promise<{ emJogo: st
     if (/AN[ÁA]LISE MANUAL ABERTA|ENVIAR DOCUMENTOS/i.test(ult.detail || '')) { partes.push(`${nomes[b]}: pediu análise manual com documentos (fora do jogo, a menos que o cliente queira seguir por ele)`); continue; }
     if (['SENT', 'REQUESTED', 'RUNNING'].includes(ult.status)) { emJogo.push(b); partes.push(`${nomes[b]}: em análise`); } else partes.push(`${nomes[b]}: sem resultado (falha/não rodou)`);
   }
-  // RENDA SÓ QUANDO O BANCO PEDE (Fabio 27/10: "solicitar renda apenas quando o banco solicitar, essa era regra" — Milena e Fernanda, aprovadas no Inter, receberam pedido de holerite/IR
-  // sem o banco ter pedido). Necessária só se a resposta de algum banco aprovado pediu documento de renda, ou se a equipe marcou `_rendaExigida` no card.
-  const rendaNecessaria = !cf._rendaDispensada && (!!cf._rendaExigida || bancoPediuRenda(rows.filter((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status)).map((r) => r.detail || '')));
-  return { emJogo, rendaNecessaria, texto: partes.join('; ') };
+  const aprovacoes = rows.filter((r) => ['APPROVED', 'CONDITIONAL'].includes(r.status)).map((r) => `${r.detail || ''} ${r.conditions || ''}`);
+  const renda = rendaExigida(cf, { stageName: lead?.stage?.name, aprovacoes });
+  return { emJogo, rendaNecessaria: renda.exigida, rendaMotivo: renda.motivo, texto: partes.join('; ') };
 }
 
 /** Algum banco pediu documento de RENDA (contracheque, extrato, IR, DECORE, pró-labore…) na resposta da análise? Pura. */
 export const RX_DOC_RENDA = /comprovante de renda|comprova[cç][aã]o de renda|contracheque|holerite|extrato[s]? banc|imposto de renda|\bIRPF\b|declara[cç][aã]o de renda|DECORE|pr[oó][- ]?labore/i;
 export function bancoPediuRenda(textos: string[]): boolean {
   return textos.some((t) => RX_DOC_RENDA.test(String(t || '')));
+}
+
+/** Item de documento que é de RENDA (contracheque, extrato bancário/do benefício, IR, DECORE, pró-labore, "renda") — pra tirar da lista quando a renda não é exigida. Pura. */
+export function itemDeRenda(item: string): boolean {
+  const t = String(item || '');
+  return RX_DOC_RENDA.test(t) || /\brenda\b|extrato[s]?\s+(do\s+)?benef[ií]cio|comprovante de (pagamento d[ae] )?aposentadoria|\bINSS\b|\bPGDAS\b|\bDEFIS\b/i.test(t);
+}
+
+/** Banco do Financiamento (linha do `_fhResumo`) pediu renda: aprovado CONDICIONAL (Inter/Santander condicionam ao envio de documentos — Fabio 14/11) ou o texto da resposta pede documento de renda. Pura. */
+export function fhBancoPediuRenda(b: { status: string; texto: string } | null | undefined): boolean {
+  if (!b) return false;
+  return /condicion/i.test(b.status) || RX_DOC_RENDA.test(String(b.texto || '').replace(/^[^—]*—/, ''));
+}
+
+/** COMPROVANTE DE RENDA É EXIGIDO deste cliente? Regra do Fabio (14/11, HE e FH): "a gente só solicita comprovante de renda ao cliente se os bancos exigirem para análise do crédito". Duas ocasiões:
+ *  (a) o cliente segue pela CAIXA ou pelo BRB (analisam com a documentação completa) — pediu a CAIXA (`_caixaRota`/`_optouCaixa`), card na etapa "Análise CAIXA", ou quis o BRB também (`_fhCaixaAnswer` SIM);
+ *  (b) a APROVAÇÃO de um banco pediu renda — condicional do Santander/Inter, aprovado a menor com documento de renda, ou qualquer banco que peça comprovação (texto da resposta; no Financiamento,
+ *      o banco escolhido — ou, sem escolha, qualquer um — aprovado condicional ou pedindo renda).
+ *  Fora disso NADA pede renda: lista de documentos, conferência, lembretes, IA da conversa, renda do casal. FH sem banco escolhido NÃO é CAIXA (a CAIXA só a pedido do cliente, Fabio 01/11) — antes de 14/11 a
+ *  lista do comprador pedia "último contracheque" a todo FH sem banco escolhido (Adriano/Cássia). `_rendaDispensada` (equipe, caso a caso) desliga; `_rendaExigida` (equipe) liga. Pura. */
+export function rendaExigida(cf: Record<string, any> | null | undefined, opts: { stageName?: string | null; aprovacoes?: string[] } = {}): { exigida: boolean; motivo: string } {
+  const c = (cf || {}) as Record<string, any>;
+  if (c._rendaDispensada) return { exigida: false, motivo: 'a equipe dispensou a renda deste cliente' };
+  if (c._rendaExigida) return { exigida: true, motivo: 'a equipe marcou que a renda é exigida' };
+  const etapa = String(opts.stageName || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  const optou = String(c._optouCaixa?.banco || '').toUpperCase();
+  if (c._caixaRota || /^analise\s+caixa/.test(etapa) || optou === 'CAIXA') return { exigida: true, motivo: 'o cliente segue pela CAIXA' };
+  if (optou === 'BRB' || c._fhCaixaAnswer?.resposta === 'SIM') return { exigida: true, motivo: 'o cliente segue (também) pelo BRB' };
+  if (bancoPediuRenda(opts.aprovacoes || [])) return { exigida: true, motivo: 'a aprovação do banco pediu documento de renda' };
+  // Análise manual do Santander (santander-manual.service): o banco pediu os documentos pra analisar — a lista do portal (sem itens gravados = "comprovação de renda"). Vale enquanto o Santander está no jogo.
+  const sm = c._santanderManual;
+  const santFora = Array.isArray(c._bancosFora) && c._bancosFora.includes('CREDIMORAR');
+  if (sm?.askedAt && !santFora && (!Array.isArray(sm.itens) || !sm.itens.length || sm.itens.some((i: unknown) => itemDeRenda(String(i))))) return { exigida: true, motivo: 'o Santander pediu documento de renda na análise manual' };
+  if (c._fhResumo) {
+    const fh = parseBancosFinanciamento(c._fhResumo);
+    const escolhido = c._fhChosen?.bank ? String(c._fhChosen.bank) : '';
+    const alvo = escolhido ? (fh[escolhido] ? [[escolhido, fh[escolhido]] as const] : []) : Object.entries(fh);
+    const pediu = alvo.find(([, b]) => fhBancoPediuRenda(b));
+    if (pediu) return { exigida: true, motivo: `o ${pediu[0]} aprovou condicionado a documentos/renda` };
+  }
+  return { exigida: false, motivo: 'nenhum banco pediu renda e o cliente não segue pela CAIXA nem pelo BRB' };
+}
+
+/** Linha de RENDA pro estado do card que toda IA recebe (Fabio 14/11). Pura. */
+export function aiRendaLinha(r: { exigida: boolean; motivo: string }): string {
+  return r.exigida
+    ? `COMPROVANTE DE RENDA: exigido — ${r.motivo}. Peça só o que o banco pediu (ou a lista da CAIXA/BRB).`
+    : `COMPROVANTE DE RENDA: NÃO peça nem cobre (Fabio 14/11: renda só quando o cliente segue pela CAIXA/BRB ou quando a aprovação do banco pede; aqui ${r.motivo}). Ao mandar uma lista de documentos (inclusive "Documentos comprador …" do Financiamento), mande sem a parte de renda. Se ele já mandou renda, não aponte problema nela.`;
 }
 
 /** O banco pediu DE NOVO / não aceitou a certidão de ônus/matrícula que o cliente já mandou (Fabio 15/10: "o próprio CRM faz essa parte: anota e lê"). Lê o resultado da análise (ex.: Inter "Documentos
@@ -2223,9 +2268,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   }
   linhas.push(...(await caixaBrbContext(db, leadId, cf)));
   if (!linhas.length) return '';
-  // Fabio 20/10: a IA precisa saber que renda só vale quando Santander/Creditas estão em jogo (o Inter não pede).
-  const jogo = await bancosEmJogo(db, leadId).catch(() => null);
-  if (jogo && !jogo.rendaNecessaria) linhas.push('- DOCUMENTOS DE RENDA: a equipe DISPENSOU a renda deste cliente (ele não vai seguir pelo banco que pedia). NÃO peça nem cobre renda e, se ele já mandou, não aponte problema nela.');
+  // Renda exigida ou não: vai no ESTADO DO CARD (ai-shared.aiCardState → aiRendaLinha), que toda IA recebe — inclusive o card sem nenhuma análise (Fabio 14/11).
   const santanderFora = (require('./imovel-terceiro.service') as typeof import('./imovel-terceiro.service')).aiSantanderTerceiroLinha(cf); // Fabio 03/11
   if (santanderFora) linhas.push(santanderFora);
   // Santander e Creditas só fazem Home Equity com habite-se (Fabio 06/11).

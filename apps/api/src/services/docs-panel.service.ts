@@ -2,7 +2,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { isStickerAttachment, isScreenshotAttachment, isPropertyDocType } from './received-docs.service';
 import { situacaoDosDocumentos, type DocReview } from './doc-review.service';
-import { conferenciaEmAndamento, soDocsDoComprador, filtrarRendaDispensada } from './docs-checker.service';
+import { conferenciaEmAndamento, filtrarRendaDispensada } from './docs-checker.service';
 import { logActivity } from './activity.service';
 
 /* PAINEL DE DOCUMENTOS do card (Fabio 03/11: "preciso de um botão pra verificar qual documento falta do cliente, a IA listar quais documentos já foram recebidos e a gente
@@ -57,7 +57,7 @@ export async function painelDocumentos(accountId: string, leadId: string) {
   const atendidos = (Array.isArray(cf._docsAtendidos) ? cf._docsAtendidos : []) as { doc: string; texto: string; por: string }[];
   for (const a of atendidos) { const p = sit.problemas.find((x) => x.doc === a.doc); if (p) p.texto = p.texto.filter((t) => t !== a.texto); }
   sit.problemas = sit.problemas.filter((p) => p.texto.length);
-  await filtrarRendaDispensada(leadId, soDocsDoComprador(cf, lead.pipeline?.department?.name, lead.stage?.name), sit).catch(() => {});
+  await filtrarRendaDispensada(leadId, sit).catch(() => {});
   const perguntados = new Set<string>(((cf._donoAskedFor as string[]) || []).map((x) => String(x).toUpperCase()));
 
   const conf = cf._docsConferencia as { em: string; listaUsada: string; completo: boolean; faltando: string[]; emitir: string[]; emitirPendente: string[] } | undefined;

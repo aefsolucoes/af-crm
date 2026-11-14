@@ -404,6 +404,13 @@ export async function aiCardState(leadId: string): Promise<string> {
     partes.push(`DOCUMENTOS (conferência da IA): recebidos e OK: ${ok.join(', ') || 'nenhum'}.${prob.length ? ` Com problema: ${prob.join(', ')}.` : ''}${ressalvas.length ? ` O cliente REENVIOU com o mesmo problema: ${ressalvas.join(', ')} — NÃO peça esse documento de novo (a equipe confere na Documentação Recebida).` : ''}${protegidos ? ` Arquivos protegidos por senha aguardando verificação: ${protegidos}.` : ''}${cf._rendaDispensada ? ' Renda dispensada neste card (caso específico).' : ''} Não peça de novo o que já está "recebido e OK".`);
   }
 
+  // Comprovante de renda (Fabio 14/11): só na CAIXA/BRB ou quando a aprovação do banco pede — toda IA vê se é exigido neste card (antes só via análise de crédito, e o card sem análise ficava sem a linha).
+  {
+    const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const jogo = await ca.bancosEmJogo(prisma, leadId).catch(() => null);
+    if (jogo) partes.push(ca.aiRendaLinha({ exigida: jogo.rendaNecessaria, motivo: jogo.rendaMotivo }));
+  }
+
   // Saldo devedor real acima do limite (Fabio 05/11, Fernanda Karita): a IA não pode dizer que o crédito segue aprovado.
   const sdB = cf._saldoDevedor?.bloqueio as { motivo?: string; limite?: number; saldo?: number; valorImovel?: number; aprovado?: number | null; avisado?: boolean } | undefined;
   if (sdB?.saldo) {

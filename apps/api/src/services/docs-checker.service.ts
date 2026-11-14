@@ -184,11 +184,12 @@ export function naRotaCaixa(cf: Record<string, any> | null | undefined, stageNam
   return !!cf?._caixaRota || /^analise\s+caixa/.test(norm(stageName || ''));
 }
 
-/** Renda dispensada neste card (nenhum banco pediu renda; fora da lista do comprador): problema/dúvida em documento de RENDA não segura o card nem gera cobrança (Fabio 20/10, caso Luiz). Tira da lista. */
-export async function filtrarRendaDispensada(leadId: string, fhSoComprador: boolean, review: { problemas: { doc: string }[]; duvidas: { doc: string }[] }): Promise<void> {
+/** Renda NÃO exigida neste card (Fabio 14/11: só CAIXA/BRB ou quando a aprovação do banco pede — `rendaExigida`): problema/dúvida em documento de RENDA não segura o card nem gera cobrança
+ *  (Fabio 20/10, caso Luiz). Tira da lista. Vale também pro FH sem banco escolhido (antes a lista do comprador exigia o contracheque). */
+export async function filtrarRendaDispensada(leadId: string, review: { problemas: { doc: string }[]; duvidas: { doc: string }[] }): Promise<void> {
   const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const jogo = await bancosEmJogo(prisma, leadId).catch(() => null);
-  if (jogo && !jogo.rendaNecessaria && !fhSoComprador) {
+  if (jogo && !jogo.rendaNecessaria) {
     const RENDA_RX = /EXTRATO BANCARIO|CONTRACHEQUE|HOLERITE|IMPOSTO DE RENDA|DECLARACAO DE RENDA|COMPROVANTE DE RENDA|PRO.?LABORE|DECORE/;
     review.problemas = review.problemas.filter((p) => !RENDA_RX.test(String(p.doc).toUpperCase()));
     review.duvidas = review.duvidas.filter((d) => !RENDA_RX.test(String(d.doc).toUpperCase()));
@@ -493,7 +494,8 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const cf = (lead.customFields || {}) as Record<string, string>;
   const cfAll = cf as Record<string, any>;
   // Financiamento Habitacional tem fluxo de documentos PRÓPRIO (Fabio 29/10, Taynara: a conferência cobrou matrícula/ônus e IPTU, que são do Home Equity).
-  // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço, último contracheque e certidão de estado civil.
+  // Sem banco privado escolhido (ou optou pela CAIXA/BRB): a documentação do comprador — RG, CPF, comprovante de endereço e certidão de estado civil; o último contracheque SÓ quando a renda
+  // é exigida (CAIXA/BRB ou o banco pediu — Fabio 14/11, Adriano/Cássia: FH sem banco escolhido recebeu "último contracheque" de cada um sem nenhum banco pedir).
   const ehFh = /habitacional/i.test(lead.pipeline.department?.name || '');
   const caixaRota = naRotaCaixa(cfAll, lead.stage?.name); // pediu a CAIXA (Fabio 01/11, HE e FH) ou está na etapa Análise CAIXA (11/11): lista enxuta do comprador, a mesma do FH
   const fhSoComprador = soDocsDoComprador(cfAll, lead.pipeline.department?.name, lead.stage?.name);
@@ -501,21 +503,22 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
   const vendedoresOnus = ehFh && !fhSoComprador ? vendedoresDoImovel(cfAll) : [];
   const listas = ehFh || caixaRota ? lists.filter((l) => !/home equity/i.test(l.name)) : lists;
   if (!listas.length && !fhSoComprador) return null;
-  // CAIXA (ou ainda sem banco): lista ENXUTA pra rodar na CAIXA. BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
+  // RENDA SÓ QUANDO É EXIGIDA (Fabio 14/11 — `rendaExigida`: CAIXA/BRB ou a aprovação do banco pediu). Vale pra TODA lista, inclusive a do comprador do FH.
+  const { bancosEmJogo, itemDeRenda } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const jogo = await bancosEmJogo(prisma, leadId).catch(() => ({ emJogo: [] as string[], rendaNecessaria: true, rendaMotivo: 'sem leitura', texto: 'sem leitura' }));
+  const bancosTxt = jogo.texto || 'sem leitura';
+  const rendaNecessaria = jogo.rendaNecessaria;
+  // CAIXA (ou ainda sem banco): lista ENXUTA do comprador (o contracheque só com renda exigida). BRB: documentação COMPLETA pela profissão (lista do perfil) — Fabio 29/10.
   const { perfilTemplate } = require('./fh-approval.service') as typeof import('./fh-approval.service');
   const blocoFh = !ehFh && !caixaRota ? '' : fhSoComprador && cfAll._optouCaixa?.banco === 'BRB'
     ? `FINANCIAMENTO HABITACIONAL — BRB (Fabio 29/10): o BRB analisa com a documentação COMPLETA do comprador pela profissão — a referência é a lista "${perfilTemplate(cfAll)}" abaixo (pessoais + renda). NÃO cobre nada do imóvel nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false.\n\n`
     : fhSoComprador
-    ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10 — lista ENXUTA pra rodar na CAIXA): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG, CPF (a CNH vale pelos dois), comprovante de endereço, último contracheque e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge. NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
+    ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10${rendaNecessaria ? ' — lista ENXUTA pra rodar na CAIXA' : ''}): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG, CPF (a CNH vale pelos dois), comprovante de endereço${rendaNecessaria ? ', último contracheque' : ''} e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge.${rendaNecessaria ? '' : ' NENHUM documento de renda (contracheque, extrato, IR): ninguém pediu renda (Fabio 14/11) — as listas "Documentos comprador …" abaixo valem só pelos documentos pessoais.'} NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
     : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
   const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
   const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
   const matriculaEncerrada = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }).then((l) => { const m = ((l?.customFields || {}) as any)._matriculaEncerrada; return m ? ((m.novas || []).join('; ') || 'número novo') : ''; }).catch(() => '');
-  const { bancosEmJogo } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-  const jogo = await bancosEmJogo(prisma, leadId).catch(() => ({ emJogo: [] as string[], rendaNecessaria: true, texto: 'sem leitura' }));
-  const bancosTxt = jogo.texto || 'sem leitura';
-  const rendaNecessaria = fhSoComprador || jogo.rendaNecessaria; // FH: o último contracheque faz parte da lista do comprador
   const comMetragens = Array.from(new Set(Object.values((cfAll._docReview || {}) as Record<string, any>).filter((r: any) => r && r.metragens === true).map((r: any) => String(r.tipo)))) as string[];
   // Imóvel com FINANCIAMENTO ATIVO (proposta "Imóvel quitado: Não"; Home Equity): o banco pede o DESCRITIVO DA PARCELA em PDF (Fabio 30/10). Só o PDF conta — a foto/print
   // vira problema na leitura (doc-review) e o cliente é avisado que precisa do PDF.
@@ -536,7 +539,7 @@ Participantes:
 ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
-${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor.\n` : ''}Comprovação de renda: ${rendaNecessaria ? 'necessária (o banco pediu documento de renda)' : 'NÃO é necessária (nenhum banco pediu renda — Fabio 27/10: renda só quando o banco pede — ou a equipe dispensou)'}
+${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor.\n` : ''}Comprovação de renda: ${rendaNecessaria ? `necessária (${jogo.rendaMotivo})` : `NÃO é necessária (${jogo.rendaMotivo} — Fabio 14/11: renda só na CAIXA/BRB ou quando a aprovação do banco pede)`}
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 ${precisaDescritivo ? `Imóvel com FINANCIAMENTO ATIVO: o banco pede o DESCRITIVO DA PARCELA (PDF do app do banco do financiamento, com as últimas prestações) — ${temDescritivo ? 'JÁ RECEBIDO: não cobre.' : `NÃO recebido: ponha em "faltando" o item "${ITEM_DESCRITIVO}".`}
 ` : ''}
@@ -568,6 +571,12 @@ ${history}`;
   if (!autorizou && verdict.autorizouEmissao === true) {
     autorizou = true;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${AUTORIZOU_EMISSAO} — o cliente aceitou na conversa que a A&F emita a certidão de ônus/matrícula pelo ONR (custo de R$ 40 a R$ 100 pra ele).` } }).catch(() => {});
+  }
+  // Renda não exigida: decide o CRM, não o modelo (Fabio 14/11, Adriano/Cássia: "Último contracheque" cobrado sem banco nenhum pedir). Se só faltava renda, a documentação está completa.
+  if (!rendaNecessaria && Array.isArray(verdict.faltando)) {
+    const antes = verdict.faltando;
+    verdict.faltando = antes.filter((f) => !itemDeRenda(String(f)));
+    if (antes.length && !verdict.faltando.length && verdict.complete === false && !unread.length) verdict.complete = true;
   }
   // Descritivo da parcela: decide o CRM (o PDF chegou ou não), não o modelo.
   if (precisaDescritivo) {
@@ -652,7 +661,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   // problema NÃO deixa o card avançar, mesmo que "chegou tudo": o cliente é avisado do que corrigir (uma vez por conjunto de problemas).
   const review = await reviewReceivedDocs(accountId, leadId).catch((err) => { console.error(`[Docs] leitura dos documentos falhou (${leadId}):`, err?.message || err); return null; });
   // Renda dispensada PELA EQUIPE neste card (marca _rendaDispensada; Fabio 20/10, caso Luiz): problema/dúvida em documento de RENDA não segura o card nem gera cobrança.
-  if (review) await filtrarRendaDispensada(leadId, fhSoComprador, review);
+  if (review) await filtrarRendaDispensada(leadId, review);
   // A leitura leva minutos: a IA pode ter sido desligada nesse meio-tempo (Fabio 14/11, Fabricio: a conferência começou com a IA ligada, a equipe desligou durante a leitura e a
   // mensagem saiu mesmo assim). Daqui pra frente vale o estado de AGORA pra falar com o cliente.
   {

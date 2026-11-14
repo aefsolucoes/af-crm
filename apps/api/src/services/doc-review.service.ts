@@ -836,7 +836,14 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   const linhas = [...latest.values()].map((r) => `- ${docLabel(r)}: ${r.resultado === 'OK' ? 'OK' : r.resultado === 'DUVIDA' ? 'EM ANÁLISE PELA EQUIPE (não diga que está certo nem errado; diga que a equipe está conferindo e retorna)' : `PROBLEMA — ${r.problemas.join('; ')}`}${r.emissao ? ` (emissão ${r.emissao})` : ''}${r.lado ? ` [${r.lado}]` : ''}`);
   const juntos = [...new Set(Object.values(rev).flatMap((r) => (r.resultado !== 'NAO_DOCUMENTO' && r.outros) || []))];
   if (juntos.length) linhas.push(`- Também vieram junto, no mesmo arquivo de outro documento: ${juntos.join('; ')}`);
-  const falta = cf._docsFaltando ? `\nAinda falta (lista do banco): ${cf._docsFaltando}` : '';
+  // Renda não exigida (Fabio 14/11): item de renda gravado por uma conferência antiga não vai pra IA como "falta" (a próxima conferência já grava sem ele).
+  let faltaItens = String(cf._docsFaltando || '').split(/;\s+/).filter(Boolean);
+  if (faltaItens.length) {
+    const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const jogo = await ca.bancosEmJogo(prisma, leadId).catch(() => null);
+    if (jogo && !jogo.rendaNecessaria) faltaItens = faltaItens.filter((f) => !ca.itemDeRenda(f));
+  }
+  const falta = faltaItens.length ? `\nAinda falta (lista do banco): ${faltaItens.join('; ')}` : '';
   const recusada = (await bancoRecusouCertidao(leadId).catch(() => false)) ? '\nO BANCO NÃO ACEITOU a certidão de ônus/matrícula que o cliente enviou (muito antiga ou só consulta): avise o cliente e ofereça emitir uma nova pelo ONR (custo de R$ 40 a R$ 100, só com o OK dele).' : '';
   const me = cf._matriculaEncerrada as { antiga?: string; quando?: string; novas?: string[] } | undefined;
   const encerrada = me ? `\nMATRÍCULA ENCERRADA: a certidão que o cliente mandou é da matrícula${me.antiga ? ` nº ${me.antiga}` : ''}, que foi ENCERRADA${me.quando ? ` em ${me.quando}` : ''} — o imóvel agora tem ${(me.novas || []).join('; ') || 'matrícula nova'}. Essa certidão NÃO serve. A A&F vai EMITIR a certidão da matrícula nova (por isso a vistoria só depois). Se o cliente perguntar, explique isso com calma; NÃO peça que ele tire outra no cartório e NÃO diga que a vistoria já foi solicitada com essa matrícula.` : '';
