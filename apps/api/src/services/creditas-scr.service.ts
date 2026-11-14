@@ -208,8 +208,10 @@ const STANDBY_RX =/descontinuad[ao] por falta de movimenta/i;
 async function marcarStandByCreditas(accountId: string, lead: { id: string; name: string; customFields: any }, row: EmailMessage, c: { creditasId?: string }, avisar: boolean): Promise<boolean> {
   const fresh = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const cf = (fresh?.customFields || {}) as Record<string, any>;
-  if (cf._creditasStandBy?.emailId === row.id) return false;
-  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _creditasStandBy: { at: row.date.toISOString(), emailId: row.id, creditasId: c.creditasId || null } } } });
+  // O MESMO e-mail chega em duas caixas (Fabio e Andreia, ids diferentes): vale o Message-ID — senão saíam 2 notas iguais (14/11, 9 cards).
+  const sb = cf._creditasStandBy as { emailId?: string; messageId?: string | null; at?: string; creditasId?: string | null } | undefined;
+  if (sb && (sb.emailId === row.id || (!!row.messageId && sb.messageId === row.messageId) || (sb.at === row.date.toISOString() && (sb.creditasId || null) === (c.creditasId || null)))) return false;
+  await prisma.lead.update({ where: { id: lead.id }, data: { customFields: { ...cf, _creditasStandBy: { at: row.date.toISOString(), emailId: row.id, messageId: row.messageId || null, creditasId: c.creditasId || null } } } });
   const dia = row.date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
   await addNote(lead.id, `⏸️ Creditas: proposta${c.creditasId ? ` ${c.creditasId}` : ''} DESCONTINUADA por falta de movimentação (e-mail de ${dia}) — é STAND-BY, não reprovação. Se o cliente mandar a documentação, avise a Creditas no grupo do WhatsApp que eles resgatam a operação (não precisa novo cadastro).`);
   if (avisar) pushTeam(accountId, lead.id, lead.name, 'Creditas descontinuou a proposta por falta de movimentação (stand-by) — resgata quando o cliente mandar os documentos');
