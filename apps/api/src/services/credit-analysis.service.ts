@@ -1631,6 +1631,15 @@ export async function chooseAnalysis(db: Db, p: { accountId: string; id: string;
   });
   // Laudo do banco anterior reprovou o imóvel e o cliente escolheu o outro banco oferecido (Fabio 14/11): a vistoria passa a ser por ele.
   await (require('./laudo-reprovado.service') as typeof import('./laudo-reprovado.service')).escolheuOutroBanco(p.accountId, lead.id, row.bank).catch((e: any) => console.error('[⭐] laudo reprovado → outro banco:', e?.message));
+  // Piloto da contratação "quando o cliente quiser seguir" (Fabio 14/11, Cleci: "caso a IA estiver ligada e ela desejar seguir, pode ligar o fluxo automático para Santander"):
+  // o card marcado com `_pilotoAoSeguir` {banco} liga o piloto (vistoria etc. sozinhos) quando a proposta desse banco é escolhida — pela IA, pelo botão ou pela equipe — com a IA do card ligada.
+  try {
+    const ao = cf._pilotoAoSeguir as { banco?: string; por?: string } | undefined;
+    if (ao && (!ao.banco || ao.banco === row.bank) && (await db.lead.findUnique({ where: { id: lead.id }, select: { aiAutoReplyActive: true } }))?.aiAutoReplyActive) {
+      await db.$executeRaw`UPDATE "Lead" SET "customFields" = "customFields" - '_pilotoAoSeguir' WHERE id = ${lead.id}`;
+      await (require('./contracting-auto.service') as typeof import('./contracting-auto.service')).setPilotoContratacao(lead.id, true, `${ao.por || 'equipe'} — o cliente escolheu seguir com ${b?.label || row.bank} e a IA estava ligada`);
+    }
+  } catch (e: any) { console.error('[⭐] piloto ao seguir:', e?.message); }
   // Uma simulação só na pasta (Fabio 12/11: "a que o cliente irá seguir"): escolheu o banco → as simulações dos outros bancos saem da raiz (vão pra DESNECESSARIO).
   (require('./simulacao-pasta.service') as typeof import('./simulacao-pasta.service')).manterUmaSimulacao(p.accountId, lead.id).catch((e: any) => console.error('[⭐] uma simulação na pasta:', e?.message));
   return { ok: true, filled: Object.keys(fill).filter((k) => !k.startsWith('_')) };

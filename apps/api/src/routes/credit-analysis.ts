@@ -349,6 +349,15 @@ router.put('/auto/lead/:leadId', async (req: AuthRequest, res: Response) => {
     if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
     const { setPilotoContratacao, pilotoContratacao } = require('../services/contracting-auto.service') as typeof import('../services/contracting-auto.service');
     const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
+    // `aoSeguir` (Fabio 14/11, Cleci): NÃO liga agora — liga sozinho quando o cliente escolher seguir com esse banco e a IA do card estiver ligada (chooseAnalysis).
+    const aoSeguir = String(req.body?.aoSeguir || '').toUpperCase();
+    if (aoSeguir) {
+      if (!['CREDIMORAR', 'INTER', 'CREDITAS'].includes(aoSeguir)) return res.status(400).json({ error: 'banco inválido' });
+      const v = JSON.stringify({ banco: aoSeguir, por: u?.name || 'equipe', at: new Date().toISOString() });
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_pilotoAoSeguir}', ${v}::jsonb, true) WHERE id = ${lead.id}`;
+      await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: `🚀 Contratação automática marcada pra ligar QUANDO o cliente escolher seguir com ${({ CREDIMORAR: 'Santander', INTER: 'Inter', CREDITAS: 'Creditas' } as Record<string, string>)[aoSeguir]} e a IA do card estiver ligada (por ${u?.name || 'equipe'}). Até lá, segue o modo manual.` } }).catch(() => {});
+      return res.json({ leadId: lead.id, on: await pilotoContratacao(lead.id), aoSeguir });
+    }
     await setPilotoContratacao(lead.id, req.body?.on === true, u?.name || 'equipe');
     res.json({ leadId: lead.id, on: await pilotoContratacao(lead.id) });
   } catch (err) { fail(res, err, 'Erro ao ligar a contratação automática no card'); }
