@@ -468,6 +468,30 @@ async function gravarNota(leadId: string, prefixos: string[], texto: string, use
 const emAndamento = new Set<string>();
 
 /** Lê a pasta do Drive do cliente e grava a ficha (customFields `_fichaCadastral` + anotação). Devolve a mensagem de erro, ou null quando gravou. */
+const dataBr = (v: unknown): number | null => { const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(v ?? '').trim()); return m ? Date.UTC(+m[3], +m[2] - 1, +m[1]) : null; };
+/** Cargo que a leitura cortou no meio ("Assistente de", "Auxiliar do"): não serve pra escolher a ocupação na lista da CAIXA. Pura. */
+export const cargoCortado = (v: unknown) => /\b(de|da|do|dos|das|e|em)\s*$/i.test(String(v ?? '').trim());
+/** Validade da CNH igual ou antes da emissão é leitura errada (a CNH vale 10, 5 ou 3 anos): sai da ficha — a extensão mantém a que já está no cadastro da CAIXA.
+ *  Cargo cortado só vira aviso. Devolve as frases pra "conflitos" e corrige `participantes` no lugar. Pura. */
+export function conferirDatasECargo(participantes: any[]): string[] {
+  const out: string[] = [];
+  for (const p of participantes || []) {
+    const id = p?.identidade;
+    const nome = p?.nome || `${p?.ordem || ''}º participante`;
+    if (id && /cnh/i.test(String(id.tipo || '')) && id.validade) {
+      const ini = dataBr(id.emissao); const fim = dataBr(id.validade);
+      if (ini !== null && fim !== null && fim <= ini) {
+        out.push(`CNH de ${nome}: a leitura deu validade ${id.validade}, igual ou antes da emissão ${id.emissao} — validade descartada (a extensão mantém a do cadastro da CAIXA; confira na CNH).`);
+        id.validade = null;
+      }
+    }
+    const cargos = [p?.trabalho?.cargo, ...((p?.contracheques || []) as any[]).map((c) => c?.cargo)].filter(Boolean);
+    const cortado = cargos.find(cargoCortado);
+    if (cortado) out.push(`Cargo de ${nome} lido cortado ("${cortado}") — a ocupação não é trocada na CAIXA por ele; confira no contracheque.`);
+  }
+  return out;
+}
+
 export async function gerarFichaCadastral(accountId: string, leadId: string, opts: { userId?: string | null; io?: Io } = {}): Promise<string | null> {
   if (!process.env.ANTHROPIC_API_KEY) return 'IA indisponível';
   if (emAndamento.has(leadId)) return 'A ficha deste cliente já está sendo lida';
@@ -518,6 +542,10 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     // Sexo (Fabio 06/11): o "Gênero" do card posto pela equipe manda; senão o do documento; documento sem sexo (RG antigo/CNH não trazem) = o do card ou o primeiro nome.
     for (const p of ficha.participantes) { const s = sexoParaFormulario(cf, p?.nome, /^[MF]$/.test(String(p?.sexo || '')) ? p.sexo : null); if (s) p.sexo = s; }
     await completarSocios(ficha.participantes).catch((e) => console.error('[Ficha cadastral] sócio:', e?.message));
+    // Datas e cargo que a leitura errou (Fabio 14/11, Fernando Souza): validade da CNH igual à emissão travou o cadastro na CAIXA ("Data de emissão não pode ser maior
+    // ou igual que data de validade") e o cargo cortado "Assistente de" virou "ASSISTENTE SOCIAL" na lista.
+    if (!Array.isArray(ficha.conflitos)) ficha.conflitos = [];
+    ficha.conflitos.push(...conferirDatasECargo(ficha.participantes));
 
     const agora = new Date();
     const registro = { at: agora.toISOString(), usaFgts, participantes: ficha.participantes, conflitos: Array.isArray(ficha.conflitos) ? ficha.conflitos : [], observacao: String(ficha.observacao || ''), arquivos: pessoais.map((x) => ({ nome: x.arquivo, tipo: x.leitura.tipo })), naoLidos };
