@@ -1443,6 +1443,8 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       bancos,
       // Botões do card iguais aos do Home Equity (Fabio 14/11): banco escolhido (⭐), propostas já mandadas ao cliente e a IA do card (negativa só pelo botão com ela desligada).
       escolhido: cf._fhChosen?.bank ? String(cf._fhChosen.bank) : null,
+      // Qual PROPOSTA do banco escolhido (Fabio 14/11, Deborah: duas do Inter aprovadas; o card só mostrava a última de cada banco): a ⭐ da equipe guarda o número; senão a linha marcada / o nº do card.
+      escolhidoProposta: cf._fhChosen?.bank ? String(cf._fhChosen.proposta || l.creditAnalyses.find((r) => r.chosen)?.proposalNumber || cf.num_proposta || '') || null : null,
       enviados: Array.isArray(cf._fhNotice?.bancos) ? (cf._fhNotice.bancos as string[]) : [],
       aiOn: !!l.aiAutoReplyActive,
       emAndamento: l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING', 'SENT'].includes(r.status) && !r.dryRun),

@@ -164,7 +164,7 @@ router.post('/fh-escolher', async (req: AuthRequest, res: Response) => {
     if (!leadId || !banco) return res.status(400).json({ error: 'leadId e banco são obrigatórios' });
     const { escolherFhPelaEquipe } = require('../services/fh-approval.service') as typeof import('../services/fh-approval.service');
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
-    const out = await escolherFhPelaEquipe({ accountId: req.user!.accountId, leadId, banco, userName, io: io(req) });
+    const out = await escolherFhPelaEquipe({ accountId: req.user!.accountId, leadId, banco, proposta: req.body?.proposta ? String(req.body.proposta) : null, userName, io: io(req) });
     if (!out.ok) return res.status(400).json({ error: out.error });
     emit(req, { leadId });
     res.json(out);

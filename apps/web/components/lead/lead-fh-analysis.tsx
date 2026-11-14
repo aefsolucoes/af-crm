@@ -19,7 +19,12 @@ type FhLead = {
   valores: { imovel: number | null; financia: number | null; entrada: number | null; renda: number | null };
   // Botões iguais aos do Home Equity (Fabio 14/11): banco escolhido (⭐), propostas já mandadas ao cliente, IA do card, STOP e banco ainda rodando/em análise.
   escolhido?: string | null; enviados?: string[]; aiOn?: boolean; autoPaused?: boolean; emAndamento?: boolean;
+  // TODAS as propostas aprovadas, uma por proposta (Fabio 14/11, Deborah: duas do Inter — a lista de bancos só mostra a última de cada banco) e qual delas tem a ⭐.
+  aprovadas?: { banco: string; status: string; proposta: string | null; valor: number | null; prazo: number | null; taxa: string | null; parcela: number | null; createdAt: string; quem: 'p1' | 'p2' | null }[];
+  escolhidoProposta?: string | null;
 };
+const soNum = (v: unknown) => String(v ?? '').replace(/\D/g, '').replace(/^0+/, '');
+const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const aprovadoTxt = (s: string) => /aprovad/i.test(s) && !/n[aã]o aprovad/i.test(s);
 const negativoTxt = (s: string) => /reprov|rejeit|recus|negad|n[aã]o aprovad/i.test(s);
 const ORDEM = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'];
@@ -90,12 +95,12 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao mandar a proposta', 'error'); } finally { setBusy(null); }
   }
   // "Escolher esta proposta" (⭐): marca o banco e preenche o card (instituição, valor, prazo, taxa, nº da proposta), sem mandar nada ao cliente.
-  async function escolher(banco: string) {
-    if (!window.confirm(`Escolher a proposta do ${banco}? Marca ⭐ e preenche os campos do Financiamento deste card com ela (nada vai pro cliente). A vistoria passa a seguir por esse banco.`)) return;
-    setBusy(`esc-${banco}`);
+  async function escolher(banco: string, proposta?: string | null) {
+    if (!window.confirm(`Escolher a proposta do ${banco}${proposta ? ` nº ${proposta}` : ''}? Marca ⭐ e preenche os campos do Financiamento deste card com ela (nada vai pro cliente). A vistoria passa a seguir por esse banco.`)) return;
+    setBusy(`esc-${banco}-${proposta || ''}`);
     try {
-      await api.post('/api/credit-analysis/fh-escolher', { leadId, banco });
-      toast(`⭐ ${banco} escolhido`, 'success');
+      await api.post('/api/credit-analysis/fh-escolher', { leadId, banco, ...(proposta ? { proposta } : {}) });
+      toast(`⭐ ${banco}${proposta ? ` (proposta ${proposta})` : ''} escolhido`, 'success');
       recarregar();
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao escolher', 'error'); } finally { setBusy(null); }
   }
@@ -183,6 +188,34 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
               })}
             </div>
           )}
+          {(() => {
+            // Todas as propostas aprovadas (uma por proposta): só aparece quando há mais propostas que bancos aprovados na lista acima (ex.: duas do Inter).
+            const todas = (l.aprovadas || []).filter((a) => !/^(CAIXA|BRB)$/.test(a.banco));
+            if (todas.length <= aprovadas.length) return null;
+            return (
+              <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
+                <p className="mb-1 text-[11px] font-semibold text-slate-600">Todas as propostas aprovadas ({todas.length})</p>
+                <div className="space-y-1">
+                  {todas.map((a) => {
+                    const escolhida = l.escolhido === a.banco && (!l.escolhidoProposta || !a.proposta || soNum(l.escolhidoProposta) === soNum(a.proposta));
+                    const porProposta = a.banco === 'Inter' || a.banco === 'Itaú'; // as do nosso portal têm a linha da proposta; Bradesco/Santander saem da simulação do Credimorar
+                    return (
+                      <div key={`${a.banco}-${a.proposta || a.createdAt}`} className={cn('flex flex-wrap items-center justify-between gap-1.5 rounded border px-2 py-1', escolhida ? 'border-amber-300 bg-amber-50/40' : 'border-slate-100')}>
+                        <span className="text-[11px] text-slate-600">
+                          <span className="font-semibold text-slate-700">{a.banco}</span>
+                          {a.proposta ? ` · nº ${a.proposta}` : ''}{a.valor ? ` · ${brl(a.valor)}` : ''}{a.prazo ? ` · ${a.prazo} meses` : ''}{a.taxa ? ` · ${a.taxa}` : ''}{a.parcela ? ` · 1ª ${brl(a.parcela)}` : ''}
+                          {` · ${new Date(a.createdAt).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}`}{a.quem === 'p2' ? ' · 2º participante' : ''}
+                        </span>
+                        {escolhida
+                          ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600"><Star size={10} className="fill-current" /> Escolhida</span>
+                          : <button onClick={() => escolher(a.banco, porProposta ? a.proposta : null)} disabled={!!busy} className="inline-flex items-center gap-1 rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50"><Star size={10} /> Escolher esta</button>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
           {manual ? (
             <div className="mt-2 space-y-1.5 rounded-md border border-slate-200 bg-white p-2">
               <div className="flex gap-1.5">

@@ -381,15 +381,23 @@ export async function enviarPropostasFh(p: { accountId: string; leadId: string; 
 
 /** "Escolher esta proposta" da equipe no Financiamento — igual ao ⭐ do Home Equity: marca o banco (`_fhChosen`), preenche o card (instituição, valor, prazo, taxa, nº da proposta,
  *  Valor da venda) e destrava o que espera a escolha (vistoria, documentos do banco). NÃO manda nada ao cliente (nem quando a IA for religada: `porEquipe`). */
-export async function escolherFhPelaEquipe(p: { accountId: string; leadId: string; banco: string; userName?: string; io?: any }): Promise<{ ok: boolean; error?: string }> {
+export async function escolherFhPelaEquipe(p: { accountId: string; leadId: string; banco: string; proposta?: string | null; userName?: string; io?: any }): Promise<{ ok: boolean; error?: string }> {
   const x = await propostasFh(p.accountId, p.leadId);
   if (!x) return { ok: false, error: 'Card não encontrado' };
-  if (!x.aprovadas.some((o) => o.banco === p.banco)) return { ok: false, error: `O ${p.banco} não está aprovado neste card.` };
-  if (x.cf._fhChosen?.bank === p.banco) return { ok: true };
+  // Proposta específica (Fabio 14/11, Deborah: duas propostas do Inter aprovadas — a ⭐ vai na que ele escolher, não só no banco).
+  const so = (v: unknown) => String(v ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  const proposta = so(p.proposta) ? String(p.proposta).trim() : null;
+  const linha = proposta && PORTAL_PROPRIO[p.banco]
+    ? (await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: PORTAL_PROPRIO[p.banco], dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { id: true, proposalNumber: true } })).find((r) => so(r.proposalNumber) === so(proposta))
+    : null;
+  if (!x.aprovadas.some((o) => o.banco === p.banco) && !linha) return { ok: false, error: `O ${p.banco} não está aprovado neste card.` };
+  if (proposta && PORTAL_PROPRIO[p.banco] && !linha) return { ok: false, error: `A proposta ${proposta} do ${p.banco} não está aprovada neste card.` };
+  const antes = x.cf._fhChosen as { bank?: string; proposta?: string } | undefined;
+  if (antes?.bank === p.banco && (!proposta || so(antes.proposta) === so(proposta))) return { ok: true };
   const quem = p.userName || 'a equipe';
-  await saveCf(p.leadId, { _fhChosen: { bank: p.banco, at: new Date().toISOString(), porEquipe: quem } });
-  await preencherEscolhaFh(p.accountId, p.leadId, p.banco).catch((e: any) => console.error('[Financiamento] preencher a escolha (equipe):', e?.message));
-  await note(p.leadId, `⭐ Financiamento: ${quem} escolheu o ${p.banco} (botão "Escolher esta proposta"${x.cf._fhChosen?.bank ? `; antes era o ${x.cf._fhChosen.bank}` : ''}). Nada foi mandado ao cliente.`);
+  await saveCf(p.leadId, { _fhChosen: { bank: p.banco, at: new Date().toISOString(), porEquipe: quem, ...(proposta ? { proposta } : {}) } });
+  await preencherEscolhaFh(p.accountId, p.leadId, p.banco, linha?.id).catch((e: any) => console.error('[Financiamento] preencher a escolha (equipe):', e?.message));
+  await note(p.leadId, `⭐ Financiamento: ${quem} escolheu o ${p.banco}${proposta ? ` (proposta ${proposta})` : ''} (botão "Escolher esta proposta"${antes?.bank ? `; antes era o ${antes.bank}${antes.proposta ? ` (proposta ${antes.proposta})` : ''}` : ''}). Nada foi mandado ao cliente.`);
   logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: x.lead.name, summary: `escolheu o ${p.banco} no Financiamento` });
   p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
   return { ok: true };
@@ -535,7 +543,7 @@ export async function maybeHandleFhReply(accountId: string, leadId: string, text
 
 /** Escolha do Financiamento preenche o card igual ao "Seguir com esta" do Home Equity (chooseAnalysis): ⭐ na análise, instituição, valor, prazo, taxa, 1ª parcela,
  *  nº da proposta e Valor da venda (Fabio 29/10: "todo o processo do HE deve migrar pro FH"). */
-export async function preencherEscolhaFh(accountId: string, leadId: string, banco: string): Promise<void> {
+export async function preencherEscolhaFh(accountId: string, leadId: string, banco: string, linhaId?: string | null): Promise<void> {
   const { parseBancosFinanciamento, chooseAnalysis } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
@@ -543,8 +551,9 @@ export async function preencherEscolhaFh(accountId: string, leadId: string, banc
   const [o] = await enriquecer(leadId, cf, fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`).aprovadas.filter((x) => x.banco === banco));
   // Inter e Itaú (03/11): a linha do nosso portal tem os números estruturados — ⭐ nela pelo mesmo caminho do HE.
   if (PORTAL_PROPRIO[banco]) {
-    const row = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: PORTAL_PROPRIO[banco], dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: { approvedValue: 'desc' }, select: { id: true } });
-    if (row) { await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: 'Cliente — "Seguir com esta" no Financiamento' }); return; }
+    // Linha da proposta escolhida pela equipe (a ⭐ por proposta); senão a maior aprovada do banco.
+    const row = linhaId ? { id: linhaId } : await prisma.creditAnalysis.findFirst({ where: { leadId, bank: PORTAL_PROPRIO[banco], dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: [{ approvedValue: 'desc' }, { createdAt: 'desc' }], select: { id: true } });
+    if (row) { await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: linhaId ? 'Equipe — "Escolher esta proposta" no Financiamento' : 'Cliente — "Seguir com esta" no Financiamento' }); return; }
   }
   if (!o) return;
   const num = (t: string) => Number(String(t || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
