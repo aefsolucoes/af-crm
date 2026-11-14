@@ -425,9 +425,12 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
 }
 
 
-// ── O QUE FICOU PRA DEPOIS (Fabio 14/11, Liene: "o descritivo da parcela pode colocar como lembrete, caso ela não mande, mas será necessário para a contratação após a vistoria") ──
-// A conferência deixa seguir pra vistoria sem o comprovante de residência / descritivo da parcela (_docsDepois). Se o cliente não mandar: lembrete a cada 3 dias (07h–21h, IA ligada),
-// até 3 vezes — conversa fechada = template de atualização e o lembrete sai na resposta. Depois do 3º, push pra equipe (é preciso pra contratação). Chegou → para e anota.
+// ── O QUE FICOU PRA DEPOIS (Fabio 14/11, Liene: "o descritivo da parcela pode colocar como lembrete, caso ela não mande, mas será necessário para a contratação após a vistoria"
+// + "solicita a ela após chegar a aprovação da vistoria") ──
+// A conferência deixa seguir pra vistoria sem o comprovante de residência / descritivo da parcela (_docsDepois). O PEDIDO só sai quando a vistoria é aprovada (card em Análise Jurídica
+// ou adiante); sem resposta, lembra a cada 3 dias (07h–21h, IA ligada) — 3 mensagens no total; conversa fechada = template de atualização e a mensagem sai na resposta. Depois, push
+// pra equipe (é preciso pra contratação). Chegou → para e anota.
+const DEPOIS_DA_VISTORIA = /an[aá]lise jur[ií]dica|registro em cart[oó]rio|pagamento ao vendedor/i;
 const DEPOIS_DIAS = 3;
 const DEPOIS_MAX = 3;
 export async function processDocsDepois(accountId: string, io?: Io): Promise<void> {
@@ -437,7 +440,7 @@ export async function processDocsDepois(accountId: string, io?: Io): Promise<voi
   const { isDescritivoParcela } = require('./received-docs.service') as typeof import('./received-docs.service');
   for (const { id } of leads) {
     try {
-      const l = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, aiAutoReplyActive: true, tags: true, customFields: true } });
+      const l = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, aiAutoReplyActive: true, tags: true, customFields: true, stage: { select: { name: true } } } });
       if (!l) continue;
       const cf = (l.customFields || {}) as Record<string, any>;
       const dd = cf._docsDepois as { itens?: string[]; at?: string; lembretes?: number; ultimoAt?: string; equipeAt?: string } | undefined;
@@ -460,13 +463,13 @@ export async function processDocsDepois(accountId: string, io?: Io): Promise<voi
         continue;
       }
       if (cf._autoPaused || !l.aiAutoReplyActive || (l.tags || []).includes('Pediu pra parar lembretes')) continue;
-      const ultimo = new Date(dd.ultimoAt || dd.at);
-      if (Date.now() - ultimo.getTime() < DEPOIS_DIAS * 86_400_000) continue;
+      if (!DEPOIS_DA_VISTORIA.test(l.stage?.name || '')) continue; // só depois da aprovação da vistoria
       const feitos = dd.lembretes || 0;
+      if (feitos && dd.ultimoAt && Date.now() - Date.parse(dd.ultimoAt) < DEPOIS_DIAS * 86_400_000) continue;
       if (feitos >= DEPOIS_MAX) {
         if (!dd.equipeAt) {
           await grava({ equipeAt: new Date().toISOString(), fimAt: new Date().toISOString() });
-          await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 O cliente ainda não mandou ${faltam.join('; ')} (${DEPOIS_MAX} lembretes). É necessário pra contratação depois da vistoria — cobre você.` } }).catch(() => {});
+          await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 O cliente ainda não mandou ${faltam.join('; ')} (pedido + ${DEPOIS_MAX - 1} lembretes depois da vistoria). É necessário pra contratação — cobre você.` } }).catch(() => {});
           avisa(accountId, `📎 ${l.name}: falta pra contratação`, faltam.join('; ').slice(0, 150), id);
         }
         continue;
@@ -474,7 +477,10 @@ export async function processDocsDepois(accountId: string, io?: Io): Promise<voi
       if (await clienteEsperandoResposta(id)) continue; // ele está esperando resposta nossa: não cobra por cima
       const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
       const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name);
-      const texto = `${nome ? `${nome}, p` : 'P'}assando pra lembrar: pra contratação, depois da vistoria, vou precisar de:\n${faltam.map((f) => `• ${f}`).join('\n')}\n\nPode mandar por aqui quando conseguir. 😊`;
+      const lista = faltam.map((f) => `• ${f}`).join('\n');
+      const texto = feitos === 0
+        ? `${nome ? `${nome}, p` : 'P'}ra seguir com a contratação, preciso que você me mande:\n${lista}\n\nPode mandar por aqui mesmo. 😊`
+        : `${nome ? `${nome}, p` : 'P'}assando pra lembrar: pra seguir com a contratação, preciso de:\n${lista}\n\nPode mandar por aqui quando conseguir. 😊`;
       const msg = require('./message.service') as typeof import('./message.service');
       let como = '';
       if (await whatsappWindowOpen(id)) {
@@ -485,11 +491,11 @@ export async function processDocsDepois(accountId: string, io?: Io): Promise<voi
         const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
         const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId: id, ...(await templateAtualizacaoDoLead(id, nome || 'cliente')), io: io as any });
         if (!t.success) continue;
-        await (require('./reply-pending.service') as typeof import('./reply-pending.service')).queueOnReply(prisma, { leadId: id, label: 'lembrete do que ficou pra depois', text: texto, noteText: '📎 Conversa fechada: mandei o template de atualização; o lembrete do que ficou pra depois sai quando o cliente responder.' });
+        await (require('./reply-pending.service') as typeof import('./reply-pending.service')).queueOnReply(prisma, { leadId: id, label: 'pedido do que ficou pra depois da vistoria', text: texto, noteText: '📎 Conversa fechada: mandei o template de atualização; o pedido do que ficou pra depois da vistoria sai quando o cliente responder.' });
         como = 'conversa fechada: template de atualização, o lembrete sai na resposta';
       }
       await grava({ lembretes: feitos + 1, ultimoAt: new Date().toISOString() });
-      await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 Lembrete ${feitos + 1}/${DEPOIS_MAX} do que ficou pra depois (${faltam.join('; ')}) — ${como}.` } }).catch(() => {});
+      await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 ${feitos === 0 ? 'Vistoria aprovada: pedi' : `Lembrete ${feitos}/${DEPOIS_MAX - 1}:`} o que ficou pra depois (${faltam.join('; ')}) — ${como}.` } }).catch(() => {});
     } catch (e: any) { console.error(`[Docs pra depois] ${id}:`, e?.message || e); }
   }
 }
