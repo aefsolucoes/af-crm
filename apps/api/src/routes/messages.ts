@@ -346,6 +346,23 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Recado pra quando o cliente responder (Fabio 14/11, Cleci): conversa de 24 h fechada → o texto fica guardado no card e sai sozinho quando ele responder
+// (recado-ao-abrir.service). Reabrir a conversa (template de atualização) continua sendo um envio à parte.
+router.post('/recado-ao-abrir', async (req: AuthRequest, res: Response) => {
+  const { leadId, content } = (req.body || {}) as { leadId?: string; content?: string };
+  if (!leadId || !String(content || '').trim()) return res.status(400).json({ error: 'leadId e content são obrigatórios' });
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
+    const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
+    const { guardarRecadoAoAbrir } = require('../services/recado-ao-abrir.service') as typeof import('../services/recado-ao-abrir.service');
+    await guardarRecadoAoAbrir(lead.id, String(content), u?.name || 'equipe');
+    res.json({ ok: true });
+  } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao guardar o recado' }); }
+});
+
 // Envia um template aprovado pela Meta (API oficial) — único jeito de reabrir
 // conversa fora da janela de 24h de atendimento gratuito.
 router.post('/send-template', async (req: AuthRequest, res: Response) => {
