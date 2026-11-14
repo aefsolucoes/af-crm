@@ -4,7 +4,7 @@ import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { formatCurrency, formatDate, cn } from '@/lib/utils';
 import { CommissionNote, CommissionNoteCandidate, LearnedRate } from '@/types';
-import { Check, FileText, Loader2, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
+import { Check, ExternalLink, FileText, Loader2, Pencil, Plus, Trash2, Upload, X } from 'lucide-react';
 import { ProvisionBankIcon } from './provision-bank-icon';
 
 /* Notas de comissão (Fabio 14/11): "podemos receber mais de um processo pro banco e seria tudo incluso na mesma nota".
@@ -12,7 +12,7 @@ import { ProvisionBankIcon } from './provision-bank-icon';
  * → confere e salva. O valor da nota substitui a estimativa pela % e a taxa efetiva vira a sugestão dos próximos clientes do mesmo banco e produto.
  * Quando o dinheiro cai: "Recebida" → uma Receita com o total e baixa em todos os processos da nota. */
 
-const PAGADORES = ['Inter', 'Creditas', 'Credimorar', 'Santander', 'Bradesco', 'Itaú', 'CAIXA', 'BRB'];
+const PAGADORES = ['Credimorar', 'Inter', 'Creditas', 'Santander', 'Bradesco', 'Itaú', 'CAIXA', 'BRB', 'Âncora'];
 const inputCls = 'w-full text-sm px-3 py-2 border border-af-border rounded-lg bg-white text-slate-800 focus:outline-none focus:ring-1 focus:ring-af-accent';
 const toMoneyInput = (n: number) => (n ? n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '');
 const parseMoney = (s: string) => Number(String(s).replace(/\./g, '').replace(',', '.')) || 0;
@@ -60,6 +60,11 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
   const [numero, setNumero] = useState(editar?.number || '');
   const [data, setData] = useState(dayOf(editar?.issueDate));
   const [total, setTotal] = useState(editar ? toMoneyInput(editar.totalAmount) : '');
+  // Impostos (Fabio 14/11): retidos saem do que cai na conta; ISS não retido a A&F paga depois.
+  const [retido, setRetido] = useState(editar?.retainedAmount ? toMoneyInput(editar.retainedAmount) : '');
+  const [liquido, setLiquido] = useState(editar?.netAmount ? toMoneyInput(editar.netAmount) : '');
+  const [aPagar, setAPagar] = useState(editar?.taxesToPay ? toMoneyInput(editar.taxesToPay) : '');
+  const [liquidoTocado, setLiquidoTocado] = useState(!!editar?.netAmount);
   const [salvando, setSalvando] = useState(false);
   const [mostrarTodos, setMostrarTodos] = useState(false);
 
@@ -88,6 +93,10 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
       setNumero(r.nota.number || '');
       setData(dayOf(r.nota.issueDate));
       setTotal(r.nota.totalAmount ? toMoneyInput(r.nota.totalAmount) : '');
+      setRetido(r.nota.retainedAmount ? toMoneyInput(r.nota.retainedAmount) : '');
+      setLiquido(r.nota.netAmount ? toMoneyInput(r.nota.netAmount) : '');
+      setAPagar(r.nota.taxesToPay ? toMoneyInput(r.nota.taxesToPay) : '');
+      setLiquidoTocado(!!r.nota.netAmount);
       setRev({ nota: r.nota, candidatos: r.candidatos || [], marcados, motivos, observacao: r.leitura?.observacao, lida: !!r.lida });
       if (!r.lida) toast('Não consegui ler a nota — preencha o número, a data e o total', 'error');
     } catch (e: any) {
@@ -103,6 +112,7 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
   }
 
   const totalNum = parseMoney(total);
+  const liquidoNum = liquidoTocado ? parseMoney(liquido) : Math.max(0, Math.round((totalNum - parseMoney(retido)) * 100) / 100);
   const somaMarcados = rev ? Object.values(rev.marcados).reduce((s, v) => s + parseMoney(v), 0) : 0;
   const diferenca = Math.round((totalNum - somaMarcados) * 100) / 100;
 
@@ -127,8 +137,12 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
     if (Math.abs(diferenca) > 0.01) return toast(`A soma dos processos não bate com o total (diferença de ${formatCurrency(diferenca)})`, 'error');
     setSalvando(true);
     try {
-      const { data: r } = await api.put(`/api/finance/notes/${rev.nota.id}`, { payer: payer.trim(), number: numero.trim() || null, issueDate: data || null, totalAmount: totalNum, itens });
-      toast(r.reestimadas?.length ? `Nota salva! ${r.reestimadas.length} estimativa${r.reestimadas.length === 1 ? '' : 's'} do mesmo banco ajustada${r.reestimadas.length === 1 ? '' : 's'} pela taxa da nota` : 'Nota salva!');
+      const { data: r } = await api.put(`/api/finance/notes/${rev.nota.id}`, {
+        payer: payer.trim(), number: numero.trim() || null, issueDate: data || null, totalAmount: totalNum, itens,
+        retainedAmount: parseMoney(retido), netAmount: liquidoNum > 0 ? liquidoNum : null, taxesToPay: parseMoney(aPagar),
+      });
+      const onde = r.nota?.drivePath ? ` Guardada no Drive: ${r.nota.drivePath}.` : '';
+      toast(r.reestimadas?.length ? `Nota salva!${onde} ${r.reestimadas.length} estimativa${r.reestimadas.length === 1 ? '' : 's'} do mesmo banco ajustada${r.reestimadas.length === 1 ? '' : 's'} pela taxa da nota` : `Nota salva!${onde}`);
       onSaved();
     } catch (e: any) {
       toast(e?.response?.data?.error || 'Erro ao salvar a nota', 'error');
@@ -195,6 +209,23 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
               <input value={total} onChange={(e) => setTotal(e.target.value)} className={cn(inputCls, 'font-semibold')} />
             </div>
           </div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 mt-3">
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Impostos retidos na nota (R$)</label>
+              <input value={retido} onChange={(e) => setRetido(e.target.value)} placeholder="IRRF, ISS retido…" className={inputCls} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Líquido que cai na conta (R$)</label>
+              <input value={liquidoTocado ? liquido : toMoneyInput(liquidoNum)} onChange={(e) => { setLiquido(e.target.value); setLiquidoTocado(true); }} className={cn(inputCls, 'font-semibold text-emerald-700')} />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-slate-500 mb-1 block">Impostos a pagar (não retidos)</label>
+              <input value={aPagar} onChange={(e) => setAPagar(e.target.value)} placeholder="ISS da nota" className={inputCls} />
+            </div>
+            <div className="text-[11px] text-slate-500 self-end pb-2">
+              {rev.nota.docType === 'DEMONSTRATIVO' ? 'Demonstrativo do banco' : 'Nota fiscal (NFS-e)'}{rev.nota.drivePath ? ' · já está no Drive' : ' · vai pro Drive no padrão ao salvar'}
+            </div>
+          </div>
           {rev.observacao && <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 mt-2">IA: {rev.observacao}</p>}
 
           <div className="flex items-center justify-between gap-3 mt-4 mb-1.5">
@@ -212,7 +243,7 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
                   <input type="checkbox" checked={marcado} onChange={() => alternar(c)} className="accent-emerald-600" />
                   <ProvisionBankIcon payer={c.pagador} product={c.produto} />
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-slate-800 truncate">{c.cliente}{c.kind === 'SUGGESTION' && <span className="ml-2 text-[10px] font-normal text-amber-700">concluído sem provisão</span>}</p>
+                    <p className="text-sm font-medium text-slate-800 truncate">{c.cliente}{c.kind === 'SUGGESTION' && <span className="ml-2 text-[10px] font-normal text-amber-700">concluído</span>}</p>
                     <p className="text-[11px] text-slate-500 truncate">{c.etapa}{c.pagador ? ` · paga: ${c.pagador}` : ' · sem banco'} · crédito {formatCurrency(c.credito)} · estimado {formatCurrency(c.estimado)}</p>
                     {marcado && rev.motivos[c.id] && <p className="text-[10px] text-emerald-700 truncate">{rev.motivos[c.id]}</p>}
                   </div>
@@ -245,7 +276,8 @@ function NotaForm({ editar, onClose, onSaved }: { editar: CommissionNote | null;
 
 function NotaRow({ n, onEdit, onChanged }: { n: CommissionNote; onEdit: () => void; onChanged: () => void }) {
   const [recebendo, setRecebendo] = useState(false);
-  const [valor, setValor] = useState(toMoneyInput(n.totalAmount));
+  const liquidoDaNota = n.netAmount ?? Math.round((n.totalAmount - (n.retainedAmount || 0)) * 100) / 100;
+  const [valor, setValor] = useState(toMoneyInput(liquidoDaNota));
   const [quando, setQuando] = useState(todayISO());
   const [busy, setBusy] = useState(false);
   const [aberta, setAberta] = useState(false);
@@ -290,14 +322,23 @@ function NotaRow({ n, onEdit, onChanged }: { n: CommissionNote; onEdit: () => vo
               {n.issueDate ? `emitida ${formatDate(n.issueDate)} · ` : ''}{procs.length} processo{procs.length === 1 ? '' : 's'}
               {estimado > 0 && Math.abs(estimado - n.totalAmount) >= 0.01 && ` · o CRM estimava ${formatCurrency(estimado)}`}
             </p>
+            {((n.retainedAmount || 0) > 0 || (n.taxesToPay || 0) > 0) && (
+              <p className="text-[11px] text-slate-500 truncate">
+                {(n.retainedAmount || 0) > 0 && <>retido na nota {formatCurrency(n.retainedAmount || 0)} · </>}
+                líquido <b className="text-emerald-700">{formatCurrency(liquidoDaNota)}</b>
+                {(n.taxesToPay || 0) > 0 && <> · <span className="text-amber-700">ISS a pagar {formatCurrency(n.taxesToPay || 0)}</span></>}
+              </p>
+            )}
+            {n.drivePath && <p className="text-[10px] text-slate-400 truncate">Drive: {n.drivePath}</p>}
           </div>
         </div>
         <div className="sm:text-right flex-shrink-0 sm:w-36">
           <p className="text-sm font-bold text-emerald-600">{formatCurrency(n.totalAmount)}</p>
-          <p className="text-[11px] text-slate-400">{n.status === 'RECEIVED' ? `recebida ${n.receivedAt ? formatDate(n.receivedAt) : ''}` : 'a receber'}</p>
+          <p className="text-[11px] text-slate-400">{n.status === 'RECEIVED' ? `recebida ${n.receivedAt ? formatDate(n.receivedAt) : ''}` : 'bruto · a receber'}</p>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button onClick={() => abrirArquivo(n.id)} className="text-slate-400 hover:text-af-mid" title="Ver o arquivo da nota"><FileText size={15} /></button>
+          {n.driveLink && <a href={n.driveLink} target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-af-mid" title={n.drivePath || 'Abrir no Drive'}><ExternalLink size={14} /></a>}
           {n.status === 'OPEN' && (
             <>
               <button onClick={() => setRecebendo((v) => !v)} className="flex items-center gap-1 text-xs font-medium px-2.5 py-1.5 bg-emerald-500 text-white rounded-lg hover:bg-emerald-600">
@@ -326,7 +367,7 @@ function NotaRow({ n, onEdit, onChanged }: { n: CommissionNote; onEdit: () => vo
       {recebendo && (
         <div className="mt-3 pt-3 border-t border-af-border flex flex-col sm:flex-row sm:items-end gap-2">
           <div>
-            <label className="text-[11px] font-medium text-slate-500 mb-1 block">Valor que caiu (R$)</label>
+            <label className="text-[11px] font-medium text-slate-500 mb-1 block">Valor que caiu (líquido, R$)</label>
             <input value={valor} onChange={(e) => setValor(e.target.value)} className={cn(inputCls, 'sm:w-36')} />
           </div>
           <div>

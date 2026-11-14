@@ -177,7 +177,18 @@ export interface CommissionNote {
   payer: string;
   number?: string | null;
   issueDate?: string | null;
+  /** valor bruto da nota */
   totalAmount: number;
+  /** impostos retidos na nota (saem do que cai na conta) */
+  retainedAmount?: number;
+  /** líquido que cai na conta */
+  netAmount?: number | null;
+  /** impostos da nota não retidos (ex.: ISS) — a A&F paga depois */
+  taxesToPay?: number;
+  taxes?: Record<string, number | boolean | null> | null;
+  docType?: 'NFSE' | 'DEMONSTRATIVO' | null;
+  driveLink?: string | null;
+  drivePath?: string | null;
   fileName?: string | null;
   fileMime?: string | null;
   status: 'DRAFT' | 'OPEN' | 'RECEIVED';

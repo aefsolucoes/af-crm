@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { validate } from '../middleware/validate';
-import { commissionRatePct, commissionAmount, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao, bancoDoPagador, etapasDaVistoriaEmDiante, montarProvisoes } from '../services/commission.service';
+import { commissionRatePct, commissionAmount, propostaSeguida, pagadorComissao, producaoPorPagador, chaveProducao, bancoDoPagador, etapasDaVistoriaEmDiante, montarProvisoes, parseCreditValue } from '../services/commission.service';
 
 const router = Router();
 router.use(authMiddleware);
@@ -521,7 +521,31 @@ export async function generateRecurringTransactions(): Promise<void> {
 
 // ── Notas de comissão (Fabio 14/11): uma nota (NF ou demonstrativo) do banco com um ou vários processos ─────────────────────────────
 const notaSvc = () => require('../services/commission-note.service') as typeof import('../services/commission-note.service');
-const semArquivo = { id: true, accountId: true, payer: true, number: true, issueDate: true, totalAmount: true, fileName: true, fileMime: true, aiRead: true, status: true, receivedAt: true, transactionId: true, note: true, createdAt: true, updatedAt: true } as const;
+const semArquivo = { id: true, accountId: true, payer: true, number: true, issueDate: true, totalAmount: true, retainedAmount: true, netAmount: true, taxesToPay: true, taxes: true, docType: true, driveFileId: true, driveLink: true, drivePath: true, fileName: true, fileMime: true, aiRead: true, status: true, receivedAt: true, transactionId: true, note: true, createdAt: true, updatedAt: true } as const;
+
+/** Lê o arquivo, guarda como rascunho e devolve a proposta (usada no anexo pelo CRM e na nota que já está no Drive). */
+async function criarRascunhoDaNota(accountId: string, userId: string, p: { buf: Buffer; mime: string; payer: string; fileName: string; drive?: { id: string; link: string | null; path: string } }) {
+  const svc = notaSvc();
+  const candidatos = await svc.candidatosDaNota(accountId, undefined, { concluidos: true });
+  const leitura = await svc.lerNotaComIA(p.buf, p.mime, candidatos.map((c) => ({ id: c.id, cliente: c.cliente, credito: c.credito, estimado: c.estimado, pagador: c.pagador, nomes: c.nomes })));
+  svc.casarPorPropostaECpf(leitura, candidatos); // nº da proposta/CPF da nota casam o processo mesmo com o nome de outro participante
+  const total = leitura?.valorTotal || 0;
+  const imp = leitura?.impostos || null;
+  const retido = leitura?.totalRetido ?? (imp ? [imp.irrf, imp.issRetido, imp.pis, imp.cofins, imp.csll, imp.inss, imp.outras].reduce<number>((s, v) => s + (v || 0), 0) : 0);
+  const liquido = leitura?.valorLiquido ?? (total ? Math.round((total - retido) * 100) / 100 : null);
+  const aPagar = imp && imp.issRetidoNaNota === false && imp.issApurado ? imp.issApurado : 0; // ISS apurado e não retido: a A&F paga depois
+  const proposta = svc.proporItens(leitura, total, p.payer, candidatos);
+  const nota = await prisma.commissionNote.create({
+    data: {
+      accountId, payer: p.payer, status: 'DRAFT', number: leitura?.numero || null, issueDate: toDate(leitura?.data), totalAmount: total,
+      retainedAmount: Math.round(retido * 100) / 100, netAmount: liquido, taxesToPay: aPagar, taxes: (imp as any) || undefined, docType: leitura?.tipo || null,
+      fileName: p.fileName.slice(0, 160), fileMime: p.mime, fileData: p.buf, aiRead: (leitura as any) || undefined, createdById: userId,
+      ...(p.drive ? { driveFileId: p.drive.id, driveLink: p.drive.link, drivePath: p.drive.path } : {}),
+    },
+    select: semArquivo,
+  });
+  return { nota, leitura, candidatos, proposta, lida: !!leitura };
+}
 
 // GET /api/finance/notes — notas confirmadas/recebidas com os processos de cada uma + taxas aprendidas
 router.get('/notes', async (req: AuthRequest, res: Response) => {
@@ -547,19 +571,7 @@ router.post('/notes/read', express.raw({ type: () => true, limit: '15mb' }), asy
     if (!payer) return res.status(400).json({ error: 'Escolha quem paga a nota' });
     if (!buf.length) return res.status(400).json({ error: 'Anexe o PDF da nota' });
     const mime = String(req.headers['content-type'] || 'application/pdf').split(';')[0];
-    const svc = notaSvc();
-    const candidatos = await svc.candidatosDaNota(accountId);
-    const leitura = await svc.lerNotaComIA(buf, mime, candidatos.map((c) => ({ id: c.id, cliente: c.cliente, credito: c.credito, estimado: c.estimado, pagador: c.pagador })));
-    const total = leitura?.valorTotal || 0;
-    const proposta = svc.proporItens(leitura, total, payer, candidatos);
-    const nota = await prisma.commissionNote.create({
-      data: {
-        accountId, payer, status: 'DRAFT', number: leitura?.numero || null, issueDate: toDate(leitura?.data), totalAmount: total,
-        fileName: String(req.query.fileName || 'nota.pdf').slice(0, 160), fileMime: mime, fileData: buf, aiRead: (leitura as any) || undefined, createdById: req.user!.id,
-      },
-      select: semArquivo,
-    });
-    res.status(201).json({ nota, leitura, candidatos, proposta, lida: !!leitura });
+    res.status(201).json(await criarRascunhoDaNota(accountId, req.user!.id, { buf, mime, payer, fileName: String(req.query.fileName || 'nota.pdf') }));
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao ler a nota' });
   }
@@ -570,7 +582,7 @@ router.get('/notes/:id/candidates', async (req: AuthRequest, res: Response) => {
   try {
     const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
     if (!nota) return res.status(404).json({ error: 'Nota não encontrada' });
-    res.json(await notaSvc().candidatosDaNota(req.user!.accountId, nota.id));
+    res.json(await notaSvc().candidatosDaNota(req.user!.accountId, nota.id, { concluidos: true }));
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao buscar processos' });
   }
@@ -582,7 +594,11 @@ const notaSchema = z.object({
   issueDate: z.string().nullable().optional(),
   totalAmount: z.number().positive(),
   note: z.string().nullable().optional(),
-  itens: z.array(z.object({ id: z.string().min(1), amount: z.number().positive() })).min(1),
+  retainedAmount: z.number().min(0).optional(),
+  netAmount: z.number().positive().nullable().optional(),
+  taxesToPay: z.number().min(0).optional(),
+  docType: z.enum(['NFSE', 'DEMONSTRATIVO']).nullable().optional(),
+  itens: z.array(z.object({ id: z.string().min(1), amount: z.number().positive(), credito: z.number().positive().optional() })).min(1),
 });
 
 // PUT /api/finance/notes/:id — confirma (ou corrige) a nota: o valor de cada processo passa a ser o da nota; a taxa aprendida atualiza as estimativas do mesmo banco.
@@ -590,7 +606,7 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
   try {
     const accountId = req.user!.accountId;
     const b = req.body as z.infer<typeof notaSchema>;
-    const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId }, select: { id: true, status: true } });
+    const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId }, select: { id: true, status: true, driveFileId: true } });
     if (!nota) return res.status(404).json({ error: 'Nota não encontrada' });
     if (nota.status === 'RECEIVED') return res.status(400).json({ error: 'Nota já recebida' });
     const soma = Math.round(b.itens.reduce((s, i) => s + i.amount, 0) * 100) / 100;
@@ -603,7 +619,16 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
     // 2) Liga os processos escolhidos. Concluído só com comissão sugerida (sem provisão) vira provisão aqui.
     for (const it of b.itens) {
       let provId = it.id;
-      if (it.id.startsWith('sug:')) {
+      if (it.id.startsWith('lead:')) {
+        const lead = await prisma.lead.findFirst({ where: { id: it.id.slice(5), accountId }, select: { id: true, name: true, value: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+        if (!lead) continue;
+        const cfL = (lead.customFields || {}) as Record<string, unknown>;
+        const base = it.credito || Number(lead.value) || parseCreditValue(cfL.valor_credito) || 0;
+        const criada = await prisma.commissionProvision.create({
+          data: { accountId, leadId: lead.id, leadName: lead.name, product: lead.pipeline.department?.name || null, payer: b.payer, baseAmount: base, ratePct: base > 0 ? Math.round((it.amount / base) * 100 * 10_000) / 10_000 : 0, amount: it.amount, note: 'Processo concluído ligado à nota', createdById: req.user!.id },
+        });
+        provId = criada.id;
+      } else if (it.id.startsWith('sug:')) {
         const sg = await prisma.commissionSuggestion.findFirst({ where: { id: it.id.slice(4), accountId, status: 'PENDING' } });
         if (!sg) continue;
         const lead = await prisma.lead.findFirst({ where: { id: sg.leadId, accountId }, select: { id: true, name: true, pipeline: { select: { department: { select: { name: true } } } } } });
@@ -626,12 +651,27 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
     }
     const salva = await prisma.commissionNote.update({
       where: { id: nota.id },
-      data: { payer: b.payer.trim(), number: b.number?.trim() || null, issueDate: toDate(b.issueDate), totalAmount: b.totalAmount, note: b.note?.trim() || null, status: nota.status === 'DRAFT' ? 'OPEN' : nota.status },
+      data: {
+        payer: b.payer.trim(), number: b.number?.trim() || null, issueDate: toDate(b.issueDate), totalAmount: b.totalAmount, note: b.note?.trim() || null, status: nota.status === 'DRAFT' ? 'OPEN' : nota.status,
+        ...(b.retainedAmount !== undefined && { retainedAmount: b.retainedAmount }),
+        ...(b.netAmount !== undefined && { netAmount: b.netAmount }),
+        ...(b.taxesToPay !== undefined && { taxesToPay: b.taxesToPay }),
+        ...(b.docType !== undefined && { docType: b.docType }),
+      },
       select: semArquivo,
     });
+    // Drive: renomeia no padrão e guarda em CONTABILIDADE/<ano>/NFE (ou na pasta do pagador, se for o demonstrativo do banco). Nota que veio do Drive fica onde está.
+    let salva2 = salva;
+    if (!nota.driveFileId) {
+      try {
+        const cheia = await prisma.commissionNote.findUnique({ where: { id: nota.id }, select: { payer: true, issueDate: true, createdAt: true, docType: true, fileData: true, fileMime: true, fileName: true } });
+        const d = cheia?.fileData ? await notaSvc().salvarNotaNoDrive(accountId, cheia as any) : null;
+        if (d) salva2 = await prisma.commissionNote.update({ where: { id: nota.id }, data: { driveFileId: d.id, driveLink: d.link, drivePath: d.caminho }, select: semArquivo });
+      } catch (e: any) { console.warn('[Nota comissão] não salvei no Drive:', e?.message); }
+    }
     // 3) Aprende: as estimativas (sem % digitada por uma pessoa) do mesmo banco e produto passam pra taxa efetiva das notas.
     const reestimadas = await notaSvc().reestimarPelasNotas(accountId).catch(() => [] as string[]);
-    res.json({ nota: salva, reestimadas });
+    res.json({ nota: salva2, reestimadas });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao salvar a nota' });
   }
@@ -643,24 +683,67 @@ router.post('/notes/:id/receive', async (req: AuthRequest, res: Response) => {
     const accountId = req.user!.accountId;
     const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId, status: 'OPEN' }, select: semArquivo });
     if (!nota) return res.status(404).json({ error: 'Nota não encontrada (ou já recebida)' });
-    const { amount, date } = req.body as { amount?: number; date?: string };
-    const valor = typeof amount === 'number' && amount > 0 ? amount : nota.totalAmount;
-    const when = toDate(date) || new Date();
+    const { amount, date, transactionId, semReceita } = req.body as { amount?: number; date?: string; transactionId?: string; semReceita?: boolean };
+    const liquido = nota.netAmount ?? Math.round((nota.totalAmount - (nota.retainedAmount || 0)) * 100) / 100; // o que cai na conta (bruto − impostos retidos)
     const provs = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'OPEN' } });
-    const tx = await prisma.transaction.create({
-      data: { description: `Comissão — Nota ${nota.number ? `nº ${nota.number} ` : ''}(${nota.payer}) · ${provs.length} processo${provs.length === 1 ? '' : 's'}`, amount: valor, type: 'INCOME', date: when, accountId, userId: req.user!.id },
+    const brl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    // Receita que já foi lançada à mão (ex.: "Recebimento Credmorar …"): só liga, não lança de novo.
+    const existente = transactionId ? await prisma.transaction.findFirst({ where: { id: transactionId, accountId, type: 'INCOME' }, include: { user: { select: { id: true, name: true } } } }) : null;
+    if (transactionId && !existente) return res.status(404).json({ error: 'Receita não encontrada' });
+    const valor = existente ? existente.amount : typeof amount === 'number' && amount > 0 ? amount : liquido;
+    const when = existente ? existente.date : toDate(date) || new Date();
+    // Nota de antes do Financeiro existir no CRM (semReceita): só registra que foi paga, sem mexer no extrato/saldo.
+    const tx = existente || (semReceita ? null : await prisma.transaction.create({
+      data: { description: `Comissão — NF ${nota.number ? `nº ${nota.number} ` : ''}(${nota.payer}) · ${provs.length} processo${provs.length === 1 ? '' : 's'}${nota.retainedAmount ? ` · bruto ${brl(nota.totalAmount)}, retido ${brl(nota.retainedAmount)}` : ''}`, amount: valor, type: 'INCOME', date: when, accountId, userId: req.user!.id },
       include: { user: { select: { id: true, name: true } } },
-    });
-    // Valor que caiu diferente do total da nota: cada processo recebe na proporção do seu valor.
-    const partes = Math.abs(valor - nota.totalAmount) < 0.01 ? provs.map((p) => p.amount) : notaSvc().dividirProporcional(valor, provs.map((p) => p.amount));
+    }));
+    // Cada processo recebe a sua parte do que caiu (líquido), na proporção do valor bruto dele na nota.
+    const partes = notaSvc().dividirProporcional(valor, provs.map((p) => p.amount));
     for (let i = 0; i < provs.length; i++) {
-      await prisma.commissionProvision.update({ where: { id: provs[i].id }, data: { status: 'RECEIVED', receivedAmount: partes[i], receivedAt: when, transactionId: tx.id } });
-      await prisma.commissionSuggestion.updateMany({ where: { accountId, leadId: provs[i].leadId, status: 'PENDING' }, data: { status: 'CONFIRMED', transactionId: tx.id, resolvedAt: new Date() } });
+      await prisma.commissionProvision.update({ where: { id: provs[i].id }, data: { status: 'RECEIVED', receivedAmount: partes[i], receivedAt: when, transactionId: tx?.id || null } });
+      await prisma.commissionSuggestion.updateMany({ where: { accountId, leadId: provs[i].leadId, status: 'PENDING' }, data: { status: 'CONFIRMED', transactionId: tx?.id || null, resolvedAt: new Date() } });
     }
-    await prisma.commissionNote.update({ where: { id: nota.id }, data: { status: 'RECEIVED', receivedAt: when, transactionId: tx.id } });
-    res.status(201).json(tx);
+    await prisma.commissionNote.update({ where: { id: nota.id }, data: { status: 'RECEIVED', receivedAt: when, transactionId: tx?.id || null } });
+    res.status(201).json(tx || { ok: true, semReceita: true });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao registrar o recebimento da nota' });
+  }
+});
+
+// GET /api/finance/notes/drive?ano=2026 — NFs que já estão em CONTABILIDADE/<ano>/NFE e se já foram trazidas pro CRM
+router.get('/notes/drive', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const ano = Number(req.query.ano) || new Date().getFullYear();
+    const g = require('../services/google.service') as typeof import('../services/google.service');
+    const anoId = await notaSvc().pastaDoAno(accountId, ano);
+    if (!anoId) return res.status(404).json({ error: 'Não achei a pasta CONTABILIDADE no Drive do CRM' });
+    const nfe = await g.findFolder(accountId, 'NFE', anoId);
+    const arquivos = nfe ? await notaSvc().pdfsDaPasta(accountId, nfe) : [];
+    const jaTem = new Map((await prisma.commissionNote.findMany({ where: { accountId, driveFileId: { in: arquivos.map((a) => a.id) } }, select: { id: true, driveFileId: true, status: true } })).map((n) => [n.driveFileId, n]));
+    res.json(arquivos.map((a) => ({ ...a, notaId: jaTem.get(a.id)?.id || null, status: jaTem.get(a.id)?.status || null })));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao listar as notas do Drive' });
+  }
+});
+
+// POST /api/finance/notes/from-drive { fileId, payer } — nota que já está no Drive: lê e prepara (não sobe de novo; fica onde está)
+router.post('/notes/from-drive', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const fileId = String(req.body?.fileId || '');
+    const payer = String(req.body?.payer || '').trim().slice(0, 60);
+    if (!fileId || !payer) return res.status(400).json({ error: 'fileId e payer são obrigatórios' });
+    const ja = await prisma.commissionNote.findFirst({ where: { accountId, driveFileId: fileId, status: { in: ['OPEN', 'RECEIVED'] } }, select: { id: true } });
+    if (ja) return res.status(409).json({ error: 'Essa nota já está no CRM', notaId: ja.id });
+    await prisma.commissionNote.deleteMany({ where: { accountId, driveFileId: fileId, status: 'DRAFT' } });
+    const g = require('../services/google.service') as typeof import('../services/google.service');
+    const drive = await g.getDrive(accountId);
+    const meta = await drive.files.get({ fileId, fields: 'id, name, mimeType, webViewLink, parents', supportsAllDrives: true });
+    const buf = await g.downloadDriveFile(accountId, fileId, meta.data.mimeType || 'application/pdf');
+    res.status(201).json(await criarRascunhoDaNota(accountId, req.user!.id, { buf, mime: meta.data.mimeType || 'application/pdf', payer, fileName: meta.data.name || 'nota.pdf', drive: { id: fileId, link: meta.data.webViewLink || null, path: meta.data.name || '' } }));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao trazer a nota do Drive' });
   }
 });
 

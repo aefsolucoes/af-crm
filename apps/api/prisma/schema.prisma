@@ -1280,7 +1280,18 @@ model CommissionNote {
   payer         String // quem paga a nota (Inter, Creditas, Credimorar…)
   number        String?
   issueDate     DateTime?
-  totalAmount   Float     @default(0)
+  totalAmount   Float     @default(0) // valor BRUTO da nota (serviço)
+  // Impostos (Fabio 14/11: "alguns já vêm descontados na NF"): retidos saem do que cai na conta; os não retidos (ex.: ISS) a A&F paga depois.
+  retainedAmount Float    @default(0) // retenções na nota (IRRF, ISS retido, PIS/COFINS/CSLL, INSS)
+  netAmount      Float? // valor líquido que cai na conta (bruto − retenções)
+  taxesToPay     Float    @default(0) // impostos da nota que NÃO foram retidos (ISS apurado não retido…) — a pagar pela A&F
+  taxes          Json? // detalhe: { irrf, issRetido, pis, cofins, csll, inss, outras, issApurado, issRetidoNaNota, ibsCbs }
+  // Drive (Fabio 14/11: "renomeia como padrão nosso e coloca no seu devido lugar"): CONTABILIDADE/<ano>/NFE/"10.OUTUBRO - CREDMORAR.pdf" (NF emitida)
+  // ou CONTABILIDADE/<ano>/<NN.PAGADOR>/<MM.MÊS>/ (autorização/demonstrativo do banco).
+  docType       String? // NFSE | DEMONSTRATIVO
+  driveFileId   String?
+  driveLink     String?
+  drivePath     String?
   fileName      String?
   fileMime      String?
   fileData      Bytes?
