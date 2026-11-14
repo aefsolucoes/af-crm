@@ -785,9 +785,18 @@ router.get('/notes/:id/file', async (req: AuthRequest, res: Response) => {
 router.delete('/notes/:id', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
-    const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId }, select: { id: true, status: true } });
+    const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId }, select: { id: true, status: true, transactionId: true } });
     if (!nota) return res.status(404).json({ error: 'Nota não encontrada' });
-    if (nota.status === 'RECEIVED') return res.status(400).json({ error: 'Nota já recebida — exclua a Receita no extrato se precisar' });
+    const forcar = String(req.query.forcar || '') === '1';
+    if (nota.status === 'RECEIVED' && !forcar) return res.status(400).json({ error: 'Nota já recebida — exclua a Receita no extrato se precisar' });
+    // Nota recebida tirada de propósito (Fabio 14/11: "vamos usar apenas as notas a partir de setembro"): a receita que a PRÓPRIA nota lançou sai junto;
+    // receita lançada à mão e só ligada à nota fica. Processos dela voltam a ficar em aberto, com a estimativa.
+    if (nota.status === 'RECEIVED') {
+      const tx = nota.transactionId ? await prisma.transaction.findFirst({ where: { id: nota.transactionId, accountId }, select: { id: true, description: true } }) : null;
+      if (tx && /^Comissão — NF/.test(tx.description)) await prisma.transaction.delete({ where: { id: tx.id } });
+      const recebidas = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'RECEIVED' } });
+      for (const p of recebidas) await prisma.commissionProvision.update({ where: { id: p.id }, data: { status: 'OPEN', receivedAmount: null, receivedAt: null, transactionId: null } });
+    }
     const provs = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'OPEN' } });
     for (const p of provs) await prisma.commissionProvision.update({ where: { id: p.id }, data: { noteId: null, amount: p.estimatedAmount ?? p.amount, estimatedAmount: null, ratePct: p.baseAmount > 0 ? Math.round(((p.estimatedAmount ?? p.amount) / p.baseAmount) * 100 * 10_000) / 10_000 : p.ratePct } });
     await prisma.commissionNote.delete({ where: { id: nota.id } });
