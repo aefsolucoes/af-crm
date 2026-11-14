@@ -272,6 +272,8 @@ const toDate = (d?: string | null) => (d ? new Date(`${d.slice(0, 10)}T12:00:00`
 router.get('/provisions', async (req: AuthRequest, res: Response) => {
   try {
     const accountId = req.user!.accountId;
+    // A estimativa acompanha o card: proposta escolhida/banco que aprovou (Fabio 14/11 — Rosana com Inter escolhido seguia com "?").
+    await (require('../services/commission.service') as typeof import('../services/commission.service')).sincronizarProvisoes(accountId).catch((e) => console.warn('[Provisão] sincronizar:', e?.message));
     const provisions = await prisma.commissionProvision.findMany({
       where: { accountId },
       orderBy: [{ status: 'asc' }, { expectedDate: 'asc' }, { createdAt: 'desc' }],
@@ -419,6 +421,23 @@ router.patch('/provisions/:id', validate(provisionSchema.omit({ leadId: true }).
     res.json(provision);
   } catch {
     res.status(500).json({ error: 'Erro ao atualizar provisão' });
+  }
+});
+
+// POST /api/finance/provisions/:id/bank { payer } — escolhe o banco de uma provisão "?" no Financeiro; refaz a % pela tabela/taxa aprendida (se ninguém digitou a %)
+router.post('/provisions/:id/bank', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const payer = String(req.body?.payer || '').trim().slice(0, 60);
+    if (!payer) return res.status(400).json({ error: 'Escolha o banco' });
+    const p = await prisma.commissionProvision.findFirst({ where: { id: req.params.id, accountId, status: 'OPEN' } });
+    if (!p) return res.status(404).json({ error: 'Provisão não encontrada' });
+    const svc = require('../services/commission.service') as typeof import('../services/commission.service');
+    const ratePct = p.rateLocked || p.noteId ? p.ratePct : await svc.taxaParaPagador(accountId, p.product, payer, p.baseAmount);
+    const amount = p.rateLocked || p.noteId ? p.amount : commissionAmount(p.baseAmount, ratePct);
+    res.json(await prisma.commissionProvision.update({ where: { id: p.id }, data: { payer, ratePct, amount } }));
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao escolher o banco' });
   }
 });
 

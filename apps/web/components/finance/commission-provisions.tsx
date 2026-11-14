@@ -176,6 +176,17 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
   );
 }
 
+// Bancos pra escolher no "?" (Fabio 14/11): no Home Equity o Santander vem pela Credimorar; no Financiamento a Credimorar leva o banco entre parênteses.
+const OPCOES_BANCO: Record<'HE' | 'FH' | 'OUTRO', Array<{ payer: string; rotulo: string }>> = {
+  HE: [{ payer: 'Inter', rotulo: 'Inter' }, { payer: 'Creditas', rotulo: 'Creditas' }, { payer: 'Credimorar', rotulo: 'Santander (Credimorar)' }],
+  FH: [
+    { payer: 'Credimorar (Inter)', rotulo: 'Inter (Credimorar)' }, { payer: 'Credimorar (Bradesco)', rotulo: 'Bradesco (Credimorar)' },
+    { payer: 'Credimorar (Itaú)', rotulo: 'Itaú (Credimorar)' }, { payer: 'Credimorar (Santander)', rotulo: 'Santander (Credimorar)' },
+    { payer: 'Inter', rotulo: 'Inter (direto)' }, { payer: 'Itaú', rotulo: 'Itaú (direto)' }, { payer: 'CAIXA', rotulo: 'CAIXA' }, { payer: 'BRB', rotulo: 'BRB' },
+  ],
+  OUTRO: [{ payer: 'Inter', rotulo: 'Inter' }, { payer: 'Creditas', rotulo: 'Creditas' }, { payer: 'Credimorar', rotulo: 'Credimorar' }, { payer: 'CAIXA', rotulo: 'CAIXA' }, { payer: 'BRB', rotulo: 'BRB' }, { payer: 'Âncora', rotulo: 'Âncora' }],
+};
+
 /** Linha de uma provisão em aberto: "Recebido" abre valor + data reais e vira Receita. */
 function ProvisionRow({ p, nota, onEdit, onChanged }: { p: CommissionProvision; nota?: CommissionNote; onEdit: () => void; onChanged: () => void }) {
   const router = useRouter();
@@ -183,7 +194,20 @@ function ProvisionRow({ p, nota, onEdit, onChanged }: { p: CommissionProvision; 
   const [recAmount, setRecAmount] = useState(toMoneyInput(p.amount));
   const [recDate, setRecDate] = useState(todayISO());
   const [busy, setBusy] = useState(false);
+  const [escolhendoBanco, setEscolhendoBanco] = useState(false);
   const late = !!p.expectedDate && dayOf(p.expectedDate) < todayISO();
+  const produtoKey: 'HE' | 'FH' | 'OUTRO' = /home equity/i.test(p.product || '') ? 'HE' : /financiamento/i.test(p.product || '') ? 'FH' : 'OUTRO';
+
+  async function escolherBanco(payer: string) {
+    setEscolhendoBanco(false);
+    try {
+      await api.post(`/api/finance/provisions/${p.id}/bank`, { payer });
+      toast(`Banco: ${payer}`);
+      onChanged();
+    } catch (e: any) {
+      toast(e?.response?.data?.error || 'Erro ao escolher o banco', 'error');
+    }
+  }
 
   async function receive() {
     const value = parseMoney(recAmount);
@@ -215,7 +239,22 @@ function ProvisionRow({ p, nota, onEdit, onChanged }: { p: CommissionProvision; 
     <div className={cn('px-4 py-3 rounded-xl border border-af-border bg-white', p.leadSituacao === 'PERDIDO' && 'opacity-60')}>
       <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
         <div className="flex-1 min-w-0 flex items-center gap-3">
-          <ProvisionBankIcon payer={p.payer} product={p.product} />
+          <div className="relative flex-shrink-0">
+            <button onClick={() => setEscolhendoBanco((v) => !v)} title={p.payer ? `Paga: ${p.payer} — clique pra trocar` : 'Escolher o banco'} className="block rounded-lg hover:ring-2 hover:ring-af-accent/40">
+              <ProvisionBankIcon payer={p.payer} product={p.product} />
+            </button>
+            {escolhendoBanco && (
+              <div className="absolute z-20 left-0 top-10 w-56 rounded-xl border border-af-border bg-white shadow-lg py-1">
+                <p className="px-3 py-1 text-[10px] font-medium text-slate-400 uppercase">Banco do processo</p>
+                {OPCOES_BANCO[produtoKey].map((o) => (
+                  <button key={o.payer} onClick={() => escolherBanco(o.payer)} className={cn('w-full flex items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-slate-50', p.payer === o.payer && 'bg-emerald-50')}>
+                    <ProvisionBankIcon payer={o.payer} product={p.product} />
+                    <span className="text-slate-700">{o.rotulo}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 min-w-0">
             <button onClick={() => router.push(`/inbox?leadId=${p.leadId}`)} className="text-sm font-medium text-slate-800 hover:text-af-mid hover:underline truncate block max-w-full text-left">

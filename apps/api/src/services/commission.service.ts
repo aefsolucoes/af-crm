@@ -152,14 +152,16 @@ export async function montarProvisoes(accountId: string, leadIds: string[]): Pro
   return leadIds.map((id) => porId.get(id)).filter((l): l is NonNullable<typeof l> => !!l).map((l) => {
     const mine = analyses.filter((a) => a.leadId === l.id);
     const seguida = propostaSeguida(mine);
-    const pick = seguida || mine[0];
     const cf = (l.customFields as Record<string, unknown>) || {};
+    // Sem análise no CRM: o banco da proposta anotada no card (nº + instituição — ex.: Sérgio/Adilson com proposta do Inter feita no portal).
+    const doCard = !mine.length ? (require('./credit-analysis.service') as typeof import('./credit-analysis.service')).propostaDoCard(cf as Record<string, any>) : null;
+    const pick = seguida || mine[0] || (doCard ? { bank: doCard.bank, approvedValue: null, chosen: false, leadId: l.id } : undefined);
     const base = seguida?.approvedValue || l.value || parseCreditValue(cf.valor_credito) || pick?.approvedValue || 0;
     const product = l.pipeline.department?.name || null;
     const payer = pagadorComissao(product, pick?.bank, cf.instituicao);
     return {
       id: l.id, name: l.name, stage: `${l.pipeline.name} · ${l.stage.name}`, product, baseAmount: base, payer,
-      ratePct: taxaComAprendizado(aprendidas, product, payer, commissionRatePct(product, seguida?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, payer)) || 0) + base })).pct,
+      ratePct: taxaComAprendizado(aprendidas, product, payer, commissionRatePct(product, seguida?.bank || doCard?.bank, { instituicao: cf.instituicao, producaoMes: (producao.get(chaveProducao(product, payer)) || 0) + base })).pct,
     };
   });
 }
@@ -184,3 +186,37 @@ export async function autoProvisoes(accountId: string): Promise<void> {
   }
 }
 
+
+/** Taxa pra um processo com o banco escolhido à mão no Financeiro (tabela pela produção do mês + taxa aprendida das notas). */
+export async function taxaParaPagador(accountId: string, product: string | null, payer: string, base: number): Promise<number> {
+  const { bank, instituicao } = bancoDoPagador(product, payer);
+  const producao = (await producaoPorPagador(accountId)).get(chaveProducao(product, payer)) || 0;
+  const tabela = commissionRatePct(product, bank, { instituicao, producaoMes: producao + base });
+  const { taxasAprendidas, taxaComAprendizado } = require('./commission-note.service') as typeof import('./commission-note.service');
+  return taxaComAprendizado(await taxasAprendidas(accountId).catch(() => new Map()), product, payer, tabela).pct;
+}
+
+/** A provisão acompanha o card (Fabio 14/11: "cliquei no Inter da Rosana… continua com o ponto de interrogação"): estimativa em aberto, sem nota e sem %
+ *  digitada por uma pessoa, refaz banco, crédito e taxa pela proposta escolhida (ou a do único banco que aprovou / a anotada no card). Com a % travada, só
+ *  preenche o banco que faltava. Devolve quantas mudaram. */
+export async function sincronizarProvisoes(accountId: string, leadIds?: string[]): Promise<number> {
+  const abertas = await prisma.commissionProvision.findMany({ where: { accountId, status: 'OPEN', noteId: null, ...(leadIds ? { leadId: { in: leadIds } } : {}) } });
+  if (!abertas.length) return 0;
+  const sugeridas = new Map((await montarProvisoes(accountId, abertas.map((p) => p.leadId))).map((p) => [p.id, p]));
+  let mudou = 0;
+  for (const p of abertas) {
+    const s = sugeridas.get(p.leadId);
+    if (!s || !s.payer) continue; // o card ainda não diz o banco: fica como está
+    if (p.rateLocked) {
+      if (!p.payer) { await prisma.commissionProvision.update({ where: { id: p.id }, data: { payer: s.payer } }); mudou++; }
+      continue;
+    }
+    const base = s.baseAmount > 0 ? s.baseAmount : p.baseAmount;
+    const amount = commissionAmount(base, s.ratePct);
+    if (p.payer === s.payer && Math.abs(p.baseAmount - base) < 0.01 && Math.abs(p.ratePct - s.ratePct) < 0.0001) continue;
+    // O card manda (proposta escolhida ⭐, a do único banco que aprovou ou a anotada no card); banco escolhido à mão no Financeiro só vale enquanto o card não diz o banco.
+    await prisma.commissionProvision.update({ where: { id: p.id }, data: { payer: s.payer, baseAmount: base, ratePct: s.ratePct, amount } });
+    mudou++;
+  }
+  return mudou;
+}
