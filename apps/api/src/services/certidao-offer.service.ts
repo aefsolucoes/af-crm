@@ -483,10 +483,10 @@ export async function marcarTransferenciaPendente(accountId: string, leadId: str
 }
 
 // ── Confirmar o endereço com o cliente e SÓ DEPOIS pedir a certidão (Fabio 29/10, Fernanda Karita: "confirmar com a cliente e quando ela confirmar solicitar a certidão de ônus") ──
-type EnderecoAsk = { endereco: EnderecoCertidao; cidade: string; uf: string; cartorio?: string; sendPix?: boolean; userId?: string; askedAt?: string; answeredAt?: string; oferta?: boolean };
+type EnderecoAsk = { endereco: EnderecoCertidao; cidade: string; uf: string; cartorio?: string; sendPix?: boolean; userId?: string; askedAt?: string; answeredAt?: string; oferta?: boolean; aguardaJanela?: boolean };
 
 /** Manda ao cliente "confirma o endereço do imóvel?" e guarda o pedido esperando o SIM. Sem endereço passado, usa o da proposta/documentos (enderecoDoImovel). */
-export async function askEnderecoCertidao(accountId: string, leadId: string, opts: { endereco?: EnderecoCertidao; cidade?: string; uf?: string; cartorio?: string; sendPix?: boolean; userId?: string }, io: Io): Promise<{ ok: boolean; erro?: string; texto?: string }> {
+export async function askEnderecoCertidao(accountId: string, leadId: string, opts: { endereco?: EnderecoCertidao; cidade?: string; uf?: string; cartorio?: string; sendPix?: boolean; userId?: string }, io: Io): Promise<{ ok: boolean; erro?: string; texto?: string; template?: boolean }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { ok: false, erro: 'card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -495,13 +495,29 @@ export async function askEnderecoCertidao(accountId: string, leadId: string, opt
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   const texto = `${nome ? `${nome}, p` : 'P'}ra emitir a certidão de ônus do imóvel, confirma pra mim se o endereço é este?\n${enderecoTexto(e.endereco)} — ${e.cidade}/${e.uf}`;
+  const pedido = { endereco: e.endereco, cidade: e.cidade, uf: e.uf, cartorio: opts.cartorio || 'AUTO', sendPix: opts.sendPix !== false, userId: opts.userId };
+  const salvaPedido = async (extra: Record<string, unknown>) => {
+    const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
+    c._certidaoEndereco = { ...pedido, ...extra } as EnderecoAsk;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  };
+  // Conversa de 24 h FECHADA (Fabio 14/11, Liene): template de atualização agora; a confirmação do endereço fica guardada e sai na 1ª resposta — só aí o "sim" passa a valer.
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(leadId))) {
+    const msg = require('./message.service') as typeof import('./message.service');
+    const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
+    const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, nome || 'cliente')), io: (io || undefined) as any });
+    if (!t.success) return { ok: false, erro: `conversa fechada e o template de atualização não saiu (${(t as any).error || 'erro'})` };
+    await salvaPedido({ aguardaJanela: true });
+    const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+    await queueOnReply(prisma, { leadId, label: 'confirmação do endereço da certidão', text: texto, depois: 'certidaoEndereco', noteText: `🏛️ Conversa fechada: mandei o template de atualização. A confirmação do endereço do imóvel (${enderecoTexto(e.endereco)}, ${e.cidade}/${e.uf}) sai quando o cliente responder; confirmando, o CRM pede a certidão de ônus pelo endereço sozinho.` });
+    return { ok: true, texto, template: true };
+  }
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: (io || undefined) as any });
   if (!r.success) return { ok: false, erro: 'não consegui mandar a mensagem (janela de 24 h do WhatsApp fechada?)' };
-  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
-  const c = { ...((fresh?.customFields || {}) as Record<string, any>) };
-  c._certidaoEndereco = { endereco: e.endereco, cidade: e.cidade, uf: e.uf, cartorio: opts.cartorio || 'AUTO', sendPix: opts.sendPix !== false, userId: opts.userId, askedAt: new Date().toISOString() } as EnderecoAsk;
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: c as any } });
+  await salvaPedido({ askedAt: new Date().toISOString() });
   await note(leadId, `🏛️ Perguntei ao cliente se o endereço do imóvel é ${enderecoTexto(e.endereco)} (${e.cidade}/${e.uf}). Confirmando, o CRM pede a certidão de ônus pelo endereço sozinho.`);
   return { ok: true, texto };
 }
@@ -580,6 +596,7 @@ export async function enderecoCorrigido(pe: EnderecoAsk, texto: string): Promise
 }
 
 async function respondeEndereco(accountId: string, leadId: string, texto: string, pe: EnderecoAsk, io: Io): Promise<void> {
+  if (pe.askedAt && Date.now() - Date.parse(pe.askedAt) < 15_000) return; // a pergunta acabou de sair (guardada, liberada por ESTA mensagem do cliente): esta resposta não é a ela
   let tipo: 'SIM' | 'CORRIGE' | 'OUTRO' | 'NAO' | 'TEM' = classificaRespostaEndereco(texto);
   if ((pe as any).pediuCorrecaoAt && tipo === 'OUTRO' && /\d/.test(texto)) tipo = 'CORRIGE'; // pedimos o endereço certo: a resposta com número é o endereço
   if (pe.oferta) {

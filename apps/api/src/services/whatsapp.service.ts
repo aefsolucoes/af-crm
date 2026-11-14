@@ -1904,6 +1904,8 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     const aindaLigada = await prisma.lead.findUnique({ where: { id: leadId }, select: { aiAutoReplyActive: true, customFields: true } });
     if (!aindaLigada?.aiAutoReplyActive || (aindaLigada.customFields as any)?._autoPaused) { console.log(`[IA] ${leadId}: IA desligada durante a geração — resposta descartada`); return; }
     if (mine && (await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', sentByUserId: { not: null }, createdAt: { gt: mine.createdAt } }, select: { id: true } }))) { console.log(`[IA] ${leadId}: a equipe respondeu durante a geração — resposta descartada`); return; }
+    // Mensagem GUARDADA (reply-pending) saiu por causa desta mesma resposta do cliente (Fabio 14/11, Liene: template → a confirmação do endereço sai na resposta): ela é a resposta — a IA não fala por cima.
+    { const saiu = (aindaLigada.customFields as any)?._replyPendingSaiuAt; if (mine && saiu && Date.parse(saiu) >= mine.createdAt.getTime()) { console.log(`[IA] ${leadId}: a mensagem guardada saiu nesta resposta do cliente — resposta da IA descartada`); return; } }
     const { reply, handoff, moveToStage, markLost, stopFollowUp, moveReason, resumeOn, extractedFields, runAnalysis, sendSimulation, sendApproval, simulate, chooseBank, caixaPedido, caixaRota, caixaConcorrente, certidaoPorEndereco, imovelSemRegistro } = genResult;
     // Banco que a IA marcou pra rodar + rede de segurança (Fabio 26/10): banco citado como "em análise" no texto que vai ao cliente também roda (só os que nunca rodaram — requestBankRunForAi confere).
     const { bancosEmAnaliseNoTexto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');

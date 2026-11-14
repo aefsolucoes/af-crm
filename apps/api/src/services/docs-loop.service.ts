@@ -423,3 +423,73 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
     } catch (e: any) { console.error(`[Janela da documentação] ${l.name} (${l.id}):`, e?.message || e); } // um card com erro não para os outros
   }
 }
+
+
+// ── O QUE FICOU PRA DEPOIS (Fabio 14/11, Liene: "o descritivo da parcela pode colocar como lembrete, caso ela não mande, mas será necessário para a contratação após a vistoria") ──
+// A conferência deixa seguir pra vistoria sem o comprovante de residência / descritivo da parcela (_docsDepois). Se o cliente não mandar: lembrete a cada 3 dias (07h–21h, IA ligada),
+// até 3 vezes — conversa fechada = template de atualização e o lembrete sai na resposta. Depois do 3º, push pra equipe (é preciso pra contratação). Chegou → para e anota.
+const DEPOIS_DIAS = 3;
+const DEPOIS_MAX = 3;
+export async function processDocsDepois(accountId: string, io?: Io): Promise<void> {
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const leads = await prisma.$queryRawUnsafe<{ id: string }[]>(`SELECT id FROM "Lead" WHERE "accountId" = $1 AND status = 'OPEN' AND "customFields"->'_docsDepois' IS NOT NULL AND "customFields"->'_docsDepois'->>'fimAt' IS NULL LIMIT 40`, accountId);
+  const { isDescritivoParcela } = require('./received-docs.service') as typeof import('./received-docs.service');
+  for (const { id } of leads) {
+    try {
+      const l = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, aiAutoReplyActive: true, tags: true, customFields: true } });
+      if (!l) continue;
+      const cf = (l.customFields || {}) as Record<string, any>;
+      const dd = cf._docsDepois as { itens?: string[]; at?: string; lembretes?: number; ultimoAt?: string; equipeAt?: string } | undefined;
+      if (!dd?.itens?.length || !dd.at) continue;
+      // O que ainda falta: o que chegou DEPOIS da conferência e foi lido como esse documento (descritivo em PDF; comprovante de residência OK).
+      const atts = await prisma.messageAttachment.findMany({ where: { leadId: id, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(dd.at) } }, select: { id: true, mimeType: true } });
+      const info = (cf._docInfo || {}) as Record<string, any>;
+      const rev = (cf._docReview || {}) as Record<string, any>;
+      const tipo = (a: { id: string }) => String(rev[a.id]?.tipo || info[a.id]?.type || '');
+      const chegou = (item: string) => /descritivo|presta/i.test(item)
+        ? atts.some((a) => a.mimeType === 'application/pdf' && rev[a.id]?.resultado !== 'PROBLEMA' && isDescritivoParcela(tipo(a)))
+        : /comprovante de resid/i.test(item)
+        ? atts.some((a) => /COMPROVANTE DE (RESID|ENDERE)/i.test(tipo(a)) && rev[a.id]?.resultado !== 'PROBLEMA')
+        : false;
+      const faltam = dd.itens.filter((i) => !chegou(i));
+      const grava = async (v: Record<string, unknown>) => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_docsDepois}', ${JSON.stringify({ ...dd, ...v })}::jsonb, true) WHERE id = ${id}`;
+      if (!faltam.length) {
+        await grava({ fimAt: new Date().toISOString(), recebido: true });
+        await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 Chegou o que tinha ficado pra depois: ${dd.itens.join('; ')}.` } }).catch(() => {});
+        continue;
+      }
+      if (cf._autoPaused || !l.aiAutoReplyActive || (l.tags || []).includes('Pediu pra parar lembretes')) continue;
+      const ultimo = new Date(dd.ultimoAt || dd.at);
+      if (Date.now() - ultimo.getTime() < DEPOIS_DIAS * 86_400_000) continue;
+      const feitos = dd.lembretes || 0;
+      if (feitos >= DEPOIS_MAX) {
+        if (!dd.equipeAt) {
+          await grava({ equipeAt: new Date().toISOString(), fimAt: new Date().toISOString() });
+          await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 O cliente ainda não mandou ${faltam.join('; ')} (${DEPOIS_MAX} lembretes). É necessário pra contratação depois da vistoria — cobre você.` } }).catch(() => {});
+          avisa(accountId, `📎 ${l.name}: falta pra contratação`, faltam.join('; ').slice(0, 150), id);
+        }
+        continue;
+      }
+      if (await clienteEsperandoResposta(id)) continue; // ele está esperando resposta nossa: não cobra por cima
+      const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+      const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name);
+      const texto = `${nome ? `${nome}, p` : 'P'}assando pra lembrar: pra contratação, depois da vistoria, vou precisar de:\n${faltam.map((f) => `• ${f}`).join('\n')}\n\nPode mandar por aqui quando conseguir. 😊`;
+      const msg = require('./message.service') as typeof import('./message.service');
+      let como = '';
+      if (await whatsappWindowOpen(id)) {
+        const r = await msg.sendOutboundWhatsApp({ accountId, leadId: id, content: texto, io: io as any });
+        if (!r.success) continue;
+        como = 'mandei o lembrete';
+      } else {
+        const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
+        const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId: id, ...(await templateAtualizacaoDoLead(id, nome || 'cliente')), io: io as any });
+        if (!t.success) continue;
+        await (require('./reply-pending.service') as typeof import('./reply-pending.service')).queueOnReply(prisma, { leadId: id, label: 'lembrete do que ficou pra depois', text: texto, noteText: '📎 Conversa fechada: mandei o template de atualização; o lembrete do que ficou pra depois sai quando o cliente responder.' });
+        como = 'conversa fechada: template de atualização, o lembrete sai na resposta';
+      }
+      await grava({ lembretes: feitos + 1, ultimoAt: new Date().toISOString() });
+      await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: `📎 Lembrete ${feitos + 1}/${DEPOIS_MAX} do que ficou pra depois (${faltam.join('; ')}) — ${como}.` } }).catch(() => {});
+    } catch (e: any) { console.error(`[Docs pra depois] ${id}:`, e?.message || e); }
+  }
+}
