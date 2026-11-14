@@ -477,7 +477,7 @@ export async function pedirLaudoPeloBotao(accountId: string, leadId: string, use
 
 /** Card com o link do laudo e todos os dados: coloca na fila da extensão (ela preenche e para na conferência). Também completa o número da proposta a partir do link. */
 async function queueIfReady(accountId: string, leadId: string): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true } });
   if (!lead) return;
   let cf = (lead.customFields || {}) as Record<string, any>;
   if (cf._autoPaused) return;
@@ -489,7 +489,8 @@ async function queueIfReady(accountId: string, leadId: string): Promise<void> {
   if (!job) return;
   // Chave geral desligada: a equipe aciona o preenchimento do laudo no botão do card (uma nota avisa que já está pronto) — exceto quando já clicaram no botão
   // e o CRM estava só esperando a resposta do cliente (_laudoPedidoAt, Fabio 03/11).
-  if (!cf._laudoPedidoAt && !(await contractingAutoOn(accountId, leadId))) {
+  // IA do card LIGADA (Fabio 14/11: "quando chegar o link ele vai preencher sozinho e avisar a cliente"): o laudo vai sozinho pra fila da extensão mesmo com a chave desligada.
+  if (!cf._laudoPedidoAt && !lead.aiAutoReplyActive && !(await contractingAutoOn(accountId, leadId))) {
     await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-fila', pushTitle: '🏢 Laudo pronto pra preencher', pushBody: `${lead.name}: card completo, falta acionar o laudo`,
       note: '🏢 O card já tem o link do laudo e todos os dados: clique em preencher o laudo (a extensão preenche e envia ao Inter). Passo manual (automação da contratação desligada).' });
     return;

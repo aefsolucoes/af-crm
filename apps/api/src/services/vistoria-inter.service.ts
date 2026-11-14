@@ -347,6 +347,7 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: new Date().toISOString() } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Laudo digital do Inter ENVIADO pela extensão (marcou "me responsabilizo" e clicou em Enviar).${d.detail ? `\n${String(d.detail).slice(0, 400)}` : ''}` } }).catch(() => {});
     push('✅ Laudo do Inter enviado', `${lead.name}: laudo digital enviado ao Inter`);
+    await avisarClienteLaudoEnviado(accountId, leadId).catch((e: any) => console.warn('[Laudo] aviso ao cliente:', e?.message));
   } else if (d.event === 'failed') {
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu preencher o laudo digital do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Link: ${laudoLink(cf)}` } }).catch(() => {});
@@ -437,4 +438,32 @@ export async function reportSeguir(accountId: string, leadId: string, d: { event
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirClaimedAt: new Date().toISOString() } } }); // sinal de vida
   }
   return { ok: true };
+}
+
+/** Laudo digital enviado → avisa o cliente (Fabio 14/11: "quando chegar o link ele vai preencher sozinho e avisar a cliente"). Só com a IA do card ligada; conversa fechada →
+ *  template de atualização e o aviso sai quando ele responder. Uma vez por laudo. */
+export function textoLaudoEnviado(nome: string): string {
+  return `${nome ? `${nome}, ` : ''}${nome ? 'o' : 'O'} banco mandou o formulário de avaliação do seu apartamento e a gente já preencheu e enviou, com as informações que você passou. 😊 Agora é com a engenharia do banco: o laudo costuma sair em até 4 dias úteis, e eu te aviso por aqui assim que tiver o retorno.`;
+}
+async function avisarClienteLaudoEnviado(accountId: string, leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || !lead.aiAutoReplyActive || cf._autoPaused || cf._laudoAvisadoAt) return;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
+  const texto = textoLaudoEnviado(nome);
+  const marca = () => prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_laudoAvisadoAt}', to_jsonb(${new Date().toISOString()}::text), true) WHERE id = ${leadId}`;
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const msg = require('./message.service') as typeof import('./message.service');
+  if (await whatsappWindowOpen(leadId)) {
+    const r = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto });
+    if (r.success) { await marca(); await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '📨 Avisei o cliente de que o laudo digital foi preenchido e enviado ao banco.' } }).catch(() => {}); }
+    return;
+  }
+  const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
+  const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, nome || 'cliente')) });
+  if (!t.success) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Laudo enviado, mas a conversa está fechada e o template não saiu (${t.error}): avise o cliente. Texto pronto:\n“${texto}”` } }).catch(() => {}); return; }
+  const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+  await queueOnReply(prisma as any, { leadId, label: 'laudo enviado', text: texto, noteText: '📨 Laudo enviado: a conversa estava fechada — mandei o template de atualização; o aviso sai quando o cliente responder.' });
+  await marca();
 }
