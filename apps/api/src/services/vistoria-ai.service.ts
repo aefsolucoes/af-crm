@@ -154,6 +154,7 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
         return;
       }
       await sant.avisaCndSeFalta(accountId, leadId).catch(() => {});
+      await sant.avisaDocsQueTravam(accountId, leadId).catch(() => {}); // modo manual também: a equipe já sabe o que falta antes de clicar (Fabio 14/11, Cleci)
     }
     const passos = banco === 'INTER'
       ? 'Se o e-mail de engajamento do Inter ainda não chegou, confirme com o cliente e clique em "Seguir com proposta" no portal; com o e-mail na caixa, use o botão "Solicitar vistoria" do card (os anexos já vêm marcados).'

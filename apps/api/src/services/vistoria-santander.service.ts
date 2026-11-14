@@ -18,7 +18,7 @@ type Io = Parameters<typeof sendOutboundMedia>[0]['io'];
 export const VISTORIA_SANTANDER_TO = process.env.VISTORIA_SANTANDER_TO || 'leticia.gomes@credimorar.com.vc';
 const AVISO_REPETIR_MS = 12 * 3600_000;
 
-type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; enviadoPor?: string;
+type St = { status?: string; askedAt?: string; signedAt?: string; signedName?: string; cndNoteAt?: string; faltaNoteAt?: string; semAssinaturaNoteAt?: string; teamAskNoteAt?: string; sentAt?: string; to?: string; erro?: string; cndCheckAt?: string; prontaNoteAt?: string; startedByTeam?: boolean; pendentes?: string[]; semLocalNoteAt?: string; lembreteDe?: string; lembretes?: number; lembreteAt?: string; docsFaltaNoteAt?: string; docsFaltaSig?: string; docsCheckAt?: string; enviadoPor?: string;
   /** cobrança da assinatura com a conversa fechada / prazo combinado (assinatura-lembrete, Fabio 14/11) */ cobrancaAss?: import('./assinatura-lembrete.service').CobrancaAss };
 
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
@@ -122,6 +122,32 @@ export async function avisaCndSeFalta(accountId: string, leadId: string, opts: {
   return true;
 }
 
+/** Confere JÁ (antes da assinatura voltar) os documentos que TRAVAM o pedido à Letícia — certidão de ônus/matrícula, identidade e certidão de estado civil (Fabio 14/11, Cleci:
+ *  "tá faltando algo, coloca o CRM para conferir"). Antes isso só era visto depois que o cliente assinava a autorização, e o pedido parava ali. Nota + push pro colaborador do card,
+ *  no máx. a cada 12 h ou quando a lista muda; confere a pasta no máx. a cada 30 min. Não pede nada ao cliente (o CRM não pede documento sem a equipe). Devolve o que falta. */
+export async function avisaDocsQueTravam(accountId: string, leadId: string): Promise<string[]> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  if (!lead) return [];
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._vistoriaSant || {}) as St;
+  if (st.status === 'ENVIADA' || faz(st.docsCheckAt) < 30 * 60_000) return [];
+  await salva(leadId, { docsCheckAt: new Date().toISOString() });
+  const propMsg = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', OR: MARCAS_PROPOSTA_SITE.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
+  const { p2 } = participantesDe(cf, camposDaProposta(propMsg?.content || ''), lead.name);
+  const cat = categoriasDoDrive(await arquivosDoDrive(accountId, cf));
+  const faltam: string[] = [];
+  if (!cat.onus.length) faltam.push('certidão de ônus/matrícula');
+  if (cat.ident.length < (p2 ? 2 : 1)) faltam.push(`documento de identidade${p2 ? ' (dos dois)' : ''}`);
+  if (!cat.civil.length) faltam.push('certidão de estado civil');
+  if (!faltam.length) return [];
+  const sig = faltam.join('|');
+  if (st.docsFaltaSig === sig && faz(st.docsFaltaNoteAt) < AVISO_REPETIR_MS) return faltam;
+  await salva(leadId, { docsFaltaSig: sig, docsFaltaNoteAt: new Date().toISOString() });
+  await note(leadId, `🏦 Santander: conferi a pasta do Drive pra vistoria e ainda falta: ${faltam.join('; ')}. Sem isso o pedido de vistoria à Letícia NÃO sai, mesmo com a autorização USECASA assinada (só a CND de IPTU pode ir depois). Peça ao cliente${!cat.onus.length ? ' ou emita a certidão pelo botão "Pedir certidão pelo ONR" do card' : ''} e suba na pasta: o CRM segue sozinho quando chegar.`);
+  await pushDono(accountId, leadId, '🏦 Vistoria Santander: falta documento', `${lead.name}: ${faltam.join('; ')}`.slice(0, 160));
+  return faltam;
+}
+
 async function bytesDoAnexo(accountId: string, a: { data: Uint8Array | Buffer | null; driveFileId: string | null; mimeType: string }): Promise<Buffer | null> {
   if (a.data && a.data.length) return Buffer.from(a.data);
   if (!a.driveFileId) return null;
@@ -185,6 +211,8 @@ export async function processVistoriaSantander(accountId: string, leadId: string
 
   // CND de IPTU: já avisa o colaborador enquanto o cliente assina (a A&F leva dias pra emitir)
   await avisaCndSeFalta(accountId, leadId, { force: opts.manual }).catch(() => {});
+  // e os documentos que travam o pedido (ônus, identidade, estado civil): a equipe corre atrás enquanto o cliente assina
+  if (!st.signedAt) await avisaDocsQueTravam(accountId, leadId).catch(() => {});
 
   // 2) esperar o PDF assinado de volta
   if (!st.signedAt) {
