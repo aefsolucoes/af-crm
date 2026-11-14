@@ -370,6 +370,8 @@ export async function processJanelaDocs(accountId: string, io?: Io): Promise<voi
     const cf = (l.customFields || {}) as Record<string, any>;
     if (cf._autoPaused || cf._saldoDevedor?.bloqueio || cf._docsLater || cf._imovelSemGarantia) continue; // STOP TOTAL: nada · _docsLater: já tem a cobrança combinada com ele
     if (cf._docsPrazo && agora < Date.parse(cf._docsPrazo)) continue; // ele já disse quando manda
+    // Pedido de documentos do banco em análise manual em aberto (Santander/Bradesco → Letícia): o lembrete da janela é o do santander-manual, pela lista do banco — não pergunta duas vezes (Fabio 14/11).
+    if (cf._santanderManual?.askedAt && !cf._santanderManual?.forwardedAt && !cf._santanderManual?.forwardSkip && !cf._santanderManual?.forwardFalhou) continue;
     const ultimaIn = await prisma.message.findFirst({ where: { leadId: l.id, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
     if (!ultimaIn) continue;
     // A vez é NOSSA (Fabio 12/11: o CRM cobrou documento de quem esperava a nova proposta de R$ 60 mil): nova proposta pedida pelo cliente ainda rodando, ou o

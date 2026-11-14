@@ -17,6 +17,8 @@ export type SantManual = {
   proposta?: string; teamAt?: string; askedAt?: string; heldNoteFor?: string; itens?: string[]; via?: 'texto' | 'template';
   /** Financiamento (CREDIMORAR_FH, Fabio 14/11: mesmo fluxo do HE, agora também com o Bradesco): produto e banco(s) em análise manual. Sem isso = Home Equity, Santander. */
   produto?: 'FH'; banco?: string;
+  /** Lembrete da janela de 24 h (Fabio 14/11): a última mensagem do cliente (ISO) em cuja janela o CRM já perguntou "até quando manda" — uma vez por janela. */
+  janela?: string;
   templateFalhou?: string; forwardedAt?: string; forwardDe?: string; forwardFalhou?: string; forwardSkip?: string; incompletoSig?: string; confiraNoteAt?: string;
 };
 
@@ -182,6 +184,58 @@ export async function processSantanderManual(io?: Io): Promise<void> {
   if (!inNoticeWindow()) return;
   const ids = await prisma.$queryRaw<{ id: string; accountId: string }[]>`SELECT id, "accountId" FROM "Lead" WHERE status = 'OPEN' AND archived = false AND "customFields"->'_santanderManual'->>'askedAt' IS NOT NULL AND "customFields"->'_santanderManual'->>'forwardedAt' IS NULL AND "customFields"->'_santanderManual'->>'forwardFalhou' IS NULL AND "customFields"->'_santanderManual'->>'forwardSkip' IS NULL`;
   for (const l of ids) await encaminharSeCompleto(l.accountId, l.id, io).catch((e: any) => console.error('[Santander manual] encaminhar:', e?.message || e));
+  // 3) Lembrete antes de a janela de 24 h fechar, com o pedido ainda em aberto (Fabio 14/11).
+  for (const l of ids) await janelaSantanderManual(l.accountId, l.id, io).catch((e: any) => console.error('[Santander manual] janela:', e?.message || e));
+}
+
+/** Itens que o banco pediu: os gravados no pedido; pedido antigo (sem `itens`, ex.: jorge 13/11) → a leitura do portal ("ANÁLISE MANUAL ABERTA … DOCUMENTOS"); sem nada, a lista genérica. */
+async function itensDoPedido(accountId: string, leadId: string, cf: Record<string, any>, st: SantManual): Promise<string[]> {
+  if (st.itens?.length) return st.itens;
+  const lida = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: bankDe(st), dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+  const { parseDocumentosExigidos, docDoPortal } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
+  if (itens.length) return itens;
+  return st.produto === 'FH' ? itensRendaPerfilFh(accountId, cf) : ITENS_PADRAO;
+}
+
+/** 3) JANELA DE 24 H FECHANDO com o pedido do banco em aberto (Fabio 14/11, jorge: "sempre que pedir documentos para encaminhar à Letícia, veja se já não tem a regra de solicitar
+ *  novamente antes da janela fechar"). O lembrete da documentação (docs-loop, processJanelaDocs) só olha "Aguardando Documentação" e a lista do HE — o Claudemir (Pré-Análise) ficava
+ *  de fora e o jorge podia ouvir "chegou tudo" com a renda do Santander faltando. Aqui: qualquer etapa, pela lista que o banco pediu, uma vez por janela, IA ligada, sem STOP. */
+async function janelaSantanderManual(accountId: string, leadId: string, io?: Io): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, tags: true } });
+  if (!lead || !lead.aiAutoReplyActive) return;
+  const cf = (lead.customFields || {}) as Record<string, any>;
+  const st = (cf._santanderManual || {}) as SantManual;
+  if (!st.askedAt || st.forwardedAt || st.forwardSkip || cf._autoPaused || (lead.tags || []).includes('Pediu pra parar lembretes')) return;
+  const ultimaIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  if (!ultimaIn) return;
+  const { podePerguntarDocs, clienteEsperandoResposta } = require('./docs-loop.service') as typeof import('./docs-loop.service');
+  if (!podePerguntarDocs(ultimaIn.createdAt, Date.now())) return; // a pergunta cai perto do fim da janela, das 07h às 21h
+  const marca = ultimaIn.createdAt.toISOString();
+  if (st.janela === marca) return; // já perguntei nesta janela
+  if (await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', channel: 'WHATSAPP', createdAt: { gt: new Date(Date.now() - 60 * 60_000) } }, select: { id: true } })) return; // conversa andando
+  if (await clienteEsperandoResposta(leadId)) return; // ele espera resposta nossa: não cobra por cima
+  // O que já chegou depois do pedido (pela leitura guardada em _docInfo — sem ler de novo aqui).
+  const { isStickerAttachment, isScreenshotAttachment } = require('./received-docs.service') as typeof import('./received-docs.service');
+  const novos = (await prisma.messageAttachment.findMany({ where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gt: new Date(st.askedAt) } }, select: { id: true, fileName: true, mimeType: true, createdAt: true } }))
+    .filter((a) => !/^(audio|video)\//.test(a.mimeType) && !isStickerAttachment(a as any) && !isScreenshotAttachment(a as any));
+  const info = (cf._docInfo || {}) as Record<string, string>;
+  const tipos = novos.map((a) => info[a.id]).filter((t) => t && t !== 'IGNORAR').map((t) => String(t).split('|')[0]);
+  const { faltando } = faltandoParaSantanderManual(await itensDoPedido(accountId, leadId, cf, st), tipos, false);
+  if (novos.length && !faltando.length) return; // mandou tudo: o encaminhamento à Letícia cuida
+  await salvar(leadId, { janela: marca });
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
+  const banco = st.banco || 'Santander';
+  const texto = novos.length
+    ? `${nome ? `${nome}, r` : 'R'}ecebi parte dos documentos, obrigada! 😊 Até quando você consegue me mandar o restante que o ${banco} pediu?`
+    : `${nome ? `${nome}, a` : 'A'}té quando você consegue me mandar os documentos que o ${banco} pediu pra análise manual? Assim que chegarem, eu já encaminho pro banco. 😊`;
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io as any });
+  const hora = new Date(ultimaIn.createdAt.getTime() + 24 * 3_600_000).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+  await note(leadId, r.success
+    ? `⏳ ${rotulo(st)} (análise manual): a janela de 24 h do WhatsApp fecha ${hora} e ainda falta ${faltando.length ? faltando.join('; ') : 'a documentação pedida'} — perguntei ao cliente até quando ele manda.`
+    : `⏳ ${rotulo(st)} (análise manual): a janela de 24 h fecha ${hora} e a pergunta "até quando manda" não saiu (${(r as any).error || 'erro'}). Chame o cliente.`);
 }
 
 async function encaminharSeCompleto(accountId: string, leadId: string, io?: Io): Promise<void> {
@@ -217,13 +271,7 @@ async function encaminharSeCompleto(accountId: string, leadId: string, io?: Io):
   const semLeitura = novos.filter((a) => !tiposPorId[a.id]);
   const tipos = docs.map((a) => String(tiposPorId[a.id] || '').split('|')[0]).filter(Boolean);
   // Pedido feito antes de 13/11 (sem `itens` gravado — ex.: jorge anastacio): os itens vêm da leitura do portal ("ANÁLISE MANUAL ABERTA … DOCUMENTOS"); sem nada, a lista genérica.
-  let itens = st.itens || [];
-  if (!itens.length) {
-    const lida = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: bankDe(st), dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
-    const { parseDocumentosExigidos, docDoPortal } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-    itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
-    if (!itens.length) itens = st.produto === 'FH' ? await itensRendaPerfilFh(accountId, cf) : ITENS_PADRAO;
-  }
+  const itens = await itensDoPedido(accountId, leadId, cf, st);
   const { faltando, naoConferidos } = faltandoParaSantanderManual(itens, tipos, Date.now() - ultimo > RELAXA_QTD_MS);
   if (faltando.length || (semLeitura.length && Date.now() - ultimo < ESPERA_CLASSIFICAR_MS)) {
     const sig = `${faltando.join(';')}|${novos.length}`;
