@@ -141,7 +141,7 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Comissão (%)</label>
               <input value={rate} onChange={(e) => setRate(e.target.value)} placeholder="1 ou 5" className={inputCls} />
-              <p className="text-[10px] text-slate-400 mt-0.5">Home Equity: Inter 3–5% (produção do mês) · Creditas 5% · Santander 2,5% — Financiamento: Bradesco 0,9–1% · Inter/Itaú 0,8% · Santander 0,8–0,9%</p>
+              <p className="text-[10px] text-slate-400 mt-0.5">Home Equity: Inter 3–5% (produção do mês) · Creditas 5% · Santander 2,5% · CAIXA 1% — Financiamento: Bradesco 0,9–1% · Inter/Itaú 0,8% · Santander 0,8–0,9% · BRB 1% · CAIXA 0,4% (0,8% × 50%)</p>
             </div>
             <div>
               <label className="text-xs font-medium text-slate-500 mb-1 block">Valor previsto (R$)</label>
@@ -178,7 +178,7 @@ function ProvisionForm({ editing, onClose, onSaved }: { editing: CommissionProvi
 
 // Bancos pra escolher no "?" (Fabio 14/11): no Home Equity o Santander vem pela Credimorar; no Financiamento a Credimorar leva o banco entre parênteses.
 const OPCOES_BANCO: Record<'HE' | 'FH' | 'OUTRO', Array<{ payer: string; rotulo: string }>> = {
-  HE: [{ payer: 'Inter', rotulo: 'Inter' }, { payer: 'Creditas', rotulo: 'Creditas' }, { payer: 'Credimorar', rotulo: 'Santander (Credimorar)' }],
+  HE: [{ payer: 'Inter', rotulo: 'Inter' }, { payer: 'Creditas', rotulo: 'Creditas' }, { payer: 'Credimorar', rotulo: 'Santander (Credimorar)' }, { payer: 'CAIXA', rotulo: 'CAIXA' }],
   FH: [
     { payer: 'Credimorar (Inter)', rotulo: 'Inter (Credimorar)' }, { payer: 'Credimorar (Bradesco)', rotulo: 'Bradesco (Credimorar)' },
     { payer: 'Credimorar (Itaú)', rotulo: 'Itaú (Credimorar)' }, { payer: 'Credimorar (Santander)', rotulo: 'Santander (Credimorar)' },

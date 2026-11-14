@@ -8,20 +8,25 @@ import { prisma } from '../lib/prisma';
  *      Creditas 5%; Santander (pelo Credimorar) 2,5% — "o Creditas e Inter é 5%, Santander é 2,5%".
  *  - Financiamento Habitacional, tabela do Credimorar: Bradesco 0,9% até R$ 2 mi/mês e 1% acima; Inter 0,8%; Itaú 0,8%; Santander 0,8% até
  *      R$ 2 mi/mês e 0,9% acima. O Inter vale o mesmo 0,8% no Credimorar e no código direto (Fabio: "são os mesmos"). Banco não identificado: 0,8%.
+ *  - CAIXA (Fabio 14/11): a CAIXA paga 0,8% do financiamento e a A&F fica com 50% disso → 0,4% (processo de R$ 1 mi = R$ 8 mil, A&F recebe R$ 4 mil).
+ *  - BRB: 1% (Fabio 14/11; as notas de setembro batem: Yago e Debora, 1% do financiamento). Home Equity da CAIXA: 1%.
  *  - Outros setores (ex.: Consórcio): 1%. */
 type Faixa = { ate?: number; pct: number };
 const HOME_EQUITY: Record<string, Faixa[]> = {
   INTER: [{ ate: 500_000, pct: 3 }, { ate: 1_000_000, pct: 4 }, { pct: 5 }],
   CREDITAS: [{ pct: 5 }],
   CREDIMORAR: [{ pct: 2.5 }],
+  CAIXA: [{ pct: 1 }], // Home Equity da CAIXA: 1% (Fabio 14/11)
 };
 const FINANCIAMENTO: Record<string, Faixa[]> = {
   BRADESCO: [{ ate: 2_000_000, pct: 0.9 }, { pct: 1 }],
   INTER: [{ pct: 0.8 }],
   ITAU: [{ pct: 0.8 }],
   SANTANDER: [{ ate: 2_000_000, pct: 0.8 }, { pct: 0.9 }],
+  CAIXA: [{ pct: 0.4 }], // 0,8% × 50%
+  BRB: [{ pct: 1 }],
 };
-const FH_BANCO_NOME: Record<string, string> = { BRADESCO: 'Bradesco', INTER: 'Inter', ITAU: 'Itaú', SANTANDER: 'Santander' };
+const FH_BANCO_NOME: Record<string, string> = { BRADESCO: 'Bradesco', INTER: 'Inter', ITAU: 'Itaú', SANTANDER: 'Santander', CAIXA: 'CAIXA', BRB: 'BRB' };
 
 const ehHomeEquity = (d?: string | null) => /home equity/i.test(d || '');
 const ehFinanciamento = (d?: string | null) => /financiamento/i.test(d || '');
@@ -29,11 +34,16 @@ const naFaixa = (faixas: Faixa[], producaoMes: number) => (faixas.find((f) => f.
 
 /** Banco do Financiamento Habitacional: o da análise (INTER direto) ou o escrito no card ("instituicao": Bradesco, Itaú…) — o Credimorar roda 4 bancos juntos. */
 export function bancoFinanciamento(bank?: string | null, instituicao?: unknown): string | null {
-  if (bank === 'INTER') return 'INTER';
+  if (bank === 'INTER' || bank === 'INTER_FH') return 'INTER';
+  if (bank === 'ITAU_FH') return 'ITAU';
+  if (bank === 'CAIXA_FH') return 'CAIXA';
+  if (bank === 'BRB_FH') return 'BRB';
   const t = String(instituicao || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
   if (/bradesco/.test(t)) return 'BRADESCO';
   if (/itau/.test(t)) return 'ITAU';
   if (/santander/.test(t)) return 'SANTANDER';
+  if (/caixa/.test(t)) return 'CAIXA';
+  if (/\bbrb\b/.test(t)) return 'BRB';
   if (/inter\b/.test(t)) return 'INTER';
   return null;
 }
@@ -42,6 +52,10 @@ export function bancoFinanciamento(bank?: string | null, instituicao?: unknown):
 export function pagadorComissao(departmentName: string | null | undefined, bank: string | null | undefined, instituicao?: unknown): string | null {
   if (ehFinanciamento(departmentName) && bank !== 'INTER') {
     const b = bancoFinanciamento(bank, instituicao);
+    // CAIXA e BRB pagam direto; Inter e Itaú pelos portais deles (INTER_FH/ITAU_FH) também; o resto do Financiamento vem pela Credimorar.
+    if (b === 'CAIXA' || b === 'BRB') return FH_BANCO_NOME[b];
+    if (bank === 'INTER_FH') return 'Inter';
+    if (bank === 'ITAU_FH') return 'Itaú';
     if (bank === 'CREDIMORAR_FH' || b) return `Credimorar${b ? ` (${FH_BANCO_NOME[b]})` : ''}`;
   }
   if (!bank) return null;
@@ -108,10 +122,14 @@ export function bancoDoPagador(product: string | null | undefined, payer: string
   const entre = /\(([^)]+)\)/.exec(String(payer || ''))?.[1];
   if (ehFinanciamento(product)) {
     if (/^inter\b/.test(p)) return { bank: 'INTER', instituicao };
+    if (/^caixa/.test(p)) return { bank: 'CAIXA_FH', instituicao };
+    if (/^brb/.test(p)) return { bank: 'BRB_FH', instituicao };
+    if (/^itau/.test(p)) return { bank: 'ITAU_FH', instituicao };
     return { bank: 'CREDIMORAR_FH', instituicao: entre || instituicao };
   }
   if (/^inter\b/.test(p)) return { bank: 'INTER', instituicao };
   if (/creditas/.test(p)) return { bank: 'CREDITAS', instituicao };
+  if (/^caixa/.test(p)) return { bank: 'CAIXA', instituicao };
   if (/credimorar|santander/.test(p)) return { bank: 'CREDIMORAR', instituicao };
   return { bank: null, instituicao };
 }
