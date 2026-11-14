@@ -270,6 +270,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
     }
     const out = await sendFhNotice(accountId, l.id, l.name, aprovadas, emAnalise, io);
     if (out) {
+      await moverAguardandoDocsFh(accountId, l.id, io);
       await note(l.id, `📣 Cliente avisado do Financiamento aprovado (${bancos}), uma mensagem por banco com o botão "Seguir com esta". A simulação vai quando ele escolher.${emAnalise.length ? ` Ainda em análise: ${emAnalise.join(', ')}.` : ''}`);
       push(accountId, `🏠 ${l.name}: financiamento aprovado`, `Cliente avisado: ${bancos}`, l.id);
     }
@@ -289,8 +290,19 @@ export async function avisoFhAgora(accountId: string, leadId: string, io?: any):
   const aprovadas = await enriquecer(leadId, cf, op.aprovadas);
   if (!aprovadas.length) return false;
   const out = await sendFhNotice(accountId, leadId, l.name, aprovadas, op.emAnalise, io);
-  if (out) await note(leadId, `📣 O cliente tocou em "Ver as condições": mandei o Financiamento aprovado (${aprovadas.map((o) => o.banco).join(', ')}), uma mensagem por banco com o botão "Seguir com esta".`);
+  if (out) {
+    await moverAguardandoDocsFh(accountId, leadId, io);
+    await note(leadId, `📣 O cliente tocou em "Ver as condições": mandei o Financiamento aprovado (${aprovadas.map((o) => o.banco).join(', ')}), uma mensagem por banco com o botão "Seguir com esta".`);
+  }
   return out;
+}
+
+/** O mesmo fluxo do Home Equity (Fabio 14/11): as condições chegaram ao cliente (aviso com a conversa aberta, ou ele tocou em "Ver as condições" no template) → o card vai pra
+ *  Aguardando Documentação. Só o template, sem ele tocar, não move ("apenas se ela clicar em Ver as condições"). Antes o FH só movia na escolha do banco. Os lembretes de documentação
+ *  esperam a escolha (isWaitingApprovalReply): a lista de documentos do FH depende do banco e sai com a simulação, na escolha. */
+async function moverAguardandoDocsFh(accountId: string, leadId: string, io?: any): Promise<void> {
+  const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  await moveToAwaitingDocs({ accountId, leadId, io }).catch((e: any) => console.error('[Financiamento] mover pra Aguardando Documentação no aviso:', e?.message));
 }
 
 async function sendFhNotice(accountId: string, leadId: string, leadName: string, aprovadas: FhOption[], emAnalise: string[], io?: any): Promise<boolean> {

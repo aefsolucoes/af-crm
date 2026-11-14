@@ -228,6 +228,11 @@ export async function processApprovalReminders(io: any): Promise<void> {
 export async function isWaitingApprovalReply(leadId: string, opts?: { comFalha?: boolean }): Promise<boolean> {
   let tpl: { createdAt: Date } | null;
   if (opts?.comFalha) {
+    // Financiamento (Fabio 14/11: "o mesmo fluxo do HE" — o card vai pra Aguardando Documentação quando as condições chegam ao cliente): recebeu as propostas, mas ainda NÃO
+    // escolheu o banco. A lista de documentos do FH depende do banco escolhido e só sai na escolha — até lá os lembretes de documentação não cobram documento nenhum.
+    const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+    const c = (l?.customFields || {}) as Record<string, any>;
+    if (/habita/i.test(l?.pipeline?.department?.name || '') && c._fhNotice?.sentAt && !c._fhDocsAt && !c._fhChosen) return true;
     const u = await ultimosAvisos(leadId);
     if (u.travado) return false;
     tpl = u.ultimo;
