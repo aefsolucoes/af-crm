@@ -1544,9 +1544,11 @@ export async function updateAnalysis(db: Db, p: { accountId: string; id: string;
   return updated;
 }
 
-/** Registra à mão uma análise (ex.: o Inter que o Fabio/skill leu no portal). */
+/** Registra à mão uma análise (ex.: o Inter que o Fabio/skill leu no portal).
+ *  Financiamento também (Fabio 14/11, Adriano: a simulação foi rodada no Credimorar à mão em 27/10, antes de o FH existir no CRM — "só insere os dados no card"):
+ *  CREDIMORAR_FH com o texto "BANCOS [Bradesco: … | Itaú: … | Santander: … | Inter: …]" monta a lista de bancos do card (`_fhResumo`) como a leitura da extensão, sem abrir o portal. */
 export async function registerManual(db: Db, p: { accountId: string; userId?: string; leadId: string; bank: string; status: string; detail?: string; result?: Record<string, any>; source?: 'MANUAL' | 'PORTAL'; kind?: 'RUN' | 'CHECK' }) {
-  if (!BANK_KEYS.includes(p.bank)) throw new Error('banco desconhecido');
+  if (!BANK_KEYS.includes(p.bank) && !FH_RUN_BANKS.includes(p.bank)) throw new Error('banco desconhecido');
   if (!ALL_STATUS.has(p.status)) throw new Error('status inválido');
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('card não encontrado');
@@ -1555,6 +1557,9 @@ export async function registerManual(db: Db, p: { accountId: string; userId?: st
     data: { accountId: p.accountId, leadId: p.leadId, bank: p.bank, status: 'RUNNING', source: p.source || 'MANUAL', kind: p.kind || 'RUN', requestedById: p.userId || null, startedAt: new Date() },
   });
   const { row: updated } = await applyUpdate(db, row, { status: p.status, detail: p.detail ?? null, holderName: await resolveHolder(db, p.leadId, p.bank, p.detail), ...pickResult(p.result || {}) });
+  if (p.bank === FH_BANK) await notaFinanciamento(db, p.accountId, updated).catch((e: any) => console.error('[Financiamento] nota (manual):', e?.message));
+  if (p.bank === FH_INTER_BANK) await notaFinanciamentoBanco(db, p.accountId, updated, 'Inter').catch((e: any) => console.error('[Financiamento Inter] nota (manual):', e?.message));
+  if (p.bank === FH_ITAU_BANK) await notaFinanciamentoBanco(db, p.accountId, updated, 'Itaú').catch((e: any) => console.error('[Financiamento Itaú] nota (manual):', e?.message));
   return updated;
 }
 

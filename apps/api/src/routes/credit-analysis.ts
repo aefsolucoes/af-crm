@@ -387,9 +387,10 @@ router.post('/report', async (req: AuthRequest, res: Response) => {
 router.post('/manual', async (req: AuthRequest, res: Response) => {
   const b = req.body || {};
   const bank = String(b.bank || '').toUpperCase();
-  if (!b.leadId || !BANK_KEYS.includes(bank) || !b.status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' });
+  if (!b.leadId || !EXT_BANK_KEYS.includes(bank) || !b.status) return res.status(400).json({ error: 'leadId, bank e status são obrigatórios' }); // Financiamento também (CREDIMORAR_FH/INTER_FH/ITAU_FH — Fabio 14/11)
   try {
-    const row = await registerManual(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadId: String(b.leadId), bank, status: String(b.status).toUpperCase(), detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : b });
+    // kind CHECK = resultado lido no portal de uma proposta que já existia (não é rodada nova do CRM).
+    const row = await registerManual(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadId: String(b.leadId), bank, status: String(b.status).toUpperCase(), detail: b.detail ? String(b.detail) : undefined, result: b.result && typeof b.result === 'object' ? b.result : b, ...(b.kind === 'CHECK' ? { kind: 'CHECK' as const } : {}) });
     emit(req, { leadId: row.leadId });
     res.json(row);
   } catch (err) { fail(res, err, 'Erro ao registrar', 400); }
