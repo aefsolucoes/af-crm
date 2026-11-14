@@ -1,4 +1,4 @@
-import { PrismaClient, EmailMessage, EmailAccount } from '@prisma/client';
+import { PrismaClient, Prisma, EmailMessage, EmailAccount } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { Readable } from 'stream';
 import { PDFDocument, rgb } from 'pdf-lib';
@@ -90,11 +90,13 @@ async function findLeadByCpf(accountId: string, cpf: string): Promise<{ id: stri
   return prisma.lead.findUnique({ where: { id: rows[0].id }, select: { id: true, name: true, customFields: true } });
 }
 
-/** Clientes que o e-mail da Creditas cita: pelo CPF do texto (pedido de SCR e cobranças, inclusive nas citações) ou, sem CPF, pelo "… - Nome Completo ID: XXXX" do assunto (pré-aprovação). */
+/** Clientes que o e-mail da Creditas cita: pelo CPF do texto (pedido de SCR e cobranças, inclusive nas citações) ou pelo "… - Nome Completo ID: XXXX CPF: 000.000.000-00" do assunto
+ *  (pré-aprovação). O CPF do assunto vale (Fabio 14/11, Karla: o assunto trazia o CPF dela, a busca ia só pelo nome e não achava o 2º participante). */
 function citedClients(subject: string | null, text: string): { name: string; creditasId?: string; cpf?: string }[] {
   const out: { name: string; creditasId?: string; cpf?: string }[] = parseScrCases(text).map((c) => ({ name: c.name, creditasId: c.creditasId, cpf: c.cpf }));
-  const m = /[-–]\s*([A-Za-zÀ-ÿ' ]{6,90}?)\s+ID:\s*([A-Z0-9]{5,10})/.exec(subject || '');
-  if (m && !out.some((c) => norm(c.name) === norm(m[1]))) out.push({ name: m[1].trim(), creditasId: m[2].toUpperCase() });
+  const m = /[-–]\s*([A-Za-zÀ-ÿ' ]{6,90}?)\s+ID:\s*([A-Z0-9]{5,10})(?:\s+CPF:\s*(\d{3}\.?\d{3}\.?\d{3}-?\d{2}))?/.exec(subject || '');
+  const cpfAssunto = m?.[3] && digits(m[3]).length === 11 ? digits(m[3]) : undefined;
+  if (m && !out.some((c) => norm(c.name) === norm(m[1]) || (cpfAssunto && c.cpf === cpfAssunto))) out.push({ name: m[1].trim(), creditasId: m[2].toUpperCase(), cpf: cpfAssunto });
   if (!out.length) {
     // Resposta ao NOSSO e-mail ("Re: CPF 000.000.000-00 - NOME - …"): sem o formato da Creditas, vale o CPF que a gente mesmo escreveu no assunto ou na citação.
     for (const fonte of [subject || '', text]) {
@@ -108,19 +110,47 @@ function citedClients(subject: string | null, text: string): { name: string; cre
   return out;
 }
 
+const COM_ACENTO = 'áàâãäéèêëíìîïóòôõöúùûüçÁÀÂÃÄÉÈÊËÍÌÎÏÓÒÔÕÖÚÙÛÜÇ';
+const SEM_ACENTO = 'aaaaaeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUC';
+
+/** Ids dos cards em que o 1º nome citado aparece no NOME DO CARD ou no participante 1/2 (sem acento e sem caixa). O card leva o nome do titular: o 2º participante só está
+ *  em `participante_2` — o filtro só pelo nome do card deixava de fora o card do Ricardo quando a Creditas aprovava no nome da Karla (Fabio 14/11). */
+async function idsPorPrimeiroNome(accountId: string, name: string, status: 'OPEN' | 'LOST'): Promise<string[]> {
+  const primeiro = norm(name).split(' ')[0]?.toLowerCase().replace(/[%_\\]/g, '');
+  if (!primeiro || primeiro.length < 2) return [];
+  const like = `%${primeiro}%`;
+  const rows = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT l.id FROM "Lead" l
+    WHERE l."accountId" = ${accountId} AND l.status::text = ${status} AND l."isGroup" = false ${status === 'OPEN' ? Prisma.sql`AND l.archived = false` : Prisma.empty}
+      AND (lower(translate(l.name, ${COM_ACENTO}, ${SEM_ACENTO})) LIKE ${like}
+        OR lower(translate(coalesce(l."customFields"->>'participante_1', ''), ${COM_ACENTO}, ${SEM_ACENTO})) LIKE ${like}
+        OR lower(translate(coalesce(l."customFields"->>'participante_2', ''), ${COM_ACENTO}, ${SEM_ACENTO})) LIKE ${like})
+    ORDER BY l."updatedAt" DESC LIMIT 300`;
+  return rows.map((r) => r.id);
+}
+
+/** Algum participante do card (nome do card ≈ 1º participante) tem o nome IGUAL ao citado? Com o CPF do e-mail, o participante que tem OUTRO CPF gravado não vale (homônimo). */
+function participanteComNome(l: { name: string; customFields: any }, alvo: string, cpf?: string): boolean {
+  const cf = (l.customFields || {}) as Record<string, any>;
+  const pares: [unknown, unknown][] = [[l.name, cf.cpf_1], [cf.participante_1, cf.cpf_1], [cf.participante_2, cf.cpf_2]];
+  return pares.some(([n, c]) => !!n && norm(String(n)) === alvo && (!cpf || digits(String(c || '')).length !== 11 || digits(String(c)) === cpf));
+}
+
 /** Card aberto cujo nome (participante 1/2 ou nome do card) é IGUAL ao citado — só vale se for um único. */
-async function findLeadByName(accountId: string, name: string): Promise<{ id: string; name: string; customFields: any } | null> {
+async function findLeadByName(accountId: string, name: string, cpf?: string): Promise<{ id: string; name: string; customFields: any } | null> {
   const alvo = norm(name);
   if (alvo.split(' ').length < 2) return null;
-  const cands = await prisma.lead.findMany({
-    where: { accountId, status: 'OPEN', archived: false, isGroup: false, name: { contains: name.trim().split(' ')[0], mode: 'insensitive' } },
-    select: { id: true, name: true, customFields: true }, take: 80,
-  });
-  const iguais = cands.filter((l) => {
-    const cf = (l.customFields || {}) as Record<string, any>;
-    return [l.name, cf.participante_1, cf.participante_2].some((n) => n && norm(String(n)) === alvo);
-  });
+  const ids = await idsPorPrimeiroNome(accountId, name, 'OPEN');
+  if (!ids.length) return null;
+  const cands = await prisma.lead.findMany({ where: { id: { in: ids } }, select: { id: true, name: true, customFields: true } });
+  const iguais = cands.filter((l) => participanteComNome(l, alvo, cpf));
   return iguais.length === 1 ? iguais[0] : null;
+}
+
+/** Card ABERTO do cliente citado: pelo CPF (cpf_1 ou cpf_2 do card); sem card com esse CPF (card sem o CPF gravado), pelo nome igual ao de um participante. */
+async function findOpenLead(accountId: string, c: { name: string; cpf?: string }): Promise<{ id: string; name: string; customFields: any } | null> {
+  if (c.cpf) { const porCpf = await findLeadByCpf(accountId, c.cpf); if (porCpf) return porCpf; }
+  return c.name ? findLeadByName(accountId, c.name, c.cpf) : null;
 }
 
 /** Fechados ANTES disto (02/11–12/11: Fabricio, Marili, Michele…) a equipe confere caso a caso — a correção nem anota nesses cards. */
@@ -134,19 +164,22 @@ async function findLeadClosedByAnalysis(accountId: string, c: { name: string; cp
   const desde = new Date(Math.max(FECHADO_PELA_ANALISE_DESDE.getTime(), emailDate.getTime() - 30 * 86_400_000));
   if (desde.getTime() >= emailDate.getTime()) return null;
   const alvo = norm(c.name || '');
-  if (!c.cpf && alvo.split(' ').length < 2) return null;
+  const temNome = alvo.split(' ').length >= 2;
+  if (!c.cpf && !temNome) return null;
   const janela = { gte: desde, lte: emailDate };
-  const cands = await prisma.lead.findMany({
-    where: { accountId, status: 'LOST', isGroup: false, OR: [{ rejectedAt: janela }, { rejectedAt: null, stageEnteredAt: janela }], ...(c.cpf ? {} : { name: { contains: c.name.trim().split(' ')[0], mode: 'insensitive' as const } }) },
-    select: { id: true, name: true, customFields: true, lostReason: true }, orderBy: { updatedAt: 'desc' }, take: 300,
-  });
-  const iguais = cands.filter((l) => {
-    if (!MOTIVO_DA_ANALISE.test(l.lostReason || '')) return false;
-    const cf = (l.customFields || {}) as Record<string, any>;
-    if (c.cpf) return [cf.cpf_1, cf.cpf_2].some((v) => digits(String(v || '')) === c.cpf);
-    return [l.name, cf.participante_1, cf.participante_2].some((n) => n && norm(String(n)) === alvo);
-  });
-  return iguais.length === 1 ? { id: iguais[0].id, name: iguais[0].name, customFields: iguais[0].customFields } : null;
+  const select = { id: true, name: true, customFields: true, lostReason: true } as const;
+  const base = { accountId, status: 'LOST' as const, isGroup: false, OR: [{ rejectedAt: janela }, { rejectedAt: null, stageEnteredAt: janela }] };
+  const unico = (ls: { id: string; name: string; customFields: any; lostReason: string | null }[]) => (ls.length === 1 ? { id: ls[0].id, name: ls[0].name, customFields: ls[0].customFields } : null);
+  if (c.cpf) {
+    const cands = await prisma.lead.findMany({ where: base, select, orderBy: { updatedAt: 'desc' }, take: 300 });
+    const porCpf = unico(cands.filter((l) => MOTIVO_DA_ANALISE.test(l.lostReason || '') && [((l.customFields || {}) as any).cpf_1, ((l.customFields || {}) as any).cpf_2].some((v) => digits(String(v || '')) === c.cpf)));
+    if (porCpf || !temNome) return porCpf;
+  }
+  // Pelo nome igual ao de um participante — o 2º participante não está no nome do card, então o 1º filtro olha também participante_1/2 (Fabio 14/11).
+  const ids = await idsPorPrimeiroNome(accountId, c.name, 'LOST');
+  if (!ids.length) return null;
+  const cands = await prisma.lead.findMany({ where: { ...base, id: { in: ids } }, select });
+  return unico(cands.filter((l) => MOTIVO_DA_ANALISE.test(l.lostReason || '') && participanteComNome(l, alvo, c.cpf)));
 }
 
 type PreAprovacao = NonNullable<ReturnType<typeof import('./creditas-preapproval.service').parsePreApproval>>;
@@ -193,7 +226,7 @@ export async function scanCreditasStandBy(accountId: string, dias = 30): Promise
     if (!STANDBY_RX.test(text)) continue;
     emails++;
     const c = citedClients(row.subject, text)[0];
-    const lead = c ? (c.cpf ? await findLeadByCpf(accountId, c.cpf) : await findLeadByName(accountId, c.name)) : null;
+    const lead = c ? await findOpenLead(accountId, c) : null;
     if (!lead || !c) { semCard++; continue; }
     if (await marcarStandByCreditas(accountId, lead, row, c, false)) marcados.push(lead.name);
   }
@@ -223,7 +256,7 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
   let ligado = false;
   let tratados = 0;
   for (const c of citedClients(row.subject, text)) {
-    const lead = c.cpf ? await findLeadByCpf(acc.accountId, c.cpf) : await findLeadByName(acc.accountId, c.name);
+    const lead = await findOpenLead(acc.accountId, c); // CPF (cpf_1 ou cpf_2) e, sem card com o CPF, o nome igual ao de um participante — 1º ou 2º (Fabio 14/11, Karla)
     // Sem card aberto: pré-aprovação que chegou DEPOIS da negativa (Fabio 12/11) — acha o card que a análise fechou e avisa a EQUIPE (nota + push). Fica SEGURADO: não registra
     // a aprovação, não vincula o e-mail (a IA da conversa leria) e não reabre o card — nada vai ao cliente sem o OK de uma pessoa.
     if (!lead && !scr && !STANDBY_RX.test(text)) {
@@ -232,7 +265,7 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
       const fechado = pre ? await findLeadClosedByAnalysis(acc.accountId, c, row.date) : null;
       if (pre && fechado) { await avisarPreAprovacaoEmCardFechado(acc.accountId, fechado, row, pre).catch((e: any) => console.warn('[Creditas e-mail] pré-aprovação em card fechado:', e?.message)); continue; }
     }
-    if (!lead) { console.log(`[Creditas e-mail] ${c.cpf ? 'CPF do e-mail' : c.name} sem card aberto no CRM — e-mail ${row.id} só fica na caixa`); continue; }
+    if (!lead) { console.log(`[Creditas e-mail] ${c.name || 'CPF do e-mail'} sem card aberto no CRM — e-mail ${row.id} só fica na caixa`); continue; }
     tratados++;
     if (!ligado) { // um e-mail só tem um card: vale o primeiro cliente achado
       ligado = true;
@@ -242,7 +275,7 @@ export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessag
     // "Essa proposta foi descontinuada por falta de movimentação" (Fabio 03/11): STAND-BY, não reprovação — o card fica sabendo e a IA não confirma a aprovação.
     if (!scr && STANDBY_RX.test(text)) { await marcarStandByCreditas(acc.accountId, lead, row, c, fresh); continue; }
     // E-mail "Crédito Pré Aprovado" (Fabio 19/10): vira a aprovação da Creditas no card, com os números do banco.
-    if (!scr) { try { const { registerPreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service'); await registerPreApproval({ accountId: acc.accountId, leadId: lead.id, leadName: lead.name, row, io }); } catch (e: any) { console.warn('[Creditas e-mail] pré-aprovação:', e?.message); } }
+    if (!scr) { try { const { registerPreApproval } = require('./creditas-preapproval.service') as typeof import('./creditas-preapproval.service'); await registerPreApproval({ accountId: acc.accountId, leadId: lead.id, leadName: lead.name, row, io, cited: c }); } catch (e: any) { console.warn('[Creditas e-mail] pré-aprovação:', e?.message); } }
     if (!scr && JONATAS.test(String(row.fromAddress).trim())) { if (await handleSuporteReply(acc, lead, row, text, io).catch((e: any) => { console.warn('[Creditas e-mail] resposta do Jonatas:', e?.message); return false; })) continue; }
     if (!scr) continue;
     const st = stateOf(lead.customFields);

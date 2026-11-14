@@ -48,14 +48,25 @@ export function parsePreApproval(subject: string | null | undefined, text: strin
 }
 
 /** Grava a aprovação da Creditas a partir do e-mail. Devolve 'criada' | 'ja-existe' | 'portal-tem' (a leitura do portal já traz os números — vale ela). Idempotente (o e-mail chega em 2 caixas). */
-export async function registerPreApproval(p: { accountId: string; leadId: string; leadName: string; row: Pick<EmailMessage, 'date' | 'subject' | 'textBody' | 'htmlBody'>; io?: Io }): Promise<'criada' | 'ja-existe' | 'portal-tem' | 'nao-e-pre-aprovacao'> {
+export async function registerPreApproval(p: { accountId: string; leadId: string; leadName: string; row: Pick<EmailMessage, 'date' | 'subject' | 'textBody' | 'htmlBody'>; io?: Io; cited?: { name?: string; cpf?: string } }): Promise<'criada' | 'ja-existe' | 'portal-tem' | 'nao-e-pre-aprovacao'> {
   const text = p.row.textBody || '';
   const pre = parsePreApproval(p.row.subject, text);
   if (!pre) return 'nao-e-pre-aprovacao';
+  const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  // Em nome de QUEM a Creditas aprovou (Fabio 14/11, Karla): o e-mail pode vir no nome do 2º participante — o CPF/nome do e-mail decide (whichParticipant); sem nada, o titular.
+  const { whichParticipant } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const card = { name1: String(cf.participante_1 || p.leadName), name2: cf.participante_2 || null, cpf1: cf.cpf_1 || null, cpf2: cf.cpf_2 || null };
+  const nomeEmail = (pre.name && pre.name.length > 3 ? pre.name : '') || String(p.cited?.name || '').trim();
+  const cpfEmail = String(pre.cpf || p.cited?.cpf || '').replace(/\D/g, '');
+  const quem = whichParticipant(card, nomeEmail || null, cpfEmail || null);
+  const holderName = nomeEmail.length > 3 ? nomeEmail : String((quem === 2 ? cf.participante_2 : cf.participante_1) || p.leadName);
+  const holderCpf = (cpfEmail.length === 11 ? cpfEmail : '') || String((quem === 2 ? cf.cpf_2 : cf.cpf_1) || '').replace(/\D/g, '') || null;
   const since = new Date(Date.now() - 45 * 86_400_000);
-  const existentes = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: 'CREDITAS', dryRun: false, createdAt: { gte: since } }, select: { status: true, approvedValue: true, netValue: true, proposalNumber: true, source: true } });
+  const existentes = await prisma.creditAnalysis.findMany({ where: { leadId: p.leadId, bank: 'CREDITAS', dryRun: false, createdAt: { gte: since } }, select: { status: true, approvedValue: true, netValue: true, proposalNumber: true, source: true, holderName: true, holderCpf: true } });
   if (pre.creditasId && existentes.some((r) => r.source === 'EMAIL' && r.proposalNumber === pre.creditasId && r.netValue != null && Math.abs((r.netValue || 0) - pre.liquido) < 1)) return 'ja-existe';
-  if (existentes.some((r) => r.source !== 'EMAIL' && r.status === 'APPROVED' && r.approvedValue != null)) return 'portal-tem';
+  // A leitura do portal vale só se for do MESMO participante: a aprovação do titular no portal não esconde a pré-aprovação do 2º por e-mail (e vice-versa).
+  if (existentes.some((r) => r.source !== 'EMAIL' && r.status === 'APPROVED' && r.approvedValue != null && whichParticipant(card, r.holderName, r.holderCpf) === quem)) return 'portal-tem';
   const dia = p.row.date.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
   const taxa = pre.taxaMes ? `${pre.taxaMes}${pre.indexador ? ` + ${pre.indexador}` : ''}${pre.tipoTaxa ? `, ${pre.tipoTaxa.toLowerCase()}` : ''}` : '';
   const conditions = [
@@ -69,16 +80,13 @@ export async function registerPreApproval(p: { accountId: string; leadId: string
     pre.carencia ? `carência ${pre.carencia}` : '',
     pre.sistema ? `amortização ${pre.sistema}` : '',
   ].filter(Boolean).join('; ');
-  const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
-  const cf = (lead?.customFields || {}) as Record<string, any>;
-  const holderName = pre.name && pre.name.length > 3 ? pre.name : String(cf.participante_1 || p.leadName);
   await prisma.creditAnalysis.create({
     data: {
       accountId: p.accountId, leadId: p.leadId, bank: 'CREDITAS', status: 'APPROVED', kind: 'RUN', source: 'EMAIL', dryRun: false,
       detail: `RESULTADO: pré-aprovada pela Creditas (e-mail do Jonatas de ${dia}${pre.creditasId ? `, ID ${pre.creditasId}` : ''}). CONDIÇÕES — ${conditions}.`,
       proposalNumber: pre.creditasId || null, approvedValue: pre.total ?? pre.liquido, netValue: pre.liquido, termMonths: pre.prazo,
       rate: pre.taxaMes ? `${pre.taxaMes}${pre.indexador ? ` + ${pre.indexador}` : ''}` : null, indexer: pre.indexador || null, firstInstallment: pre.primeira, lastInstallment: null, conditions,
-      holderName, holderCpf: pre.cpf || String(cf.cpf_1 || '').replace(/\D/g, '') || null,
+      holderName, holderCpf,
       requestedValue: Number(String(cf.valor_credito ?? '').replace(/[^\d.]/g, '')) || null, startedAt: p.row.date, finishedAt: new Date(),
     },
   });
