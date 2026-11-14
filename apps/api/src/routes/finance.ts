@@ -635,7 +635,8 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
         const lead = await prisma.lead.findFirst({ where: { id: sg.leadId, accountId }, select: { id: true, name: true, pipeline: { select: { department: { select: { name: true } } } } } });
         if (!lead) continue;
         const criada = await prisma.commissionProvision.create({
-          data: { accountId, leadId: lead.id, leadName: lead.name, product: lead.pipeline.department?.name || null, payer: b.payer, baseAmount: sg.baseAmount, ratePct: sg.baseAmount > 0 ? Math.round((sg.suggestedAmount / sg.baseAmount) * 100 * 10_000) / 10_000 : 0, amount: sg.suggestedAmount, note: 'Concluído: comissão sugerida no Ganho, ligada à nota', createdById: req.user!.id },
+          // Base = o financiamento que a NOTA traz (ex.: Taysnara 187.500 na NF × 195.000 no card), senão o da sugestão.
+          data: { accountId, leadId: lead.id, leadName: lead.name, product: lead.pipeline.department?.name || null, payer: b.payer, baseAmount: it.credito || sg.baseAmount, ratePct: (it.credito || sg.baseAmount) > 0 ? Math.round((sg.suggestedAmount / (it.credito || sg.baseAmount)) * 100 * 10_000) / 10_000 : 0, amount: sg.suggestedAmount, estimatedAmount: sg.suggestedAmount, note: 'Concluído: comissão sugerida no Ganho, ligada à nota', createdById: req.user!.id },
         });
         provId = criada.id;
       }
