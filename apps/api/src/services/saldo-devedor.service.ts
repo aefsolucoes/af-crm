@@ -392,8 +392,12 @@ async function processOne(accountId: string, leadId: string, io: Io): Promise<vo
     return;
   }
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${lido} Troco = aprovado ${brl(am.valor)} − saldo ${brl(achou.saldo)} = ${brl(troco)}: "Saldo devedor" e "Troco" atualizados no card; o "Valor do crédito" segue o aprovado e a análise NÃO foi refeita (Fabio 13/11).` } }).catch(() => {});
+  // Cliente MANDANDO documento agora (Fabio 14/11, Fabricio: mandou 19 fotos e o print do saldo junto, e ouviu "já pode ir providenciando a documentação que te enviei"):
+  // com conferência agendada ou outro arquivo nas últimas 24 h, a mensagem não cobra documento — a conferência é que diz o que falta.
+  const outrosArquivos = await prisma.messageAttachment.count({ where: { leadId, message: { direction: 'INBOUND' }, createdAt: { gte: new Date(Date.now() - 24 * 3600_000) }, NOT: [{ mimeType: { startsWith: 'audio/' } }, { mimeType: { startsWith: 'video/' } }], ...(achouAtt ? { id: { not: achouAtt } } : {}) } }).catch(() => 0);
+  const cobraDocs = aindaSemDocs && !cf2._docsCheckDue && !outrosArquivos;
   const nome = String(cf2.participante_1 || lead.name || '').trim().split(/\s+/)[0] || '';
-  const texto = `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo pra quitar o financiamento é de ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o seu troco fica em ${brl(troco)} (valor aproximado — o final é confirmado na formalização).${aindaSemDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`;
+  const texto = `Recebi o saldo${nome ? `, ${nome}` : ''}! 🙏 O saldo pra quitar o financiamento é de ${brl(achou.saldo)}. Com o valor aprovado de ${brl(am.valor)}, o seu troco fica em ${brl(troco)} (valor aproximado — o final é confirmado na formalização).${cobraDocs ? ' Já pode ir providenciando a documentação que te enviei, assim a gente adianta o processo. 😉' : ''}`;
   if (!lead.aiAutoReplyActive) await (require('./ia-pendencias.service') as typeof import('./ia-pendencias.service')).guardarPendenciaIa(leadId, 'saldoDevedorLido', `avisar que recebeu o saldo e qual é o troco — "${texto}"`);
   else await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io || undefined }).catch(() => {});
 }
