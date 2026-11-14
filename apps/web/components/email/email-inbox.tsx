@@ -79,9 +79,11 @@ function formatSize(bytes: number) {
 
 const addrLabel = (a: Addr) => (a.name ? `${a.name} <${a.address}>` : a.address);
 
-/** HTML do e-mail num iframe isolado (sem script, links abrem em outra aba). */
+/** HTML do e-mail num iframe isolado (sem script, links abrem em outra aba). O `target` próprio do link sai (um "_top"/"_parent" ficava preso no
+ *  iframe e o clique não fazia nada) — todo link segue o `<base target="_blank">`, sem mandar o endereço do CRM (no-referrer). */
 function htmlDoc(html: string) {
-  return `<!doctype html><html><head><meta charset="utf-8"><base target="_blank"><style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:14px;color:#1e293b;margin:16px;word-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${html}</body></html>`;
+  const semTarget = html.replace(/<a\b[^>]*>/gi, (tag) => tag.replace(/\s(target|rel)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '').replace(/^<a\b/i, '<a rel="noopener noreferrer"'));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><base target="_blank"><style>body{font-family:-apple-system,Segoe UI,Arial,sans-serif;font-size:14px;color:#1e293b;margin:16px;word-wrap:break-word}img{max-width:100%;height:auto}</style></head><body>${semTarget}</body></html>`;
 }
 
 export function EmailInbox() {

@@ -76,9 +76,22 @@ export async function getMessages(leadId: string, accountId: string, scopeDepart
   // E-mail na conversa: quem mandou, pra quem e os anexos vêm do e-mail original (Fabio 30/10).
   const emails = rows.filter((r) => r.channel === 'EMAIL' && r.externalId).map((r) => r.externalId!);
   if (emails.length) {
-    const { emailMetaFor } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    const meta = await emailMetaFor(accountId, leadId, emails).catch(() => null);
-    if (meta?.size) return rows.reverse().map((r) => (r.channel === 'EMAIL' && r.externalId && meta.get(r.externalId) ? { ...r, email: meta.get(r.externalId) } : r));
+    const { emailMetaFor, emailLinksFor } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+    const { porLinksNoTexto } = require('./email-links') as typeof import('./email-links');
+    // E-mail que entrou na conversa sem o endereço dos links ("Clique aqui" sem o href — antes de 14/11): o endereço vem do HTML guardado, só na tela.
+    const semLink = rows.filter((r) => r.channel === 'EMAIL' && r.externalId && !/https?:\/\//i.test(r.content)).map((r) => r.externalId!);
+    const [meta, links] = await Promise.all([
+      emailMetaFor(accountId, leadId, emails).catch(() => null),
+      semLink.length ? emailLinksFor(accountId, semLink).catch(() => null) : Promise.resolve(null),
+    ]);
+    if (meta?.size || links?.size) {
+      return rows.reverse().map((r) => {
+        if (r.channel !== 'EMAIL' || !r.externalId) return r;
+        const l = links?.get(r.externalId);
+        const m = meta?.get(r.externalId);
+        return { ...r, ...(l?.length ? { content: porLinksNoTexto(r.content, l) } : {}), ...(m ? { email: m } : {}) };
+      });
+    }
   }
   return rows.reverse();
 }

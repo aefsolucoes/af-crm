@@ -4,6 +4,7 @@ import { fixedRule } from './fixed-rules.service';
 import { buildSharedAiContext, buildContextBlocks, stripOpeningInterjection, todayContextLine } from './ai-shared.service';
 import { searchKnowledge } from './knowledge.service';
 import { htmlToText } from './email-inbox.service';
+import { htmlComLinks, textoComLinks } from './email-links';
 
 /**
  * "Sugerir resposta" na janela de e-mail (pedido do Fabio 28/09) — mesmo
@@ -38,7 +39,7 @@ export async function generateEmailReplySuggestion(params: {
   const { accountId, replyTo } = params;
 
   const original = replyTo
-    ? (replyTo.textBody?.trim() || (replyTo.htmlBody ? htmlToText(replyTo.htmlBody) : '') || '').slice(0, 8000)
+    ? (replyTo.textBody?.trim() ? textoComLinks(replyTo.textBody.trim(), replyTo.htmlBody) : replyTo.htmlBody ? htmlToText(htmlComLinks(replyTo.htmlBody)) : '').slice(0, 8000)
     : '';
   const leadId = params.leadId || replyTo?.leadId || null;
   const focus = [replyTo?.subject, original].filter(Boolean).join('\n').slice(0, 2000) || params.subject || '';
@@ -160,7 +161,7 @@ ${ctx.historicoTexto}`;
     const msgs = await prisma.message.findMany({ where: { leadId, channel: { not: 'EMAIL' }, deleted: false, createdAt: { gte: ini, lt: new Date(ini.getTime() + 86_400_000) } }, orderBy: { createdAt: 'asc' }, take: 300, select: { direction: true, content: true, createdAt: true } });
     if (msgs.length) foco = msgs.map((m) => `[${new Date(m.createdAt.getTime() - 3 * 3_600_000).toISOString().slice(11, 16)}] ${m.direction === 'INBOUND' ? (contato || 'Contato') : 'A&F (nós)'}: ${(m.content || '').replace(/\s+/g, ' ').slice(0, 1500)}`).join('\n');
   }
-  const original = replyTo ? (replyTo.textBody?.trim() || (replyTo.htmlBody ? htmlToText(replyTo.htmlBody) : '') || '').slice(0, 8000) : '';
+  const original = replyTo ? (replyTo.textBody?.trim() ? textoComLinks(replyTo.textBody.trim(), replyTo.htmlBody) : replyTo.htmlBody ? htmlToText(htmlComLinks(replyTo.htmlBody)) : '').slice(0, 8000) : '';
   const emailBlock = replyTo
     ? `\n\n--- E-MAIL QUE ESTÁ SENDO RESPONDIDO ---
 De: ${replyTo.fromName ? `${replyTo.fromName} <${replyTo.fromAddress}>` : replyTo.fromAddress}

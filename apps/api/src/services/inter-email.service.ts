@@ -206,7 +206,11 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   try {
     const full = await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { messageId: true, date: true } });
     const { addToConversation } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-    await addToConversation({ accountId: acc.accountId, leadId, direction: 'INBOUND', subject: row.subject || null, body: fresh.slice(0, 5000), messageId: full?.messageId || null, date: row.date || full?.date || new Date(), notify: true, noPush: true, io: (io || null) as any, fromLabel: row.fromAddress || undefined });
+    // Endereço dos links do HTML junto do texto ("Clique aqui (https://…)" — lista de documentos do engajamento, Fabio 14/11 Pedro Francisco); a leitura (tipo, proposta, nome) segue sem eles.
+    const { htmlComLinks, textoComLinks } = require('./email-links') as typeof import('./email-links');
+    const doHtml = !(row.textBody || '').trim() || text !== row.textBody; // a leitura usou o HTML (texto puro vazio ou com %%marcadores%%)
+    const corpo = doHtml && row.htmlBody ? freshPart(interEmailTexto(row.textBody, htmlComLinks(row.htmlBody))) : textoComLinks(fresh, row.htmlBody);
+    await addToConversation({ accountId: acc.accountId, leadId, direction: 'INBOUND', subject: row.subject || null, body: corpo.slice(0, 5000), messageId: full?.messageId || null, date: row.date || full?.date || new Date(), notify: true, noPush: true, io: (io || null) as any, fromLabel: row.fromAddress || undefined });
   } catch (e: any) { console.warn('[Inter e-mail] não entrou na conversa:', e?.message); }
   const resumo = fresh.replace(/\s+/g, ' ').slice(0, 420);
   const quem = row.fromAddress ? ` (${row.fromAddress})` : '';

@@ -9,6 +9,7 @@ import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
 import { emailJaEnviado, enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
+import { EmailLink, htmlComLinks, linksDoHtml, textoComLinks } from './email-links';
 
 /**
  * Caixa de e-mail dentro do CRM (pedido do Fabio, 2026-09-24/25): a caixa da
@@ -392,6 +393,25 @@ export async function emailMetaFor(accountId: string, leadId: string, messageIds
   return out;
 }
 
+/** Links do HTML dos e-mails da conversa cujo texto ficou sem endereço (e-mails que chegaram antes de 14/11: o "Clique aqui" perdia o href ao virar
+ *  texto). A Inbox mostra "Clique aqui (https://…)" sem regravar a mensagem. Guardado em memória por e-mail (o HTML só é lido uma vez por e-mail). */
+const linksCache = new Map<string, EmailLink[]>();
+export async function emailLinksFor(accountId: string, messageIds: string[]): Promise<Map<string, EmailLink[]>> {
+  const out = new Map<string, EmailLink[]>();
+  const ids = [...new Set(messageIds.filter(Boolean))];
+  const faltam = ids.filter((id) => !linksCache.has(id));
+  if (faltam.length) {
+    const rows = await prisma.emailMessage.findMany({ where: { messageId: { in: faltam }, emailAccount: { accountId } }, select: { messageId: true, htmlBody: true } });
+    for (const id of faltam) {
+      const html = rows.find((r) => r.messageId === id && r.htmlBody)?.htmlBody;
+      linksCache.set(id, html ? linksDoHtml(html) : []);
+    }
+    while (linksCache.size > 5000) linksCache.delete(linksCache.keys().next().value as string);
+  }
+  for (const id of ids) { const l = linksCache.get(id); if (l?.length) out.set(id, l); }
+  return out;
+}
+
 /** Anexo de um e-mail da CONVERSA do card (botão no balão da Inbox): acha o e-mail original pela mensagem e baixa a parte pelo IMAP. */
 export async function conversationEmailAttachment(accountId: string, messageId: string, part: string) {
   const m = await prisma.message.findFirst({ where: { id: messageId, channel: 'EMAIL', lead: { accountId } }, select: { leadId: true, externalId: true } });
@@ -477,8 +497,11 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   } catch (err: any) {
     console.warn(`[E-mail] ${acc.address} uid ${msg.uid}: corpo não baixou:`, err?.message);
   }
-  const plain = textBody || (htmlBody ? htmlToText(htmlBody) : '');
+  const plainBase = textBody || (htmlBody ? htmlToText(htmlBody) : '');
+  // Endereço dos links do HTML junto do texto ("Clique aqui (https://…)") pra conversa do card/IA (Fabio 14/11, e-mail do Inter do Pedro Francisco); a prévia da lista fica sem.
+  const plain = textBody ? textoComLinks(textBody, htmlBody) : (htmlBody ? htmlToText(htmlComLinks(htmlBody)) : '');
   const fresh = stripQuoted(plain) || plain;
+  const freshBase = stripQuoted(plainBase) || plainBase;
   const attachedNote = parts.attachments.length ? `\n\n📎 ${parts.attachments.map((a) => a.filename).join(', ')}` : '';
 
   const from = addrList(env.from)[0] || null;
@@ -497,7 +520,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
       fromName: from?.name || null, fromAddress: from?.address || null,
       toList: to as unknown as Prisma.InputJsonValue, ccList: cc as unknown as Prisma.InputJsonValue,
       subject: env.subject || null, date,
-      snippet: fresh.replace(/\s+/g, ' ').slice(0, 200) || null,
+      snippet: freshBase.replace(/\s+/g, ' ').slice(0, 200) || null,
       textBody, htmlBody,
       attachments: parts.attachments as unknown as Prisma.InputJsonValue,
       seen: folder === 'SENT' || folder === 'DRAFTS' || (msg.flags ? msg.flags.has('\\Seen') : false),
@@ -961,7 +984,7 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
 
   for (const m of toLink) {
     await prisma.emailMessage.update({ where: { id: m.id }, data: { leadId: lead.id } });
-    const plain = m.textBody || (m.htmlBody ? htmlToText(m.htmlBody) : '');
+    const plain = m.textBody ? textoComLinks(m.textBody, m.htmlBody) : (m.htmlBody ? htmlToText(htmlComLinks(m.htmlBody)) : '');
     const files = ((m.attachments as unknown as { filename: string }[] | null) || []).map((a) => a.filename);
     await addToConversation({
       accountId: acc.accountId, leadId: lead.id, direction: m.folder === 'INBOX' ? 'INBOUND' : 'OUTBOUND',
