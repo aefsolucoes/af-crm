@@ -384,6 +384,7 @@ export async function enviarPropostasFh(p: { accountId: string; leadId: string; 
 export async function escolherFhPelaEquipe(p: { accountId: string; leadId: string; banco: string; proposta?: string | null; userName?: string; io?: any }): Promise<{ ok: boolean; error?: string }> {
   const x = await propostasFh(p.accountId, p.leadId);
   if (!x) return { ok: false, error: 'Card não encontrado' };
+  if (/^(CAIXA|BRB)$/.test(p.banco)) return escolherCaixaBrbPelaEquipe({ ...p, cf: x.cf, leadName: x.lead.name });
   // Proposta específica (Fabio 14/11, Deborah: duas propostas do Inter aprovadas — a ⭐ vai na que ele escolher, não só no banco).
   const so = (v: unknown) => String(v ?? '').replace(/\D/g, '').replace(/^0+/, '');
   const proposta = so(p.proposta) ? String(p.proposta).trim() : null;
@@ -399,6 +400,36 @@ export async function escolherFhPelaEquipe(p: { accountId: string; leadId: strin
   await preencherEscolhaFh(p.accountId, p.leadId, p.banco, linha?.id).catch((e: any) => console.error('[Financiamento] preencher a escolha (equipe):', e?.message));
   await note(p.leadId, `⭐ Financiamento: ${quem} escolheu o ${p.banco}${proposta ? ` (proposta ${proposta})` : ''} (botão "Escolher esta proposta"${antes?.bank ? `; antes era o ${antes.bank}${antes.proposta ? ` (proposta ${antes.proposta})` : ''}` : ''}). Nada foi mandado ao cliente.`);
   logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: x.lead.name, summary: `escolheu o ${p.banco} no Financiamento` });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return { ok: true };
+}
+
+/** ⭐ na CAIXA ou no BRB do Financiamento (Fabio 14/11: "tem que ter a opção de escolher também, iremos fazer o fluxo da CAIXA em breve"): vale a aprovação da Avaliação de Risco
+ *  no SIOPI (`_caixaResultado`) ou o resultado lançado à mão (CAIXA_FH/BRB_FH). Marca o banco (`_fhChosen`), tira a ⭐ das outras propostas e preenche o card com o que se sabe
+ *  (instituição, nº da proposta; valor/prazo/taxa/parcela só do lançado à mão). Nada vai ao cliente; a contratação da CAIXA/BRB segue à mão por enquanto. */
+async function escolherCaixaBrbPelaEquipe(p: { accountId: string; leadId: string; banco: string; userName?: string; io?: any; cf: Cf; leadName: string }): Promise<{ ok: boolean; error?: string }> {
+  const chave = p.banco === 'CAIXA' ? 'CAIXA_FH' : 'BRB_FH';
+  const row = await prisma.creditAnalysis.findFirst({ where: { leadId: p.leadId, bank: chave, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { updatedAt: 'desc' } });
+  const { caixaNoFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const siopi = p.banco === 'CAIXA' ? caixaNoFinanciamento(p.cf._caixaResultado) : null;
+  const siopiOk = !!siopi && /aprovad/i.test(siopi.status) && !/n[aã]o aprovad/i.test(siopi.status);
+  if (!row && !siopiOk) return { ok: false, error: `A ${p.banco} não está aprovada neste card.` };
+  const antes = p.cf._fhChosen as { bank?: string; proposta?: string } | undefined;
+  if (antes?.bank === p.banco) return { ok: true };
+  const proposta = row?.proposalNumber || (String(p.cf._caixaResultado?.ultimaTela || '').match(/Proposta\s+(\d{6,})/) || [])[1] || null;
+  const quem = p.userName || 'a equipe';
+  await prisma.creditAnalysis.updateMany({ where: { leadId: p.leadId, chosen: true }, data: { chosen: false } });
+  if (row) await prisma.creditAnalysis.update({ where: { id: row.id }, data: { chosen: true } });
+  const fill: Cf = { instituicao: p.banco, _fhChosen: { bank: p.banco, at: new Date().toISOString(), porEquipe: quem, ...(proposta ? { proposta } : {}) } };
+  if (proposta) fill.num_proposta = proposta;
+  if (row?.approvedValue) { fill.valor_credito = String(row.approvedValue); if (p.cf.valor_credito && Number(String(p.cf.valor_credito).replace(/[^\d.]/g, '')) !== row.approvedValue) fill._valorPedido = p.cf.valor_credito; }
+  if (row?.termMonths) fill.prazo_financ = `${row.termMonths} meses`;
+  if (row?.rate) fill.taxa_efetiva = row.rate;
+  if (row?.firstInstallment) fill.primeira_parcela = String(row.firstInstallment);
+  await saveCf(p.leadId, fill);
+  if (row?.approvedValue) await prisma.lead.update({ where: { id: p.leadId }, data: { value: row.approvedValue } });
+  await note(p.leadId, `⭐ Financiamento: ${quem} escolheu a ${p.banco}${proposta ? ` (proposta ${proposta})` : ''} (botão "Escolher esta proposta"${antes?.bank ? `; antes era o ${antes.bank}${antes.proposta ? ` (proposta ${antes.proposta})` : ''}` : ''}). Card preenchido: ${Object.keys(fill).filter((k) => !k.startsWith('_')).join(', ')}. A contratação pela ${p.banco} ainda é feita à mão. Nada foi mandado ao cliente.`);
+  logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: p.leadName, summary: `escolheu a ${p.banco} no Financiamento` });
   p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
   return { ok: true };
 }

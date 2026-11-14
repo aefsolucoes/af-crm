@@ -157,7 +157,7 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
             <div className="space-y-1.5">
               {bancos.map(([nome, b]) => {
                 const aprovado = aprovadoTxt(b.status);
-                const proposta = aprovado && !/^(CAIXA|BRB)$/.test(nome); // CAIXA/BRB seguem o fluxo próprio (Análise CAIXA)
+                const proposta = aprovado && !/^(CAIXA|BRB)$/.test(nome); // CAIXA/BRB: escolhe (⭐), mas não vão no "Encaminhar ao cliente" (aviso só dos bancos do Credimorar/Inter/Itaú)
                 const escolhida = l.escolhido === nome;
                 const enviada = !!l.enviados?.includes(nome);
                 return (
@@ -168,9 +168,10 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
                     </div>
                     <p className="mt-0.5 text-[11px] leading-snug text-slate-500 whitespace-pre-wrap break-words">{b.texto.replace(/^[^,—]+[,—]\s*/, '').slice(0, 220)}</p>
                     {nome === 'Santander' && <SantanderManualEnvio leadId={leadId} produto="FH" />}
-                    {(proposta || (aprovado && PDF[nome])) && (
+                    {aprovado && (
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {proposta && (escolhida
+                        {/* ⭐ também na CAIXA/BRB (Fabio 14/11: "tem que ter a opção de escolher também"); o "Encaminhar" continua só pros bancos do aviso */}
+                        {aprovado && (escolhida
                           ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600"><Star size={10} className="fill-current" /> Proposta escolhida</span>
                           : <button onClick={() => escolher(nome)} disabled={!!busy} className="inline-flex items-center gap-1 rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50"><Star size={10} /> Escolher esta proposta</button>)}
                         {proposta && (

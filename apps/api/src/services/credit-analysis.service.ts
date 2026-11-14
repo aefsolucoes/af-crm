@@ -859,7 +859,8 @@ export function rendaExigida(cf: Record<string, any> | null | undefined, opts: {
   if (c._rendaDispensada) return { exigida: false, motivo: 'a equipe dispensou a renda deste cliente' };
   if (c._rendaExigida) return { exigida: true, motivo: 'a equipe marcou que a renda é exigida' };
   const etapa = String(opts.stageName || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
-  const optou = String(c._optouCaixa?.banco || '').toUpperCase();
+  // ⭐ da equipe na CAIXA/BRB do Financiamento (Fabio 14/11: "tem que ter a opção de escolher também") vale como a opção pelo banco.
+  const optou = String(c._optouCaixa?.banco || (/^(CAIXA|BRB)$/i.test(String(c._fhChosen?.bank || '')) ? c._fhChosen.bank : '') || '').toUpperCase();
   if (c._caixaRota || /^analise\s+caixa/.test(etapa) || optou === 'CAIXA') return { exigida: true, motivo: 'o cliente segue pela CAIXA' };
   if (optou === 'BRB' || c._fhCaixaAnswer?.resposta === 'SIM') return { exigida: true, motivo: 'o cliente segue (também) pelo BRB' };
   if (bancoPediuRenda(opts.aprovacoes || [])) return { exigida: true, motivo: 'a aprovação do banco pediu documento de renda' };
@@ -1317,7 +1318,7 @@ export function parseBancosFinanciamento(resumo?: string | null): Record<string,
 }
 
 /** Resultado da CAIXA (Avaliação de Risco no SIOPI, `_caixaResultado`) no formato da lista de bancos do Financiamento ("Status, detalhe"). */
-function caixaNoFinanciamento(res: any): { status: string; texto: string; em: string | null } | null {
+export function caixaNoFinanciamento(res: any): { status: string; texto: string; em: string | null } | null {
   const bruto = String(res?.status || '').replace(/^RESULTADO:\s*/i, '').trim();
   if (!bruto || /AGUARDANDO_NOVA_AVALIACAO/i.test(bruto)) return null;
   const { resultadoNoCard } = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
