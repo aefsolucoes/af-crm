@@ -2421,9 +2421,18 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
     if (!PERGUNTA_DE_STATUS.test(String(p.text || ''))) return { asked: false, waited: false };
     // Card já EM CONTRATAÇÃO com o banco escolhido (Fabio 14/11, Adriano/Cássia: "por que a IA fez essa conferência?" — o áudio falava de "dinheiro no banco" e o "Sugerir resposta" pediu leitura
     // nova): a análise acabou; ler os portais de novo só repete a leitura — e no Credimorar FH a conferência clica de novo em "Aceitar"/"Enviar" na ação pendente. Vale a leitura salva.
-    const naContratacao = await db.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true, pipeline: { select: { name: true } } } });
-    if (/em contrata/i.test(naContratacao?.pipeline?.name || '')
-      && (!!(naContratacao?.customFields as any)?._fhChosen?.bank || !!(await db.creditAnalysis.findFirst({ where: { leadId: p.leadId, chosen: true, dryRun: false }, select: { id: true } })))) return { asked: false, waited: false };
+    // Fabio 14/11: "isso vale tanto para FH quanto para HE". Banco escolhido = FH: "Seguir com esta"/equipe (_fhChosen) ou CAIXA/BRB (_optouCaixa); HE: a ⭐ — ou, sem ⭐, um banco só
+    // aprovado (o processo segue por ele, mesma regra da vistoria).
+    const naContratacao = await db.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true, pipeline: { select: { name: true, department: { select: { name: true } } } } } });
+    if (/em contrata/i.test(naContratacao?.pipeline?.name || '')) {
+      const cfC = (naContratacao?.customFields || {}) as Record<string, any>;
+      let escolhido = !!cfC._fhChosen?.bank || !!cfC._optouCaixa?.banco || !!(await db.creditAnalysis.findFirst({ where: { leadId: p.leadId, chosen: true, dryRun: false }, select: { id: true } }));
+      if (!escolhido && !/habitacional/i.test(naContratacao?.pipeline?.department?.name || '')) {
+        const aprov = await db.creditAnalysis.findMany({ where: { leadId: p.leadId, dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, select: { bank: true } });
+        escolhido = new Set(aprov.map((a) => a.bank)).size === 1;
+      }
+      if (escolhido) return { asked: false, waited: false };
+    }
     const ran = await db.creditAnalysis.findMany({
       where: { leadId: p.leadId, dryRun: false, status: { in: REAL_SENT }, createdAt: { gt: new Date(Date.now() - 60 * 86_400_000) } },
       orderBy: { updatedAt: 'desc' }, select: { bank: true, updatedAt: true },
