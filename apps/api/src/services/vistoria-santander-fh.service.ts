@@ -130,6 +130,8 @@ export async function pedirDadosVistoriaFh(accountId: string, leadId: string, ba
   const r = await sendOutboundWhatsApp({ accountId, leadId, content: conteudo, io });
   if (!r.success) return false;
   await salvaDadosSt(leadId, { askedAt: new Date().toISOString(), banco, itens, ...(itens.length ? {} : { completoAt: new Date().toISOString() }) });
+  // O contato da vistoria foi pedido junto: entra no ciclo da pergunta (leitura da resposta, 2 repetições e push pra equipe — vistoria-contato.service, Fabio 14/11).
+  if (itens.includes('contato')) await (require('./vistoria-contato.service') as typeof import('./vistoria-contato.service')).marcarPerguntaFeita(leadId, { banco, fh: true }).catch(() => {});
   if (docs) await patchCf(leadId, (c) => { c._fhDocsImovelAt = new Date().toISOString(); });
   await note(leadId, `🏠 Pedi ao cliente ${itens.length ? `os dados da vistoria do ${banco}: ${itens.join(', ')}` : ''}${itens.length && docs ? ' e ' : ''}${docs ? 'a documentação do imóvel (com ela a vistoria já pode ser pedida) e a do vendedor (pode vir depois)' : ''}.${itens.length ? ' A resposta é lida e vai pro card ("Contato vistoria" e os dados do vendedor).' : ''}`);
   return true;

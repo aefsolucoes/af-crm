@@ -12,7 +12,9 @@ import { prisma } from '../lib/prisma';
  *    Conversa fechada (24 h): template "Olá, tudo bem?" e a pergunta sai na resposta (reply-pending).
  *  - A resposta é lida (onClientReplyContatoVistoria → lerContatoAgora) e vai pro campo. Pedido que a equipe mandou pelo botão sem o contato fica ARMADO
  *    (customFields._vistoriaArmada) e sai sozinho com o contato assim que ele chega (processVistoriasArmadas).
- * Estado da pergunta: customFields._vistoriaContatoAsk = { at, via: 'mensagem'|'template', por, fh, banco, lembreteAt?, equipeAvisadaAt?, respondidoAt? } (mesmo campo de antes da Creditas).
+ *  - Sem resposta (Fabio 14/11: "pergunta novamente, apenas 2x; se não responder, manda push para a equipe"): a pergunta é repetida 2 vezes, a cada 24 h (07h–21h; conversa fechada =
+ *    template de novo); 24 h depois da 2ª repetição sem resposta, push pra equipe + nota, e o CRM para de perguntar (processLembretesContato).
+ * Estado da pergunta: customFields._vistoriaContatoAsk = { at, via: 'mensagem'|'template', por, fh, banco, lembretes?, lembreteAt?, equipeAvisadaAt?, respondidoAt?, fimAt? } (mesmo campo de antes da Creditas).
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
@@ -20,7 +22,10 @@ type Cf = Record<string, any>;
 export type Contato = { nome: string; telefone: string };
 
 export const CONTATO_LABEL = 'contato da vistoria';
-const REPETIR_PERGUNTA_MS = 3 * 86_400_000; // pergunta já feita há menos de 3 dias = esperando a resposta
+const REPETIR_PERGUNTA_MS = 3 * 86_400_000; // pedido de dados do Financiamento (com o contato) feito há menos de 3 dias = esperando a resposta
+const CICLO_MAX_MS = 15 * 86_400_000; // pergunta mais velha que isso sem resposta: pergunta de novo do zero quando um pedido de vistoria precisar
+const LEMBRETE_MS = 24 * 3_600_000; // intervalo entre a pergunta, as 2 repetições e o push pra equipe
+const MAX_LEMBRETES = 2;
 const LER_DEPOIS_MS = 60_000; // o cliente costuma responder em várias mensagens
 
 const note = (leadId: string, content: string, userId?: string | null) => prisma.note.create({ data: { leadId, type: 'COMMENT', content, ...(userId ? { userId } : {}) } }).catch(() => {});
@@ -58,8 +63,8 @@ export function trocarBlocoContato(body: string, linhas: string[]): string | nul
 export function ehFinanciamento(departamento: string | null | undefined): boolean { return /habitacional/i.test(String(departamento || '')); }
 
 /** Pergunta ao cliente (sem citar banco — Fabio 03/11). Pura. */
-export function perguntaContato(p: { fh: boolean; nome?: string | null; foneCliente?: string | null }): string {
-  const oi = p.nome ? `${p.nome}, p` : 'P';
+export function perguntaContato(p: { fh: boolean; nome?: string | null; foneCliente?: string | null; lembrete?: boolean }): string {
+  const oi = p.nome ? `${p.nome}, ${p.lembrete ? 'só reforçando — p' : 'p'}` : (p.lembrete ? 'Só reforçando — p' : 'P');
   if (p.fh) return `${oi}ra agendar a vistoria do imóvel: quem vai acompanhar o engenheiro na visita — o vendedor, o corretor ou outra pessoa? Me passa o nome e o telefone dessa pessoa, por favor.`;
   const fone = digitos(p.foneCliente).length >= 10 ? fmtFone(p.foneCliente) : '';
   return fone
@@ -78,8 +83,10 @@ async function patchAsk(leadId: string, patch: Record<string, unknown>) {
 
 /** A pergunta já está feita (ou guardada pra sair na resposta) e esperando? Inclui o pedido de dados da vistoria do Financiamento (que já leva o contato junto). */
 export function perguntaPendente(cf: Cf, agora = Date.now()): boolean {
-  const at = cf._vistoriaContatoAsk?.at ? Date.parse(String(cf._vistoriaContatoAsk.at)) : 0;
-  if (at && agora - at < REPETIR_PERGUNTA_MS) return true;
+  // Pergunta feita e ainda no ciclo (sem resposta, repetições, push pra equipe): não pergunta de novo do zero — quem repete é processLembretesContato; depois do push, a equipe cuida.
+  const ask = cf._vistoriaContatoAsk || {};
+  const at = ask.at ? Date.parse(String(ask.at)) : 0;
+  if (at && !ask.respondidoAt && !ask.fimAt && agora - at < CICLO_MAX_MS) return true;
   if (Array.isArray(cf._replyPending) && cf._replyPending.some((x: any) => x?.label === CONTATO_LABEL)) return true;
   const dfh = cf._vistoriaDadosFh || {};
   if (dfh.askedAt && !dfh.completoAt && Array.isArray(dfh.itens) && dfh.itens.includes('contato') && agora - Date.parse(String(dfh.askedAt)) < REPETIR_PERGUNTA_MS) return true;
@@ -101,7 +108,7 @@ export async function pedirContato(accountId: string, leadId: string, opts: { us
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
   const texto = perguntaContato({ fh, nome, foneCliente: cf.telefone_1 || lead.contact?.phone });
   const userId = opts.userId || undefined;
-  const marca = (via: string) => patchAsk(leadId, { at: new Date().toISOString(), via, por: opts.userId || 'CRM', fh, banco: opts.banco || null, lembreteAt: null, equipeAvisadaAt: null, respondidoAt: null });
+  const marca = (via: string) => patchAsk(leadId, { at: new Date().toISOString(), via, por: opts.userId || 'CRM', fh, banco: opts.banco || null, lembretes: 0, lembreteAt: null, equipeAvisadaAt: null, respondidoAt: null, fimAt: null });
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
   const quem = fh ? 'o vendedor, o corretor ou outra pessoa' : 'o próprio cliente (confirmando) ou outra pessoa';
@@ -276,8 +283,80 @@ export async function liberarArmada(accountId: string, leadId: string, io?: Io):
   }
 }
 
-/** A cada 2 min (index.ts): pedido armado cujo contato já chegou (campo preenchido pela equipe ou pela leitura) → sai. */
+/** Outro fluxo já perguntou o contato junto com mais coisas (pedido de dados da vistoria do Financiamento): entra no mesmo ciclo — leitura da resposta, 2 repetições e push. */
+export async function marcarPerguntaFeita(leadId: string, p: { banco?: string; fh?: boolean; via?: string }): Promise<void> {
+  await patchAsk(leadId, { at: new Date().toISOString(), via: p.via || 'mensagem', por: 'CRM', fh: p.fh ?? true, banco: p.banco || null, lembretes: 0, lembreteAt: null, equipeAvisadaAt: null, respondidoAt: null, fimAt: null });
+}
+
+/** Sem resposta à pergunta do contato (Fabio 14/11): repete 2x, a cada 24 h, no horário (07h–21h); 24 h depois da 2ª, push pra equipe e o CRM para. Pura nos dados: o que fazer agora. */
+export function proximoPassoContato(ask: Cf, agora = Date.now()): 'nada' | 'lembrete' | 'equipe' {
+  if (!ask?.at || ask.respondidoAt || ask.fimAt || ask.equipeAvisadaAt) return 'nada';
+  const at = Date.parse(String(ask.at));
+  if (!at || agora - at > CICLO_MAX_MS) return 'nada';
+  const ultima = ask.lembreteAt ? Date.parse(String(ask.lembreteAt)) : at;
+  if (agora - ultima < LEMBRETE_MS) return 'nada';
+  return (Number(ask.lembretes) || 0) < MAX_LEMBRETES ? 'lembrete' : 'equipe';
+}
+
+async function lembrarContato(accountId: string, leadId: string, io?: Io): Promise<void> {
+  const lead = await dadosDoLead(leadId);
+  if (!lead || lead.accountId !== accountId) return;
+  const cf = (lead.customFields || {}) as Cf;
+  const ask = (cf._vistoriaContatoAsk || {}) as Cf;
+  if (contatoConfirmado(cf)) { await patchAsk(leadId, { respondidoAt: ask.respondidoAt || new Date().toISOString() }); return; }
+  // O pedido de vistoria já saiu depois da pergunta (a equipe resolveu de outro jeito): encerra o ciclo.
+  const depois = (v: unknown) => !!v && Date.parse(String(v)) > Date.parse(String(ask.at));
+  if (!cf._vistoriaArmada && (depois(cf._vistoriaRequestedAt) || depois(cf._vistoriaCreditasAt))) { await patchAsk(leadId, { fimAt: new Date().toISOString() }); return; }
+  if (cf._autoPaused) return;
+  const passo = proximoPassoContato(ask);
+  if (passo === 'nada') return;
+  const banco = ask.banco ? ` (${ask.banco})` : '';
+  if (passo === 'equipe') {
+    await patchAsk(leadId, { equipeAvisadaAt: new Date().toISOString() });
+    await note(leadId, `🏠 O cliente não respondeu quem acompanha a vistoria${banco}: perguntei e repeti ${MAX_LEMBRETES}x, sem resposta. Falem com ele e preencham o campo "Contato vistoria" (nome e telefone)${cf._vistoriaArmada ? ' — o pedido de vistoria que está esperando sai sozinho quando o campo for preenchido' : ''}. O CRM não pergunta mais.`);
+    push(accountId, '🏠 Sem o contato da vistoria', `${lead.name}: o cliente não respondeu quem acompanha a vistoria (perguntado ${MAX_LEMBRETES + 1}x)`, leadId);
+    return;
+  }
+  const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!inNoticeWindow()) return;
+  const fh = ask.fh ?? ehFinanciamento(lead.pipeline?.department?.name);
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
+  const texto = perguntaContato({ fh, nome, foneCliente: cf.telefone_1 || lead.contact?.phone, lembrete: true });
+  const n = (Number(ask.lembretes) || 0) + 1;
+  const { sendOutboundWhatsApp, sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+  if (await whatsappWindowOpen(leadId)) {
+    const r = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io: io as any });
+    if (!r.success) { console.warn('[Contato vistoria] repetição:', (r as any).error); return; }
+    await patchAsk(leadId, { lembretes: n, lembreteAt: new Date().toISOString() });
+    await note(leadId, `🏠 O cliente ainda não disse quem acompanha a vistoria${banco}: perguntei de novo (${n}ª de ${MAX_LEMBRETES} repetições).`);
+    return;
+  }
+  const t = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: 'ola_tudo_bem', language: 'pt_BR', bodyParams: [], previewText: 'Olá, tudo bem?', io: io as any });
+  if (!t.success) { console.warn('[Contato vistoria] template da repetição:', t.error); return; }
+  const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+  await queueOnReply(prisma, { leadId, label: CONTATO_LABEL, text: texto, noteText: `🏠 O cliente ainda não disse quem acompanha a vistoria${banco} e a janela de 24 h está fechada: mandei o template "Olá, tudo bem?" de novo (${n}ª de ${MAX_LEMBRETES} repetições); a pergunta sai quando ele responder.` });
+  await patchAsk(leadId, { lembretes: n, lembreteAt: new Date().toISOString() });
+}
+
+/** A cada 2 min: repetições da pergunta / push pra equipe (lembrarContato). */
+export async function processLembretesContato(io?: Io): Promise<void> {
+  const rows = await prisma.$queryRaw<{ id: string; accountId: string }[]>`
+    SELECT id, "accountId" FROM "Lead"
+     WHERE archived = false AND status = 'OPEN'
+       AND COALESCE("customFields"->'_vistoriaContatoAsk'->>'at', '') <> ''
+       AND COALESCE("customFields"->'_vistoriaContatoAsk'->>'respondidoAt', '') = ''
+       AND COALESCE("customFields"->'_vistoriaContatoAsk'->>'fimAt', '') = ''
+       AND COALESCE("customFields"->'_vistoriaContatoAsk'->>'equipeAvisadaAt', '') = ''
+     LIMIT 50`;
+  for (const r of rows) {
+    try { await lembrarContato(r.accountId, r.id, io); } catch (e: any) { console.warn('[Contato vistoria] lembrete:', e?.message); }
+  }
+}
+
+/** A cada 2 min (index.ts): pedido armado cujo contato já chegou (campo preenchido pela equipe ou pela leitura) → sai; e as repetições da pergunta sem resposta. */
 export async function processVistoriasArmadas(io?: Io): Promise<void> {
+  await processLembretesContato(io).catch((e: any) => console.warn('[Contato vistoria] lembretes:', e?.message));
   const rows = await prisma.$queryRaw<{ id: string; accountId: string }[]>`
     SELECT id, "accountId" FROM "Lead" WHERE archived = false AND jsonb_exists(COALESCE("customFields", '{}'::jsonb), '_vistoriaArmada') LIMIT 30`;
   for (const r of rows) {
