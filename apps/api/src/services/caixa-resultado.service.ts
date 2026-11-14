@@ -375,6 +375,22 @@ async function avisoComSimulacao(accountId: string, leadId: string, c: Cf): Prom
   return 'ESPERA';
 }
 
+/** Números da simulação oficial da CAIXA feita DEPOIS do aviso da aprovada na PRICE, com o mesmo valor (± 1%): o PDF foi ao cliente por fora do aviso (botão "PDF")
+ *  antes de o CRM gravar `condicionada.oficial` (Isidro 13/11: aviso com os números do site às 14h59, PDF oficial com a correção às 19h21). Pura. */
+function oficialDaSimulacao(cf: Cf, c: Cf): Cf | undefined {
+  const s = cf._caixaSimulacao as Cf | undefined;
+  const r = s?.resultado as Cf | undefined;
+  if (c.semSimulacao || s?.status !== 'PRONTA' || !r?.ok || !s.pdf?.em || !c.enviadoAt || Date.parse(s.pdf.em) <= Date.parse(c.enviadoAt)) return undefined;
+  const valor = numeroBr(r.financiamento);
+  if (!valor || Math.abs(valor - Number(c.valor)) > Number(c.valor) * 0.01) return undefined;
+  const nominal = Number(((/(\d+(?:[.,]\d+)?)/.exec(String(r.jurosNominais || '')) || [])[1] || '').replace(',', '.'));
+  // A 1ª parcela do PDF (tabela) pode diferir uns centavos da "primeira" do painel da CAIXA — sem `parcelaPdf` (simulações até 13/11) a IA usa a da conversa.
+  const parcela = Number(r.parcelaPdf) || null;
+  if (!nominal) return undefined;
+  const indexador = (/\/\s*([A-Z]{2,5})\b/.exec(String(r.sistema || '')) || [])[1] || 'TR';
+  return { valor, prazo: Number(r.parcelas) || Number(String(r.prazo || '').replace(/\D/g, '')) || null, taxa: `${nominal.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}`, parcela };
+}
+
 /** Bloco pra IA da conversa: aviso da condicionada/do valor liberado esperando o template, ou enviado há até 3 dias. '' se não houver. Pura. */
 export function aiCondicionadaContext(cf: Cf): string {
   const c = cf._caixaResultado?.condicionada as Cf | undefined;
@@ -387,14 +403,14 @@ A conversa estava fechada e o CRM chamou o cliente pelo template de atualizaçã
   if (c.tipo === 'liberado') {
     if (dias > 30) return ''; // o "simulei no site" pode vir dias depois (Fabio 11/11)
     // Com a simulação oficial (Fabio 13/11): os números que foram ao cliente são os do PDF da CAIXA; sem ela, os do simulador do site (11/11).
-    const of = c.oficial as Cf | undefined;
+    const of = (c.oficial as Cf | undefined) || oficialDaSimulacao(cf, c);
     const site = simulacaoSiteCaixa(Number(c.valor), !!c.he, Number(c.prazo) || 0);
     const valorTxt = brl(Number(of?.valor) || Number(c.valor));
     const prazoTxt = Number(of?.prazo) || Math.min(Number(c.prazo) || 999, c.he ? 240 : 360);
     const taxaTxt = of?.taxa ? String(of.taxa) : `${site.taxaAnual.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + TR`;
-    const parcelaTxt = brl(Number(of?.parcela) || site.parcela);
+    const parcelaTxt = of ? (Number(of.parcela) ? `de ${brl(Number(of.parcela))}` : 'igual à da mensagem que foi junto com o PDF da simulação, na conversa') : `de ${brl(site.parcela)}`;
     return `--- CAIXA APROVOU (aviso enviado ao cliente; Fabio 03/11 e 11/11) ---
-O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${valorTxt}, no resumo de aprovação de sempre${of ? ', junto com o PDF da simulação da CAIXA' : ''} (prazo de ${prazoTxt} meses, taxa de ${taxaTxt}, 1ª parcela de ${parcelaTxt}). Esses são os números APROVADOS: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
+O CRM avisou o cliente que a CAIXA aprovou o ${c.he ? 'crédito' : 'financiamento'} no valor de ${valorTxt}, no resumo de aprovação de sempre${of ? ', junto com o PDF da simulação da CAIXA' : ''} (prazo de ${prazoTxt} meses, taxa de ${taxaTxt}, 1ª parcela ${parcelaTxt}). Esses são os números APROVADOS: fale dele assim e NUNCA diga que é estimativa, cálculo, valor aproximado, simulação não oficial ou "do nosso simulador". Só dê detalhes se ele perguntar: a CAIXA limitou a parcela em ${brl(Number(c.parcela))} por mês, por isso foi na tabela PRICE em ${c.prazo} meses${c.desejado && Number(c.desejado) > Number(c.valor) ? ` e o valor ficou abaixo do pedido (${brl(Number(c.desejado))})` : ''}. Não prometa outro valor nem outra condição; dúvida que você não sabe responder → "askTeam".
 SIMULOU NO SITE (Fabio 11/11): se o cliente disser que fez uma simulação direto no site (da CAIXA ou outro) e conseguiu um valor MAIOR ou uma parcela MAIOR que a aprovada, NÃO responda NADA a ele ("noReply": true, "reply": "", sem "askTeam") e preencha "pushColaborador" com o que ele disse (o valor/a parcela que ele citou, entre aspas) — o CRM avisa o colaborador do card, que fala com ele.`;
   }
   if (dias > 3) return '';

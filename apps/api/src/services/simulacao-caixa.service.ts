@@ -269,7 +269,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
   } catch (e: any) { erroPdf = e?.message || String(e); }
   const { linhas: _l, ...resumo } = r;
   const docId = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._caixaSimulacao?.docRequestId || null;
-  await gravar(leadId, { status: erroPdf ? 'ERRO' : 'PRONTA', leaseAt: null, erro: erroPdf || null, resultado: { ...resumo, parcelas: rows.length }, pdf: driveId ? { driveId, link, em: new Date().toISOString() } : undefined, docRequestId: null });
+  await gravar(leadId, { status: erroPdf ? 'ERRO' : 'PRONTA', leaseAt: null, erro: erroPdf || null, resultado: { ...resumo, parcelas: rows.length, parcelaPdf: rows[0]?.parcela || null }, pdf: driveId ? { driveId, link, em: new Date().toISOString() } : undefined, docRequestId: null });
   // Pedido do botão "PDF" (cliente): manda o mesmo PDF pelo caminho dos outros bancos.
   if (docId) {
     const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
@@ -292,16 +292,21 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     }
     if (pdfPronto && !erroPdf) {
       const ent = await sd.finishCaixaDoc(prisma as any, { accountId, id: docId, pdf: pdfPronto }).catch((e: any) => { console.error('[Simulação CAIXA] PDF ao cliente:', e?.message); return null; });
-      if (avisoProposta) {
-        const ok = !!(ent && (ent as any).ok);
+      const ok = !!(ent && (ent as any).ok);
+      const foiAoCliente = ok && !(ent as any).held;
+      // PDF da CAIXA mandado ao cliente com a aprovada na PRICE já avisada (botão "PDF" — Isidro 13/11): a IA passa a usar os números dele, não os do site.
+      const corrigeLiberado = !lib && foiAoCliente && condA?.tipo === 'liberado';
+      if (avisoProposta || corrigeLiberado) {
         const fresh = (((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any);
         const fr = fresh._caixaResultado || {};
         const agora = new Date().toISOString();
+        const oficial = { valor: fin, prazo: rows.length, taxa: taxaTxt, parcela: rows[0]?.parcela || null, em: agora };
         // Aprovada na PRICE: enviado → a IA passa a falar com os números da CAIXA (`oficial`); não saiu → o pedido fica FAILED e o aviso sai em texto (avisarCondicionadaCliente).
-        const res = lib
-          ? (ok ? { ...fr, condicionada: { ...(fr.condicionada || {}), status: 'ENVIADO', enviadoAt: agora, oficial: { valor: fin, prazo: rows.length, taxa: taxaTxt, parcela: rows[0]?.parcela || null } } } : fr)
-          : { ...fr, aprovadaAviso: { ...(fr.aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? agora : undefined } };
-        await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaResultado: res, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), avisoAprovacao: null } } } });
+        let res = lib
+          ? (ok ? { ...fr, condicionada: { ...(fr.condicionada || {}), status: 'ENVIADO', enviadoAt: agora, oficial } } : fr)
+          : avisoProposta ? { ...fr, aprovadaAviso: { ...(fr.aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? agora : undefined } } : fr;
+        if (corrigeLiberado && res.condicionada?.tipo === 'liberado') res = { ...res, condicionada: { ...res.condicionada, oficial } };
+        await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaResultado: res, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), ...(avisoProposta ? { avisoAprovacao: null } : {}) } } } });
         if (lib && ok) await nota(leadId, `📨 Avisei o cliente que a CAIXA aprovou R$ ${brl(fin)}: mensagem de aprovação com os números da simulação oficial da CAIXA (${rows.length} meses, ${taxaTxt}, 1ª parcela R$ ${brl(rows[0].parcela)}) e o PDF.`);
       }
     }
