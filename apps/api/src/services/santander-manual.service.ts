@@ -322,7 +322,8 @@ export type DocPortal = { id: string; fileName: string; mimeType: string; tipo: 
 /** Quais arquivos do cliente vão pro portal e em que vaga: os 3 contracheques mais novos, a declaração e o recibo do IR mais novos, até 3 extratos e outros comprovantes de renda
  *  (DECORE, pró-labore, extrato do INSS…). Nunca FGTS/CTPS nem documento pessoal/do imóvel — a análise manual é de RENDA. Mesmo nome de arquivo mandado duas vezes vai uma vez. Pura. */
 export function escolherDocsPortal(arqs: { id: string; fileName: string | null; mimeType: string; createdAt: Date | string; tipo: string }[]): DocPortal[] {
-  const novos = [...arqs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  // FGTS/CTPS fora também pelo NOME do arquivo ("FGTS.pdf" pode ser lido como extrato).
+  const novos = [...arqs].filter((a) => !FORA_DO_SANTANDER.test(norm(`${a.fileName || ''} ${a.tipo}`).replace(/[_.-]+/g, ' '))).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   const vistos = new Set<string>();
   const out: DocPortal[] = [];
   const pega = (rx: RegExp, slot: DocPortal['slot'], max: number) => {
