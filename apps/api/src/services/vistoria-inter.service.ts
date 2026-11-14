@@ -178,11 +178,35 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   const cc = String(p.cc || '').split(/[,;\s]+/).map((x) => x.trim()).filter(Boolean);
 
   const { sendEmailFrom } = require('./email-inbox.service') as typeof import('./email-inbox.service');
-  await sendEmailFrom({ acc, userId: p.userId, to: [to], cc, subject: p.subject, body: p.body, replyToId: p.replyToId || null, leadId: p.leadId, io: (p.io || ({ to: () => ({ emit: () => {} }) })) as any, attachments });
+  const enviar = (conta: typeof acc, copias: string[]) => sendEmailFrom({
+    acc: conta, userId: p.userId, to: [to], cc: [...new Set([...cc, ...copias])].filter((a) => a.toLowerCase() !== conta.address.toLowerCase()),
+    subject: p.subject, body: p.body, replyToId: p.replyToId || null, leadId: p.leadId, io: (p.io || ({ to: () => ({ emit: () => {} }) })) as any, attachments,
+  });
+  let via = acc.address;
+  let copias: string[] = [];
+  try {
+    await enviar(acc, []);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    // CAIXA RESERVA (Fabio 12/11, a mesma do questionário do Inter: "do Fabio… isso é temporário enquanto o e-mail comercial não volta"): o comercial@ está suspenso no Titan (535) →
+    // o pedido sai pela caixa pessoal do 1º admin, no mesmo fio (responder pelo fabio@ o que chegou no comercial@ é permitido desde 09/11), com cópia pros nossos endereços que
+    // estavam no e-mail do Inter. Só entra no erro de login: volta sozinho pro comercial@ quando ele voltar a enviar (Nalia 14/11: o pedido não saía).
+    if (!/\b535\b|invalid login|authentication failed|EAUTH/i.test(msg)) throw e;
+    const dono = await prisma.user.findFirst({ where: { accountId: p.accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+    const reserva = dono ? await prisma.emailAccount.findFirst({ where: { accountId: p.accountId, userId: dono.id, NOT: { id: acc.id } }, orderBy: { createdAt: 'asc' } }) : null;
+    if (!reserva) throw new Error(`${msg} — a caixa ${acc.address} está com erro de login e não há caixa reserva`);
+    const pai = p.replyToId ? await prisma.emailMessage.findUnique({ where: { id: p.replyToId }, select: { toList: true, ccList: true } }) : null;
+    const dominio = acc.address.split('@')[1]?.toLowerCase() || '';
+    copias = [...new Set([...(Array.isArray(pai?.toList) ? (pai!.toList as any[]) : []), ...(Array.isArray(pai?.ccList) ? (pai!.ccList as any[]) : [])]
+      .map((a: any) => String(a?.address || '').toLowerCase())
+      .filter((a) => a && dominio && a.endsWith(`@${dominio}`) && a !== acc.address.toLowerCase() && a !== reserva.address.toLowerCase()))];
+    try { await enviar(reserva, copias); via = reserva.address; } catch (e2: any) { throw new Error(`${msg} — e pela caixa reserva ${reserva.address}: ${e2?.message || e2}`); }
+  }
 
   const fresh = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: p.leadId }, data: { customFields: { ...((fresh?.customFields || {}) as any), _vistoriaRequestedAt: new Date().toISOString() } } });
-  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}). Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
+  const reservaTxt = via !== acc.address ? ` Saiu pelo ${via} (o ${acc.address} está com erro de login no envio)${copias.length ? `, com cópia pra ${copias.join(', ')}` : ''}.` : '';
+  await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', userId: p.userId, content: `📨 Vistoria solicitada ao Inter (e-mail para ${to}${attachments.length ? `, com ${attachments.length} anexo(s): ${attachments.map((a) => a.filename).join('; ')}` : ''}).${reservaTxt} Aguardando o engenheiro entrar em contato (até 2 dias úteis).` } }).catch(() => {});
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(p.accountId, { title: '📨 Vistoria solicitada ao Inter', body: lead.name, leadId: p.leadId }).catch(() => {}); } catch { /* aviso */ }
   // Vistoria solicitada = o card vai pra "Vistoria do Imóvel" (Fabio 21/10: "sempre que conseguir solicitar a vistoria, mover o card pra Vistoria").
   await moverParaVistoria(p.accountId, p.leadId, 'vistoria solicitada ao Inter', p.io);
