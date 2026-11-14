@@ -176,7 +176,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
       const linhas = await prisma.creditAnalysis.findMany({ where: { leadId: l.id, dryRun: false, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, createdAt: { gte: desde } }, select: { bank: true, kind: true, status: true, createdAt: true } });
       if (rodadaNovaPendente(desde, linhas)) continue;
     }
-    const run = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+    const run = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: FH_BANK, dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
     const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
     const emAnalise = op.emAnalise;
     const aprovadas = await enriquecer(l.id, cf, op.aprovadas);
@@ -284,7 +284,7 @@ export async function avisoFhAgora(accountId: string, leadId: string, io?: any):
   const cf = (l?.customFields || {}) as Cf;
   if (!l || cf._autoPaused || !cf._fhResumo) return false;
   if (cf._fhNotice?.sentAt) return true;
-  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
   const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`);
   const aprovadas = await enriquecer(leadId, cf, op.aprovadas);
   if (!aprovadas.length) return false;
@@ -314,6 +314,92 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
   if (emAnalise.length) { await pausa(); await sendOutboundWhatsApp({ ...base, content: `⏳ Ainda em análise: ${emAnalise.join(', ')}. Se aprovar, te aviso por aqui.` }); }
   await (require('./approval-notice.service') as typeof import('./approval-notice.service')).sendOutroCanalAviso(base); // já tentou por outro meio? + não tentar em outro canal (Fabio 29/10)
   return true;
+}
+
+// ─── Botões da equipe no bloco "Financiamento" do card (Fabio 14/11: "não achei encaminhar proposta para o cliente, igual tem no HE — as mesmas funções do HE também no FH") ───
+
+/** Propostas aprovadas do Financiamento do card — as mesmas do aviso automático (resumo dos bancos + condições da rodada, ou do registro à mão). */
+async function propostasFh(accountId: string, leadId: string) {
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, status: true, customFields: true } });
+  if (!lead) return null;
+  const cf = (lead.customFields || {}) as Cf;
+  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+  const resumo = parseBancosFinanciamento(cf._fhResumo);
+  const op = fhOptions(resumo, `CONDIÇÕES — ${run?.conditions || ''}`);
+  return { lead, cf, resumo, aprovadas: await enriquecer(leadId, cf, op.aprovadas), emAnalise: op.emAnalise };
+}
+
+/** "Avisar cliente" (todas as aprovadas, com a introdução do aviso automático) e "Encaminhar ao cliente" (só a do banco) no Financiamento: uma mensagem por banco com o botão
+ *  "Seguir com esta". Vale com a IA do card desligada (quem manda é a equipe) e pode mandar de novo. Conversa fechada (24 h) → erro: o template vai antes. */
+export async function enviarPropostasFh(p: { accountId: string; leadId: string; userName?: string; bancos?: string[]; io?: any }): Promise<{ ok: boolean; error?: string; bancos?: string[] }> {
+  const x = await propostasFh(p.accountId, p.leadId);
+  if (!x) return { ok: false, error: 'Card não encontrado' };
+  const so = (p.bancos || []).filter(Boolean);
+  const lista = so.length ? x.aprovadas.filter((o) => so.includes(o.banco)) : x.aprovadas;
+  if (!lista.length) return { ok: false, error: so.length ? `O ${so.join(', ')} não está aprovado neste card.` : 'Não há proposta aprovada do Financiamento pra mandar.' };
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(p.leadId))) return { ok: false, error: 'A conversa do WhatsApp está fechada (o cliente não escreve há mais de 24 h): mande um template antes ou espere ele responder.' };
+  const quem = p.userName || 'a equipe';
+  if (!so.length) {
+    const out = await sendFhNotice(p.accountId, p.leadId, x.lead.name, lista, x.emAnalise, p.io);
+    if (!out) return { ok: false, error: 'O aviso não saiu (veja a nota no card).' };
+    await note(p.leadId, `📣 ${quem} mandou ao cliente o Financiamento aprovado (${lista.map((o) => o.banco).join(', ')}), uma mensagem por banco com o botão "Seguir com esta" (botão "Avisar cliente").`);
+  } else {
+    const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+    for (const [i, o] of lista.entries()) {
+      if (i) await new Promise((r) => setTimeout(r, 1200));
+      const r = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, io: p.io, content: fhOptionText(o), buttons: [CHOOSE] });
+      if (!r.success) {
+        const r2 = await sendOutboundWhatsApp({ accountId: p.accountId, leadId: p.leadId, io: p.io, content: `${fhOptionText(o)}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
+        if (!r2.success) return { ok: false, error: `A mensagem do ${o.banco} não saiu: ${r2.error || r.error || 'erro no envio'}` };
+      }
+    }
+    // Entra na lista do que o cliente recebeu: é por ela que o "Seguir com esta" (botão ou o nome do banco por escrito) é reconhecido.
+    const fresh = ((await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+    const ja: string[] = Array.isArray(fresh._fhNotice?.bancos) ? fresh._fhNotice.bancos : [];
+    const semNum: string[] = Array.isArray(fresh._fhNotice?.semNumeros) ? fresh._fhNotice.semNumeros : [];
+    await saveCf(p.leadId, { _fhNotice: { ...(fresh._fhNotice || {}), sentAt: fresh._fhNotice?.sentAt || new Date().toISOString(), bancos: Array.from(new Set([...ja, ...lista.map((o) => o.banco)])), semNumeros: Array.from(new Set([...semNum.filter((b) => !lista.some((o) => o.banco === b && o.valor && o.prazo)), ...lista.filter((o) => !o.valor || !o.prazo).map((o) => o.banco)])) } });
+    await note(p.leadId, `📣 ${quem} encaminhou ao cliente a proposta do Financiamento: ${lista.map((o) => `${o.banco}${o.valor ? ` (${o.valor})` : ''}`).join(', ')}, com o botão "Seguir com esta".`);
+  }
+  logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: x.lead.name, summary: `mandou ao cliente a proposta do Financiamento (${lista.map((o) => o.banco).join(', ')})` });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return { ok: true, bancos: lista.map((o) => o.banco) };
+}
+
+/** "Escolher esta proposta" da equipe no Financiamento — igual ao ⭐ do Home Equity: marca o banco (`_fhChosen`), preenche o card (instituição, valor, prazo, taxa, nº da proposta,
+ *  Valor da venda) e destrava o que espera a escolha (vistoria, documentos do banco). NÃO manda nada ao cliente (nem quando a IA for religada: `porEquipe`). */
+export async function escolherFhPelaEquipe(p: { accountId: string; leadId: string; banco: string; userName?: string; io?: any }): Promise<{ ok: boolean; error?: string }> {
+  const x = await propostasFh(p.accountId, p.leadId);
+  if (!x) return { ok: false, error: 'Card não encontrado' };
+  if (!x.aprovadas.some((o) => o.banco === p.banco)) return { ok: false, error: `O ${p.banco} não está aprovado neste card.` };
+  if (x.cf._fhChosen?.bank === p.banco) return { ok: true };
+  const quem = p.userName || 'a equipe';
+  await saveCf(p.leadId, { _fhChosen: { bank: p.banco, at: new Date().toISOString(), porEquipe: quem } });
+  await preencherEscolhaFh(p.accountId, p.leadId, p.banco).catch((e: any) => console.error('[Financiamento] preencher a escolha (equipe):', e?.message));
+  await note(p.leadId, `⭐ Financiamento: ${quem} escolheu o ${p.banco} (botão "Escolher esta proposta"${x.cf._fhChosen?.bank ? `; antes era o ${x.cf._fhChosen.bank}` : ''}). Nada foi mandado ao cliente.`);
+  logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: x.lead.name, summary: `escolheu o ${p.banco} no Financiamento` });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return { ok: true };
+}
+
+/** "Avisar negativa" do Financiamento (a automática só sai com a IA do card ligada): nenhum banco aprovou e nada está em análise → aviso padrão de não aprovado e o card vai pra
+ *  Perdidos, igual ao Home Equity. Fora das 07h–21h o aviso fica agendado e o card fecha quando sair. */
+export async function negativaFhPelaEquipe(p: { accountId: string; leadId: string; userId?: string; io?: any }): Promise<{ ok: boolean; error?: string; scheduled?: boolean }> {
+  const { sendRejectionNoticeNow, markRejectedAndMove } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  const x = await propostasFh(p.accountId, p.leadId);
+  if (!x || x.lead.status !== 'OPEN') return { ok: false, error: 'Card não encontrado ou já fechado.' };
+  const ativos = await prisma.creditAnalysis.count({ where: { leadId: p.leadId, dryRun: false, bank: { in: [FH_BANK, ...Object.values(PORTAL_PROPRIO)] }, status: { in: ['REQUESTED', 'RUNNING', 'SENT'] } } });
+  if (ativos) return { ok: false, error: 'Ainda tem banco rodando ou em análise: espere a resposta.' };
+  const bancos = Object.entries(x.resumo).filter(([b, s]) => !/^(CAIXA|BRB)$/.test(b) && !/n[aã]o enviad/i.test(s.status));
+  if (!bancos.length || !bancos.every(([, s]) => /reprov|rejeit|recus|negad|n[aã]o aprovad/i.test(s.status))) return { ok: false, error: 'Ainda há banco aprovado ou sem resposta final: não dá pra mandar a negativa.' };
+  const caixaOk = await prisma.creditAnalysis.findFirst({ where: { leadId: p.leadId, dryRun: false, bank: { in: ['CAIXA_FH', 'BRB_FH'] }, status: { in: ['APPROVED', 'CONDITIONAL'] } }, select: { id: true } });
+  if (caixaOk || x.cf._optouCaixa?.banco) return { ok: false, error: 'O cliente segue pela CAIXA/BRB: a negativa dos outros bancos não fecha o card.' };
+  const out = await sendRejectionNoticeNow({ accountId: p.accountId, leadId: p.leadId, userId: p.userId, io: p.io });
+  if (out.scheduled) { await saveCf(p.leadId, { _autoCloseAfterNotice: true }); return { ok: true, scheduled: true }; }
+  if (!out.ok && !out.already) return { ok: false, error: out.error || 'A negativa não saiu.' };
+  await markRejectedAndMove({ accountId: p.accountId, leadId: p.leadId, userId: p.userId, io: p.io, motivo: `Financiamento reprovado nos bancos (${bancos.map(([b]) => b).join(', ')})` });
+  return { ok: true };
 }
 
 /** Nenhum banco do Financiamento aprovou → aviso padrão de "não aprovado" e o card vai pra Perdidos como Reprovado — igual ao Home Equity (closeRejected).
@@ -436,7 +522,7 @@ export async function preencherEscolhaFh(accountId: string, leadId: string, banc
   const { parseBancosFinanciamento, chooseAnalysis } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
-  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, kind: 'RUN', dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
+  const run = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: FH_BANK, dryRun: false, conditions: { not: null } }, orderBy: { createdAt: 'desc' }, select: { conditions: true } });
   const [o] = await enriquecer(leadId, cf, fhOptions(parseBancosFinanciamento(cf._fhResumo), `CONDIÇÕES — ${run?.conditions || ''}`).aprovadas.filter((x) => x.banco === banco));
   // Inter e Itaú (03/11): a linha do nosso portal tem os números estruturados — ⭐ nela pelo mesmo caminho do HE.
   if (PORTAL_PROPRIO[banco]) {
@@ -463,6 +549,7 @@ export async function retomarEscolhaFh(accountId: string, leadId: string, io?: a
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
   if (!lead?.aiAutoReplyActive || !cf._fhChosen?.bank || cf._fhDocsAt) return false;
+  if (cf._fhChosen.porEquipe) return false; // escolhido pela equipe ("Escolher esta proposta", Fabio 14/11): como no Home Equity, não manda nada ao cliente
   return chooseFhBank(accountId, lead, cf, cf._fhChosen.bank, io);
 }
 
@@ -480,8 +567,11 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
   if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: mande a simulação do banco escolhido, a lista de documentos, os próximos passos e as taxas, e pergunte se ele quer aprovar também na CAIXA e no BRB.'); return true; }
   if (jaEra && cf._fhDocsAt) return true; // tocou de novo no mesmo botão: não repete
+  // Card que já passou da documentação (funil "Em contratação": Documentação Recebida, Vistoria…) — Fabio 14/11, Adriano: a equipe pode encaminhar as propostas pelo card a quem já
+  // mandou tudo. Aí também vai só a simulação: nada de lista de documentos, próximos passos, taxas nem a pergunta do BRB de novo.
+  const adiante = /em contrata/i.test((await prisma.lead.findUnique({ where: { id: lead.id }, select: { pipeline: { select: { name: true } } } }))?.pipeline?.name || '');
   // Nova proposta (outro prazo/valor) de quem JÁ recebeu a lista de documentos: só a simulação em PDF do banco escolhido, sem repetir documentos/passos/taxas.
-  if (cf._fhDocsAt) {
+  if (cf._fhDocsAt || adiante) {
     const instNova = PDF_INST[banco];
     if (instNova) {
       try {
@@ -489,7 +579,7 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
         await requestSimulationDocs(prisma as any, { accountId, leadId: lead.id, institutions: [instNova], source: 'AI', caption: `Segue a nova simulação do financiamento no ${banco} em PDF 📄` });
       } catch (e: any) { await note(lead.id, `⚠️ Não consegui pedir a simulação do ${banco} em PDF (${e?.message}). Mande à mão.`); }
     }
-    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}* nessa nova proposta. Já te mando a simulação em PDF.` });
+    await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}*${cf._fhDocsAt ? ' nessa nova proposta' : ''}. Já te mando a simulação em PDF.` });
     return true;
   }
   const pausa = () => new Promise((r) => setTimeout(r, 1200));

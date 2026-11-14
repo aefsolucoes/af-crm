@@ -1383,7 +1383,7 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       ...(p.leadId ? { id: p.leadId } : { OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { status: 'OPEN', stage: { name: { startsWith: 'Análise CAIXA', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])] }),
     },
     select: {
-      id: true, name: true, status: true, customFields: true, stageEnteredAt: true, updatedAt: true,
+      id: true, name: true, status: true, customFields: true, stageEnteredAt: true, updatedAt: true, aiAutoReplyActive: true,
       stage: { select: { name: true } }, pipeline: { select: { name: true } },
       creditAnalyses: { where: { bank: { in: fhKeys } }, orderBy: { createdAt: 'desc' }, take: 20 },
     },
@@ -1441,6 +1441,11 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       leituraEm: lido?.updatedAt || null,
       active: l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING'].includes(r.status) && r.kind === 'RUN'),
       bancos,
+      // Botões do card iguais aos do Home Equity (Fabio 14/11): banco escolhido (⭐), propostas já mandadas ao cliente e a IA do card (negativa só pelo botão com ela desligada).
+      escolhido: cf._fhChosen?.bank ? String(cf._fhChosen.bank) : null,
+      enviados: Array.isArray(cf._fhNotice?.bancos) ? (cf._fhNotice.bancos as string[]) : [],
+      aiOn: !!l.aiAutoReplyActive,
+      emAndamento: l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING', 'SENT'].includes(r.status) && !r.dryRun),
     };
   });
 }

@@ -143,6 +143,46 @@ router.post('/fh-manual-result', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao registrar o resultado'); }
 });
 
+// Botões do bloco "Financiamento" do card, iguais aos do Home Equity (Fabio 14/11: "não achei encaminhar proposta para o cliente, igual tem no HE").
+// "Avisar cliente" (sem banco: todas as aprovadas) / "Encaminhar ao cliente" (com banco): as propostas com o botão "Seguir com esta".
+router.post('/fh-avisar', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+    const { enviarPropostasFh } = require('../services/fh-approval.service') as typeof import('../services/fh-approval.service');
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const out = await enviarPropostasFh({ accountId: req.user!.accountId, leadId, userName, bancos: req.body?.banco ? [String(req.body.banco)] : undefined, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao mandar a proposta'); }
+});
+// "Escolher esta proposta" (⭐): marca o banco e preenche o card, sem mandar nada ao cliente.
+router.post('/fh-escolher', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || ''); const banco = String(req.body?.banco || '');
+    if (!leadId || !banco) return res.status(400).json({ error: 'leadId e banco são obrigatórios' });
+    const { escolherFhPelaEquipe } = require('../services/fh-approval.service') as typeof import('../services/fh-approval.service');
+    const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
+    const out = await escolherFhPelaEquipe({ accountId: req.user!.accountId, leadId, banco, userName, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao escolher a proposta'); }
+});
+// "Avisar negativa": nenhum banco aprovou e a IA do card está desligada → manda a negativa e o card vai pra Perdidos.
+router.post('/fh-negativa', async (req: AuthRequest, res: Response) => {
+  try {
+    const leadId = String(req.body?.leadId || '');
+    if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
+    const { negativaFhPelaEquipe } = require('../services/fh-approval.service') as typeof import('../services/fh-approval.service');
+    const out = await negativaFhPelaEquipe({ accountId: req.user!.accountId, leadId, userId: req.user!.id, io: io(req) });
+    if (!out.ok) return res.status(400).json({ error: out.error });
+    emit(req, { leadId });
+    res.json(out);
+  } catch (err) { fail(res, err, 'Erro ao avisar a negativa'); }
+});
+
 // Análises de UM card (bloco dentro do card).
 router.get('/lead/:leadId', async (req: AuthRequest, res: Response) => {
   try {

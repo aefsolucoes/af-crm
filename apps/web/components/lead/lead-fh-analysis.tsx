@@ -2,7 +2,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import Link from 'next/link';
-import { CheckCircle2, ExternalLink, FileText, Home, Play, RefreshCw } from 'lucide-react';
+import { CheckCircle2, ExternalLink, FileText, Home, Play, RefreshCw, Send, Square, Star } from 'lucide-react';
 import api from '@/lib/api';
 import { toast } from '@/components/ui/toast';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -17,7 +17,11 @@ type FhLead = {
   last: { kind: string; status: string; detail: string | null; updatedAt: string } | null;
   bancos: Record<string, Banco>;
   valores: { imovel: number | null; financia: number | null; entrada: number | null; renda: number | null };
+  // Botões iguais aos do Home Equity (Fabio 14/11): banco escolhido (⭐), propostas já mandadas ao cliente, IA do card, STOP e banco ainda rodando/em análise.
+  escolhido?: string | null; enviados?: string[]; aiOn?: boolean; autoPaused?: boolean; emAndamento?: boolean;
 };
+const aprovadoTxt = (s: string) => /aprovad/i.test(s) && !/n[aã]o aprovad/i.test(s);
+const negativoTxt = (s: string) => /reprov|rejeit|recus|negad|n[aã]o aprovad/i.test(s);
 const ORDEM = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'];
 const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER', CAIXA: 'FH_CAIXA' }; // CAIXA: simulador da CAIXA pela extensão SIOPI (12/11)
 
@@ -73,12 +77,70 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao registrar', 'error'); } finally { setBusy(null); }
   }
 
+  // "Avisar cliente" (todas as aprovadas) e "Encaminhar ao cliente" (só a do banco): as propostas vão pelo WhatsApp com o botão "Seguir com esta", como no Home Equity.
+  async function avisar(banco?: string) {
+    const quais = banco || aprovadas.map(([b]) => b).join(', ');
+    const ja = banco ? l?.enviados?.includes(banco) : false;
+    if (!window.confirm(`${banco ? 'Encaminhar' : 'Mandar'} ao cliente, pelo WhatsApp, a proposta do Financiamento aprovada (${quais}) com o botão "Seguir com esta"?${ja ? '\n\nEssa proposta já foi mandada antes: vai de novo.' : ''}`)) return;
+    setBusy(banco ? `fwd-${banco}` : 'avisar');
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/fh-avisar', { leadId, ...(banco ? { banco } : {}) });
+      toast(`Proposta enviada ao cliente: ${(r.bancos || []).join(', ')}`, 'success');
+      recarregar();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao mandar a proposta', 'error'); } finally { setBusy(null); }
+  }
+  // "Escolher esta proposta" (⭐): marca o banco e preenche o card (instituição, valor, prazo, taxa, nº da proposta), sem mandar nada ao cliente.
+  async function escolher(banco: string) {
+    if (!window.confirm(`Escolher a proposta do ${banco}? Marca ⭐ e preenche os campos do Financiamento deste card com ela (nada vai pro cliente). A vistoria passa a seguir por esse banco.`)) return;
+    setBusy(`esc-${banco}`);
+    try {
+      await api.post('/api/credit-analysis/fh-escolher', { leadId, banco });
+      toast(`⭐ ${banco} escolhido`, 'success');
+      recarregar();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao escolher', 'error'); } finally { setBusy(null); }
+  }
+  async function negativa() {
+    if (!window.confirm('Avisar o cliente que não foi aprovado e mandar o card para Perdidos?')) return;
+    setBusy('neg');
+    try {
+      const { data: r } = await api.post('/api/credit-analysis/fh-negativa', { leadId });
+      toast(r?.scheduled ? 'Fora do horário: a negativa sai às 07h e o card vai pra Perdidos em seguida' : 'Negativa enviada e card movido pra Perdidos', 'success');
+      recarregar();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Não consegui avisar a negativa', 'error'); } finally { setBusy(null); }
+  }
+  async function togglePause() {
+    const next = !l?.autoPaused;
+    if (next && !window.confirm('STOP: parar TUDO deste cliente?\n\n• A rodada em andamento nos bancos é interrompida no meio (o banco pode ficar com um rascunho/proposta incompleta).\n• Nada roda, refaz, confere nem avisa o cliente sozinho; a IA para de responder.\n• Só este cliente. Para voltar, clique em Retomar.')) return;
+    try {
+      const { data: r } = await api.put('/api/credit-analysis/pause', { leadId, paused: next });
+      toast(next ? `PARADO${r?.interrompidas ? ` — ${r.interrompidas} rodada(s) interrompida(s)` : ''}. A extensão derruba a aba do banco no próximo passo (até ~10 s).` : 'Retomado', 'success');
+      recarregar();
+    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao parar o cliente', 'error'); }
+  }
+
   const bancos = l ? ORDEM.filter((b) => l.bancos[b]).map((b) => [b, l.bancos[b]] as const) : [];
+  const doCredimorar = bancos.filter(([nome]) => !/^(CAIXA|BRB)$/.test(nome));
+  const aprovadas = doCredimorar.filter(([, b]) => aprovadoTxt(b.status));
+  const semAprovacao = doCredimorar.filter(([, b]) => !/n[aã]o enviad/i.test(b.status));
+  const podeNegativa = !!l && !l.aiOn && !l.emAndamento && !l.bancos.CAIXA && !l.bancos.BRB && semAprovacao.length > 0 && semAprovacao.every(([, b]) => negativoTxt(b.status));
   return (
     <div className="mb-3 rounded-lg border border-af-border bg-slate-50/60 p-3">
-      <div className="mb-2 flex items-center justify-between">
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-1.5">
         <span className="flex items-center gap-1.5 text-xs font-semibold text-slate-600"><Home size={12} /> Financiamento — bancos</span>
-        <Link href="/analise-financiamento" className="flex items-center gap-1 text-[11px] text-af-mid hover:underline">Ver todos <ExternalLink size={10} /></Link>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {aprovadas.length > 0 && (
+            <button onClick={() => avisar()} disabled={!!busy} className="rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50" title='Mandar ao cliente todas as propostas aprovadas, uma por banco, com o botão "Seguir com esta"'>Avisar cliente</button>
+          )}
+          {podeNegativa && (
+            <button onClick={negativa} disabled={!!busy} className="rounded bg-red-600 px-2 py-0.5 text-[11px] text-white hover:opacity-90 disabled:opacity-50" title="Todos os bancos disseram não e a IA deste card está desligada: manda a negativa e move o card pra Perdidos">Avisar negativa</button>
+          )}
+          {l && (l.active || l.autoPaused) && (
+            <button onClick={togglePause} className={cn('flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold', l.autoPaused ? 'border border-emerald-300 text-emerald-700 hover:bg-emerald-50' : 'bg-red-600 text-white hover:opacity-90')} title="STOP TOTAL só deste cliente: derruba a rodada em andamento e para tudo (conferências, avisos, IA)">
+              {l.autoPaused ? <><Play size={10} /> Retomar</> : <><Square size={10} className="fill-current" /> STOP</>}
+            </button>
+          )}
+          <Link href="/analise-financiamento" className="flex items-center gap-1 text-[11px] text-af-mid hover:underline">Ver todos <ExternalLink size={10} /></Link>
+        </div>
       </div>
       {!l ? <p className="text-xs text-slate-400">Carregando…</p> : (
         <>
@@ -88,18 +150,33 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
           ) : (
             <div className="space-y-1.5">
               {bancos.map(([nome, b]) => {
-                const aprovado = /aprovad/i.test(b.status) && !/n[aã]o aprovad/i.test(b.status);
+                const aprovado = aprovadoTxt(b.status);
+                const proposta = aprovado && !/^(CAIXA|BRB)$/.test(nome); // CAIXA/BRB seguem o fluxo próprio (Análise CAIXA)
+                const escolhida = l.escolhido === nome;
+                const enviada = !!l.enviados?.includes(nome);
                 return (
-                  <div key={nome} className="rounded-md border border-slate-200 bg-white px-2 py-1.5">
+                  <div key={nome} className={cn('rounded-md border bg-white px-2 py-1.5', escolhida ? 'border-amber-300 ring-1 ring-amber-200' : 'border-slate-200')}>
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-slate-700">{nome}</span>
+                      <span className="flex items-center gap-1 text-xs font-semibold text-slate-700">{escolhida && <Star size={11} className="fill-amber-400 text-amber-500" />}{nome}</span>
                       <span className={cn('rounded-full px-2 py-0.5 text-[11px] font-medium', tom(b.status))}>{b.status}</span>
                     </div>
                     <p className="mt-0.5 text-[11px] leading-snug text-slate-500 whitespace-pre-wrap break-words">{b.texto.replace(/^[^,—]+[,—]\s*/, '').slice(0, 220)}</p>
-                    {aprovado && PDF[nome] && (
-                      <button onClick={() => pdf(nome)} disabled={busy === nome} className="mt-1 inline-flex items-center gap-1 text-[11px] font-medium text-af-mid hover:underline disabled:opacity-50">
-                        <FileText size={11} /> Simulação em PDF pro cliente
-                      </button>
+                    {(proposta || (aprovado && PDF[nome])) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {proposta && (escolhida
+                          ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600"><Star size={10} className="fill-current" /> Proposta escolhida</span>
+                          : <button onClick={() => escolher(nome)} disabled={!!busy} className="inline-flex items-center gap-1 rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50"><Star size={10} /> Escolher esta proposta</button>)}
+                        {proposta && (
+                          <button onClick={() => avisar(nome)} disabled={!!busy} className="inline-flex items-center gap-1 rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-50 disabled:opacity-50" title={enviada ? 'Já foi mandada ao cliente — manda de novo' : 'Mandar ao cliente esta proposta, com o botão "Seguir com esta"'}>
+                            <Send size={10} /> {enviada ? 'Encaminhar de novo' : 'Encaminhar ao cliente'}
+                          </button>
+                        )}
+                        {aprovado && PDF[nome] && (
+                          <button onClick={() => pdf(nome)} disabled={busy === nome} className="inline-flex items-center gap-1 text-[11px] font-medium text-af-mid hover:underline disabled:opacity-50">
+                            <FileText size={11} /> Simulação em PDF pro cliente
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
