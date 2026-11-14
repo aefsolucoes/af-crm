@@ -145,6 +145,11 @@ export async function afterCertidaoSaved(db: Db, p: { accountId: string; request
 
   if (p.dryRun) return { verdict, clientText, action: clientText ? 'ENVIOU' : 'EQUIPE_DECIDE', dryRun: true, detail: `${gravameTxt}${ressalvaTxt}`.trim() };
 
+  // Apartamento com a certidão do TERRENO/empreendimento (Fabio 14/11): pede a da unidade (ou avisa a equipe) e esta não vai ao cliente.
+  const doTerreno = await (require('./matricula-unidade.service') as typeof import('./matricula-unidade.service')).conferirMatriculaDaUnidade({ accountId: p.accountId, leadId: p.leadId, requestId: p.requestId, matricula: p.matricula, pdf: p.pdf, io: p.io })
+    .catch((e: any) => { console.error('[Certidão] matrícula da unidade:', e?.message); return false; });
+  if (doTerreno) return { verdict, clientText: null, action: 'EQUIPE_DECIDE', dryRun: false, detail: 'certidão do terreno/empreendimento — tratada pela matrícula da unidade' };
+
   // ── equipe decide (encerrada / ilegível) ────────────────────────────────────────────────────
   if (!clientText) {
     const motivo = verdict.kind === 'ENCERRADA'

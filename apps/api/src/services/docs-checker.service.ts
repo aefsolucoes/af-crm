@@ -907,7 +907,7 @@ export async function checkDocsComplete(accountId: string, leadId: string, io: I
   if (verdict && !verdict.complete && (review?.ok || []).some((d: string) => /comprovante de resid/i.test(d))) {
     const antes = verdict.faltando.length;
     verdict.faltando = verdict.faltando.filter((f) => !/comprovante de resid[^;]*\bem nome\b/i.test(f));
-    if (antes !== verdict.faltando.length && !verdict.faltando.length && !(review?.problemas.length)) verdict.complete = true;
+    if (antes !== verdict.faltando.length && !verdict.faltando.length && !(review?.problemas.length) && !(review?.duvidas.length) && !(review?.donoPendente.length)) verdict.complete = true;
   }
   const fhComBanco = /habitacional/i.test(lead.pipeline?.department?.name || '') && !fhSoComprador && !caixaRota;
   const NAO_SEGURA = fhComBanco

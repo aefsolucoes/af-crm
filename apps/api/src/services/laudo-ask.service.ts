@@ -43,6 +43,12 @@ export function tipoDaProposta(texto: string): 'Apartamento' | 'Casa' | null {
   return null;
 }
 
+/** A conferência dos documentos já leu que o imóvel é APARTAMENTO (contrato, matrícula, IPTU…)? Fabio 14/11, Nalia: o contrato dizia "seu apartamento" e o card
+ *  ficou sem tipo — a pergunta do laudo não saía. Pura (testável). */
+export function apartamentoPelosDocumentos(cf: Record<string, any>): boolean {
+  return Object.values((cf?._docReview || {}) as Record<string, any>).some((r: any) => r && /apartament|\bapto\b|unidade aut[oô]noma|\btorre\s+\d/i.test(`${r.tipo || ''} ${r.observacao || ''} ${(r.problemas || []).join(' ')}`));
+}
+
 /** Número da proposta do Inter a partir do link do laudo (https://avaliacaoimovel.bancointer.com.br/005686174). Pura (testável). */
 export function propostaDoLink(link: string): string | null {
   const m = /bancointer\.com\.br\/(\d{6,10})\b/i.exec(String(link || ''));
@@ -209,6 +215,7 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
     poe('imovel_cep', p.cep, 'proposta do site'); poe('imovel_numero', p.numero, 'proposta do site'); poe('imovel_complemento', p.complemento, 'proposta do site');
     if (p.apartamento) poe('imovel_tipo', 'Apartamento', 'endereço da proposta do site');
   }
+  if (falta('imovel_tipo') && apartamentoPelosDocumentos(cf)) poe('imovel_tipo', 'Apartamento', 'leitura dos documentos do imóvel');
   if (falta('imovel_tipo')) {
     const { engajamentoDizApartamento } = require('./inter-email.service') as typeof import('./inter-email.service');
     const emails = await prisma.emailMessage.findMany({ where: { leadId, subject: { contains: 'Engajamento', mode: 'insensitive' } }, orderBy: { date: 'desc' }, take: 5, select: { textBody: true, htmlBody: true } });
@@ -309,7 +316,14 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
     tipo = prop ? tipoDaProposta(prop.content) : null;
     if (tipo) { await marca(leadId, { imovel_tipo: tipo }); cf.imovel_tipo = tipo; }
   }
+  if (!tipo && apartamentoPelosDocumentos(cf)) { tipo = 'Apartamento'; await marca(leadId, { imovel_tipo: tipo }); cf.imovel_tipo = tipo; }
   if (!tipo) return; // sem saber se é casa ou apartamento: a IA da conversa descobre (regra APARTMENT_APPRAISAL_RULES)
+  // Antes de perguntar, preenche o que já dá (proposta, conversa, documentos do imóvel) — nunca pergunta o que o cliente já mandou (Fabio 14/11). Também antes do link do laudo.
+  if (tipo === 'Apartamento') {
+    await preencherDadosDoLaudo(accountId, leadId).catch((e: any) => console.warn('[Laudo] preencher antes da pergunta:', e?.message));
+    const fresco = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    Object.assign(cf, (fresco?.customFields || {}) as Record<string, any>);
+  }
   if (tipo === 'Casa') { await marca(leadId, { _laudoAsk: { skip: 'casa: a avaliação é com visita do engenheiro', at: new Date().toISOString() } }); return; }
   if (CAMPOS_REGRINHAS.every((k) => !vazio(cf[k]))) { await marca(leadId, { _laudoAsk: { skip: 'campos já preenchidos', at: new Date().toISOString() } }); return; }
   // O cliente já disse na conversa? Preenche e não pergunta (Fabio 03/11).
@@ -326,17 +340,11 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
     await marca(leadId, { _laudoAsk: { teamAt: new Date().toISOString(), por: 'equipe (IA do card desligada)' } });
     return;
   }
-  // Chave geral desligada (Fabio 22/10): a equipe pergunta à mão; o texto vai pronto na nota. Ligando depois, esse card não é perguntado de novo (já foi registrado como da equipe).
-  if (!(await contractingAutoOn(accountId, leadId))) {
-    await manualStep({ accountId, leadId, leadName: lead.name, step: 'laudo-pergunta', pushTitle: '🏢 Laudo do apartamento', pushBody: `${lead.name}: perguntar dormitórios/banheiros/suítes/vagas`,
-      note: `🏢 Apartamento + vistoria do Inter: pergunte ao cliente dormitórios, banheiros, suítes e vagas com uso exclusivo (laudo digital). Passo manual (automação da contratação desligada). Texto pronto:\n“${laudoAskText().replace(/\n+/g, ' ')}”` });
-    await marca(leadId, { _laudoAsk: { teamAt: new Date().toISOString(), por: 'equipe (automação da contratação desligada)' } });
-    return;
-  }
+  // IA LIGADA pergunta sozinha, mesmo com a chave geral desligada (Fabio 14/11: "com a IA ligada a própria IA pergunta isso à cliente, e pode ser perguntado antes de chegar o link").
   const { inNoticeWindow, whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!inNoticeWindow()) return; // fora das 07h–21h: tenta de novo no próximo minuto
   // Só o que falta e que o cliente sabe responder (com o link do laudo, também CEP/número/área/ano se nem a proposta nem a matrícula trouxeram).
-  const doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k) && (CAMPOS_REGRINHAS.includes(k) || !vazio(cf.link_laudo_inter)));
+  const doCliente = Object.keys(PERGUNTA_LAUDO).filter((k) => faltaProLaudo(cf, k)); // antes do link também: área útil, ano (e CEP/número se nem a proposta nem os documentos trouxeram)
   if (!doCliente.length) { await marca(leadId, { _laudoAsk: { skip: 'nada a perguntar', at: new Date().toISOString() } }); return; }
   const faltamTxt = doCliente.map((k) => ROTULO[k].toLowerCase()).join(', ');
   if (!(await whatsappWindowOpen(leadId))) {
