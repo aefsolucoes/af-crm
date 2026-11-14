@@ -553,7 +553,7 @@ function optionFromRow(r: CreditAnalysis, interCondicional: boolean): ApprovalOp
   };
 }
 
-async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
+export async function optionsFromAnalyses(leadId: string): Promise<ApprovalOption[] | null> {
   const rows = await prisma.creditAnalysis.findMany({
     // Só os bancos do Home Equity: as linhas do Financiamento (CREDIMORAR_FH, INTER_FH…) têm o aviso próprio (fh-approval) — Pedro Paulo, 29/10.
     where: { leadId, dryRun: false, bank: { in: ['INTER', 'CREDITAS', 'CREDIMORAR'] }, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { gte: new Date(Date.now() - 45 * 86_400_000) } },

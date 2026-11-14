@@ -120,6 +120,8 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
     await (require('./ai-team-question.service') as typeof import('./ai-team-question.service')).perguntarProximoPasso({ accountId, leadId: lead.id, evento: `chegou e-mail de ${e.fromAddress}: "${String(e.subject || '').slice(0, 120)}" — ${String(e.snippet || e.textBody || '').replace(/\s+/g, ' ').slice(0, 220)}`, ref: `email:${e.id}`, io: io as any })
       .catch((err: any) => console.error('[Processo] próximo passo (e-mail):', err?.message));
   }
+  // Resultado do LAUDO do Inter (aprovado → Análise Jurídica e questionário; reprovado → laudo-reprovado.service): têm fluxo próprio — não repassa por cima (Fabio 14/11).
+  { const ie = require('./inter-email.service') as typeof import('./inter-email.service'); const txt = `${e.textBody || e.snippet || ''}`; if (/inter\.co|bancointer/i.test(e.fromAddress || '') && (ie.laudoReprovouImovel(ie.freshPart(txt)) || ie.vistoriaConcluida(ie.freshPart(txt)))) { await marca(lead.id, e.id, 'IGNORADO (resultado do laudo: fluxo próprio)'); return; } }
   const limpo = cleanEmailForAi(`📧 ${e.subject || ''}\n${e.textBody || e.snippet || ''}`, 1500);
   if (limpo.body.length < 25) { await marca(lead.id, e.id, 'IGNORADO (curto)'); return; }
 

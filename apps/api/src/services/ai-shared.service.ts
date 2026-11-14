@@ -424,9 +424,10 @@ export async function aiCardState(leadId: string): Promise<string> {
   const stCert: Record<string, string> = { REQUESTED: 'pedido na fila da extensão', RUNNING: 'pedido sendo feito no portal', AWAITING_PAYMENT: 'PIX enviado, aguardando pagamento', ISSUED: 'EMITIDA e salva no Drive', FAILED: 'falhou' };
   for (const c of certs) contr.push(`certidão da matrícula ${c.matricula} (ONR): ${c.status === 'AWAITING_PAYMENT' && c.paidAt ? 'paga, aguardando a emissão' : stCert[c.status] || c.status}`);
   const vis = cf._vistoriaAi as { banco?: string; status?: string } | undefined;
+  { const lr = (require('./laudo-reprovado.service') as typeof import('./laudo-reprovado.service')).aiLaudoReprovadoLinha(cf); if (lr) contr.push(lr); } // laudo que reprovou o imóvel (Fabio 14/11)
   // Pedido feito pelo botão do card (solicitarVistoria) grava _vistoriaRequestedAt — antes a IA via só o _vistoriaAi e diria "aguarda equipe" com a vistoria já pedida (Nalia 14/11).
-  if (cf._vistoriaRequestedAt) contr.push(`vistoria do imóvel${vis?.banco ? ` (${vis.banco})` : ''}: JÁ SOLICITADA ao banco em ${new Date(String(cf._vistoriaRequestedAt)).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — aguardando o contato do banco/engenheiro pra agendar`);
-  else if (vis?.status) contr.push(`vistoria do imóvel (${vis.banco || 'banco'}): ${String(vis.status).replace(/_/g, ' ').toLowerCase()}`);
+  if (cf._vistoriaRequestedAt && !cf._laudoReprovado) contr.push(`vistoria do imóvel${vis?.banco ? ` (${vis.banco})` : ''}: JÁ SOLICITADA ao banco em ${new Date(String(cf._vistoriaRequestedAt)).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })} — aguardando o contato do banco/engenheiro pra agendar`);
+  else if (vis?.status && !cf._laudoReprovado) contr.push(`vistoria do imóvel (${vis.banco || 'banco'}): ${String(vis.status).replace(/_/g, ' ').toLowerCase()}`);
   const seg = cf._interSeguir as { status?: string } | undefined;
   if (seg?.status || cf._seguirStatus) contr.push(`"seguir com a proposta" do Inter: ${String(cf._seguirStatus || seg?.status).replace(/_/g, ' ').toLowerCase()}`);
   { const ind = (require('./contato-indicado.service') as typeof import('./contato-indicado.service')).aiContatosIndicadosTexto(cf); if (ind) contr.push(ind); } // corretor/vendedor indicado (Fabio 11/11)

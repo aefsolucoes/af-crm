@@ -52,11 +52,16 @@ export function engajamentoDizApartamento(text: string | null | undefined): bool
 }
 
 /** Vistoria terminou e o imóvel foi aceito: "CRÉDITO E IMÓVEL APROVADOS!" (André, 30/10, Pedro Francisco), "laudo concluído", "vistoria concluída". "Imóvel não foi aprovado" não casa. Pura (testável). */
+/** O laudo/avaliação REPROVOU o imóvel (Fabio 14/11 — laudo-reprovado.service avisa o cliente e oferece outro banco aprovado, ou leva pra Perdidos). Pura (testável). */
+export function laudoReprovouImovel(text: string | null | undefined): boolean {
+  return /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?(reprovad|n[aã]o\s+(foi\s+)?aprovad)|reprova[cç][aã]o\s+do\s+im[oó]vel|laudo\s+(foi\s+)?(reprovad|negad|desfavor[aá]vel)/i.test(String(text || ''));
+}
+
 export function vistoriaConcluida(text: string | null | undefined): boolean {
   const t = String(text || '');
   // Resposta do LAUDO = o card vai pra Análise Jurídica (Fabio 14/11: "deve ir para Análise Jurídica quando vier a resposta do laudo"). Laudo que REPROVA o imóvel não conta
   // (antes "laudo concluído — imóvel reprovado" também movia); "tentei solicitar o laudo, mas há pendências" não casa (é pendência).
-  if (/im[oó]ve(l|is)\s+(foi\s+|foram\s+)?(reprovad|n[aã]o\s+(foi\s+)?aprovad)|reprova[cç][aã]o\s+do\s+im[oó]vel|laudo\s+(foi\s+)?(reprovad|negad|desfavor[aá]vel)/i.test(t)) return false;
+  if (laudoReprovouImovel(t)) return false;
   return /im[oó]ve(l|is)\s+(foi\s+|foram\s+)?aprovad|laudo(\s+de\s+avalia[cç][aã]o)?\s+(foi\s+|est[aá]\s+|j[aá]\s+)?(conclu[ií]do|aprovado|finalizado|emitido|pronto|dispon[ií]vel)|vistoria\s+(foi\s+)?(conclu[ií]da|aprovada|finalizada)|avalia[cç][aã]o\s+do\s+im[oó]vel\s+(foi\s+)?(conclu[ií]da|aprovada)/i.test(t);
 }
 
@@ -64,6 +69,7 @@ export function vistoriaConcluida(text: string | null | undefined): boolean {
 export function classifyInterEmail(subject: string | null | undefined, freshText: string): InterEmailKind {
   const s = cleanSubject(subject);
   if (/resposta autom[aá]tica|out of office|fora do escrit[oó]rio/i.test(s)) return 'OUTRO';
+  if (laudoReprovouImovel(freshText)) return 'VISTORIA'; // "o imóvel não foi aprovado" sem "laudo"/"vistoria" no texto também é resultado da avaliação (Fabio 14/11)
   if (vistoriaConcluida(freshText)) return 'VISTORIA_CONCLUIDA';
   if (/vistoria|laudo|engenheir|avalia[cç][aã]o do im[oó]vel/i.test(freshText)) return 'VISTORIA';
   if (/engajamento/i.test(s)) return 'ENGAJAMENTO';
@@ -221,6 +227,8 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
     }
   }
   if (kind === 'VISTORIA_CONCLUIDA') await marcarVistoriaConcluida(acc.accountId, leadId, fresh, io).catch((e) => console.warn('[Inter e-mail] vistoria concluída:', e?.message));
+  // Laudo que REPROVOU o imóvel (Fabio 14/11): IA ligada → avisa o cliente e oferece o outro banco aprovado (ou Perdidos); IA desligada → push pra equipe.
+  if (laudoReprovouImovel(fresh)) await (require('./laudo-reprovado.service') as typeof import('./laudo-reprovado.service')).iniciarLaudoReprovado(acc.accountId, leadId, 'INTER', row.id, fresh, io).catch((e: any) => console.warn('[Inter e-mail] laudo reprovado:', e?.message));
   // Questionário da contratação (vencimento, assinatura, registro, despesas…): o CRM pergunta ao cliente e responde o consultor (inter-questionario.service, Fabio 30/10).
   if (kind === 'VISTORIA_CONCLUIDA') {
     const iq = require('./inter-questionario.service') as typeof import('./inter-questionario.service');
