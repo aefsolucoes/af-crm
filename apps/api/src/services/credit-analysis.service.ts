@@ -2450,6 +2450,8 @@ export async function refreshAnalysesForAi(db: Db, p: { accountId: string; leadI
 // rodar NOVA PROPOSTA com o que ele pediu; se vier menor, encaminha a aprovação e informa que NO PRAZO X foi aprovado a menor — vale pra qualquer banco".
 // (Antes a IA pedia só uma simulação de teste no Inter com o valor aprovado — que não mostrava o que o banco APROVA no novo prazo.)
 const CHANGE_ROW_SOURCE = 'AI_CHANGE';
+/** Quantas vezes a rodada da nova proposta é refeita sozinha quando cai por falha técnica (finishProposalChange). */
+const CHANGE_RETRY_MAX = 2;
 
 const fmtBRL = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -2556,8 +2558,14 @@ export async function finishProposalChange(db: Db, leadId: string): Promise<void
     await salvar((c) => { delete c._changeRound; delete c._changeAsk; });
     return;
   }
-  const runs = await db.creditAnalysis.findMany({ where: { id: { in: round.ids } }, select: { leadId: true, bank: true, status: true, detail: true, proposalNumber: true, createdAt: true } });
+  const runs = await db.creditAnalysis.findMany({ where: { id: { in: round.ids } }, select: { id: true, leadId: true, bank: true, kind: true, status: true, detail: true, proposalNumber: true, createdAt: true } });
   const veredito: { bank: string; status: string; detail: string | null }[] = [];
+  // Falha TÉCNICA (a rodada caiu no meio, extensão travou, o "Enviar" do Santander não passou) NÃO é a resposta do banco (Fabio 14/11, Cleci: a de R$ 60 mil caiu depois
+  // do "Simular" — "Frame with ID 0 was removed" — e o CRM fechou a rodada como "NÃO foi aprovada": ninguém refez, ninguém foi avisado e a cliente ficou sem retorno).
+  const ca = require('./credit-auto.service') as typeof import('./credit-auto.service');
+  const tecnica = (r: { status: string; detail: string | null }) => !/n[aã]o criei outra/i.test(r.detail || '')
+    && (r.status === 'CHECK' || (r.status === 'FAILED' && !ca.OBJECTIVE_FAIL.test(r.detail || '') && !ca.DADO_PARA_CORRIGIR.test(r.detail || '')));
+  const falhas: typeof runs = [];
   for (const r of runs) {
     if (ACTIVE.includes(r.status)) return; // ainda rodando
     if (r.status === 'SENT') { // enviada: o resultado vem numa conferência da mesma proposta
@@ -2567,7 +2575,53 @@ export async function finishProposalChange(db: Db, leadId: string): Promise<void
       });
       if (!c) return; // o banco ainda não respondeu
       veredito.push({ bank: r.bank, ...c });
-    } else veredito.push({ bank: r.bank, status: r.status, detail: r.detail });
+    } else if (tecnica(r)) falhas.push(r);
+    else veredito.push({ bank: r.bank, status: r.status, detail: r.detail });
+  }
+  if (falhas.length) {
+    const tent = Number((round as any).retries || 0);
+    const label = (b: string) => BANKS[b]?.label || b;
+    const pedido = String(cf._changeAsk || 'outro prazo/valor');
+    const motivo = (d: string | null) => String(d || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/ATENÇÃO: pela idade do titular[^)]*\)[^.]*\.\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    // Como refazer: RODAR de novo quando nada chegou ao banco (sem nº; a Creditas cria a proposta no 1º passo, então ela não entra); CONFERIR a mesma proposta quando o
+    // Santander simulou e o Enviar não passou (a extensão abre e clica em Enviar de novo). Proposta já enviada/criada, campo faltando: fica pra equipe.
+    const modo = (f: (typeof runs)[number]): 'RUN' | 'CHECK' | null => {
+      if (f.kind !== 'RUN') return null;
+      if (f.bank === 'CREDIMORAR' && f.proposalNumber && ca.NAO_ENVIOU_SANTANDER.test(f.detail || '') && !/desabilitad|campos pendentes|vazios ou recusados|n[aã]o preenchidos/i.test(f.detail || '')) return 'CHECK';
+      if (f.bank !== 'CREDITAS' && !f.proposalNumber && !/enviad|proposta criada|lendo o resultado|n[aã]o consegui enviar|desabilitad|campos pendentes/i.test(f.detail || '')) return 'RUN';
+      return null;
+    };
+    const refeitas = new Map<string, string[]>(); // id da linha que falhou → linhas novas que a substituem na rodada
+    if (tent < CHANGE_RETRY_MAX) {
+      for (const f of falhas) {
+        const m = modo(f);
+        if (!m) continue;
+        await createRequests(db, { accountId: lead.accountId, leadIds: [leadId], banks: [f.bank], dryRun: false, kind: m, source: CHANGE_ROW_SOURCE, ...(m === 'RUN' ? { force: true, alignApproval: true, queueIfBusy: true } : {}) });
+        // Só a linha desta retentativa (uma conferência antiga da proposta APROVADA antes viraria a "resposta" da nova e o cliente receberia a aprovação velha como nova).
+        const novas = await db.creditAnalysis.findMany({ where: { leadId, bank: f.bank, dryRun: false, kind: m, status: 'REQUESTED', source: CHANGE_ROW_SOURCE, ...(m === 'CHECK' ? { proposalNumber: f.proposalNumber } : {}) }, select: { id: true } });
+        if (novas.length) refeitas.set(f.id, novas.map((x) => x.id));
+      }
+    }
+    // Sem como refazer sozinho (ou já refez o máximo): a equipe fica sabendo UMA vez (a linha sai da rodada) e o resto da rodada segue.
+    const semJeito = falhas.filter((f) => !refeitas.has(f.id));
+    if (semJeito.length) {
+      const bancos = semJeito.map((f) => label(f.bank)).join(', ');
+      await nota(`⚠️ A nova proposta pedida pelo cliente (${pedido}) NÃO rodou no ${bancos}: falha técnica (${semJeito.map((f) => motivo(f.detail)).join(' | ')}) — não é recusa do banco${tent ? `, e já refiz ${tent} vez${tent > 1 ? 'es' : ''}` : ''}. O cliente ainda NÃO recebeu o resultado. Confira no portal (proposta parada em "Simulação" = abrir e clicar em "Enviar") ou use "Rodar" na aba Análise de Crédito.`);
+      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(lead.accountId, { title: '⚠️ Nova proposta não rodou', body: `${bancos}: o pedido do cliente (${pedido}) caiu por falha técnica — o cliente está sem retorno`, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
+    }
+    if (refeitas.size) { // a rodada segue aberta com as linhas refeitas no lugar das que caíram
+      const fora = new Set(falhas.map((f) => f.id));
+      await salvar((c) => {
+        const atual = (c._changeRound || round) as { ids?: string[]; at?: string; retries?: number };
+        const ids = (atual.ids || []).filter((id) => !fora.has(id));
+        for (const novos of refeitas.values()) for (const id of novos) if (!ids.includes(id)) ids.push(id);
+        c._changeRound = { ...atual, ids, retries: tent + 1 };
+      });
+      const quais = falhas.filter((f) => refeitas.has(f.id));
+      await nota(`🔁 A nova proposta pedida pelo cliente (${pedido}) caiu no meio no ${quais.map((f) => label(f.bank)).join(', ')} por falha técnica (${quais.map((f) => motivo(f.detail)).join(' | ')}) — não é a resposta do banco. ${quais.some((f) => modo(f) === 'CHECK') ? 'Pedi pra abrir a proposta e clicar em Enviar de novo' : 'Pedi a rodada de novo'} (tentativa ${tent + 1} de ${CHANGE_RETRY_MAX}); o resultado segue pro cliente sozinho.`);
+      return;
+    }
+    if (!veredito.length) { await salvar((c) => { delete c._changeRound; }); return; } // `_changeAsk` fica: a rodada refeita à mão ainda usa no aviso
   }
   // Creditas: o portal não aceita outra proposta pro CPF enquanto a atual está ativa — a extensão só relê a que existe ("não criei outra").
   // Isso NÃO é a resposta da nova proposta (Hercilia 11/11: pediu R$ 60 mil, voltou a de R$ 85,7 mil como "aprovou" e a IA seguiu prometendo a nova).
