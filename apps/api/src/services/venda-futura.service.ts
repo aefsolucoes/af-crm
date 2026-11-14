@@ -108,7 +108,10 @@ export async function processVendaFutura(io: Io): Promise<void> {
       let result: { success: boolean; error?: string };
       let previewText = '';
       if (aberta) {
-        previewText = `${nome ? `Oi, ${nome}! ` : 'Oi! '}Tudo bem? Combinamos de retomar o seu crédito por esta época. Como estão os planos? Se já estiver na hora, é só me responder por aqui que eu continuo de onde paramos. 😊`;
+        // Construção na CAIXA (Fabio 14/11): a retomada é pra saber se o projeto da obra já foi aprovado pela prefeitura — a contratação só vem depois dele.
+        previewText = cf._vendaFuturaMotivo === 'PROJETO_PREFEITURA'
+          ? `${nome ? `Oi, ${nome}! ` : 'Oi! '}Tudo bem? Passando pra saber do projeto da obra: ele já foi aprovado pela prefeitura? Com o projeto aprovado, a gente já segue com a contratação na CAIXA. 😊`
+          : `${nome ? `Oi, ${nome}! ` : 'Oi! '}Tudo bem? Combinamos de retomar o seu crédito por esta época. Como estão os planos? Se já estiver na hora, é só me responder por aqui que eu continuo de onde paramos. 😊`;
         const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
         result = await sendOutboundWhatsApp({ accountId: l.accountId, leadId: l.id, content: previewText, io: (io || undefined) as any }) as any;
       } else {
@@ -134,7 +137,7 @@ export async function processVendaFutura(io: Io): Promise<void> {
             if (io) io.to(`lead:${l.id}`).emit('lead_moved', { leadId: l.id, stageId: fu.id });
           }
         }
-        await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Venda Futura: mandei a mensagem de retomada (${aberta ? 'texto livre, janela aberta' : `template ${VENDA_FUTURA_TEMPLATE}`}) — ${due === 'DATA' ? 'chegou o dia combinado com o cliente' : '30 dias desde o último contato'}. Repete de 30 em 30 dias até o cliente responder.` } }).catch(() => {});
+        await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `📅 Venda Futura: mandei a mensagem de retomada${cf._vendaFuturaMotivo === 'PROJETO_PREFEITURA' ? ' do projeto da obra na prefeitura' : ''} (${aberta ? 'texto livre, janela aberta' : `template ${VENDA_FUTURA_TEMPLATE}`}) — ${due === 'DATA' ? 'chegou o dia combinado com o cliente' : '30 dias desde o último contato'}. Repete de 30 em 30 dias até o cliente responder.` } }).catch(() => {});
         logActivity({ accountId: l.accountId, userId: null, userName: 'Venda Futura', action: 'lead_edited', leadId: l.id, leadName: l.name, summary: 'mandou a mensagem de retomada (Venda Futura)' } as any);
         // Aviso da equipe (Fabio 22/10: "agendamentos em push"): a retomada combinada saiu — a conversa volta a andar e alguém precisa acompanhar.
         try { const { sendPushToAccount } = require('./push.service') as typeof import('./push.service'); sendPushToAccount(l.accountId, { title: `📅 Retomada enviada: ${l.name}`.slice(0, 90), body: `Venda Futura${due === 'DATA' ? ' (data combinada)' : ''} — mandei a mensagem de retomada ao cliente`, leadId: l.id }).catch(() => {}); } catch { /* push é extra */ }

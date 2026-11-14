@@ -144,7 +144,7 @@ export async function aiOcorrenciasContext(leadId: string): Promise<string> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = (l?.customFields || {}) as Cf;
   const res = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
-  const pv = [res.aiPvContext(cf), res.aiCondicionadaContext(cf)].filter(Boolean).join('\n\n');
+  const pv = [res.aiPvContext(cf), res.aiCondicionadaContext(cf), res.aiProjetoPrefeituraContext(cf)].filter(Boolean).join('\n\n'); // + construção: projeto na prefeitura (Fabio 14/11)
   const casal = (require('./renda-casal.service') as typeof import('./renda-casal.service')).aiRendaCasalContext(cf);
   const oc = blocoOcorrencias(cf);
   // Pedido da CAIXA: consulta em andamento ou sem restrição (Fabio 11/11 — a documentação só depois do resultado).

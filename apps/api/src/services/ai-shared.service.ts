@@ -841,6 +841,9 @@ export async function applyAiExtractedActions(
         delete cfv._vendaFuturaSentAt; delete cfv._vendaFuturaFailAt; cfv._vendaFuturaCount = 0;
         // De onde o card veio (Fabio 12/11): quem adiou de Aguardando Documentação volta pra lá ao retomar, não pra Prospecção.
         if (!/venda futura/i.test(atual?.stage?.name || '')) cfv._vendaFuturaDe = atual?.stage?.name || null;
+        // Construção na CAIXA esperando o projeto da prefeitura (Fabio 14/11): a retomada é pra perguntar se o projeto já foi aprovado.
+        const pp = cfv._caixaResultado?.projetoPrefeitura;
+        if ((pp?.perguntadoAt && !pp?.aprovadoAt) || cfv._vendaFuturaMotivo) cfv._vendaFuturaMotivo = (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).MOTIVO_PROJETO_PREFEITURA;
         await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cfv as any } });
         // Sem aprovação (Fabio 03/11): a retomada fica em "Lead Sem Retorno" (o template sai no dia marcado) — não vai pra Venda Futura.
         const { temAprovacao } = require('./caixa-screening.service') as typeof import('./caixa-screening.service');

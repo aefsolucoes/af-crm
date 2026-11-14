@@ -308,7 +308,8 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
   const liberado = c.tipo === 'liberado';
   // Aprovada na PRICE (Fabio 11/11): o aviso de aprovação de sempre com os números do simulador do site; "Aprovado no nome de" só quando o tomador não é o 1º.
   const tomadorCx = liberado ? (() => { const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); return cc.participantesDaAvaliacao(cc.participantesDa(cf)).tomador; })() : null;
-  const texto = liberado ? textoAprovadoCaixa({ valor: Number(c.valor), he: !!c.he, prazo: Number(c.prazo) || (c.he ? 240 : 360), desejado: Number(c.desejado) || null, nome: tomadorCx && Number(tomadorCx.ordem) !== 1 ? String(tomadorCx.nome || '') || null : null }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir });
+  const construcaoCx = liberado && !c.he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cf);
+  const texto = (liberado ? textoAprovadoCaixa({ valor: Number(c.valor), he: !!c.he, prazo: Number(c.prazo) || (c.he ? 240 : 360), desejado: Number(c.desejado) || null, nome: tomadorCx && Number(tomadorCx.ordem) !== 1 ? String(tomadorCx.nome || '') || null : null }) : textoCondicionada(saudacao, { parcela: Number(c.parcela), minimo: Number(c.minimo), he: !!c.he, motivo: !!c.motivo, seguir: !!c.seguir })) + (construcaoCx ? `\n\n${PERGUNTA_PROJETO_PREFEITURA}` : '');
   const rotulo = liberado ? 'CAIXA aprovada na PRICE' : 'CAIXA condicionada';
   const nota = (content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -329,7 +330,7 @@ export async function avisarCondicionadaCliente(accountId: string, leadId: strin
     if (liberado && !c.semSimulacao && (await avisoComSimulacao(accountId, leadId, c)) === 'ESPERA') return;
     const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
     if (!env.success) return; // tenta no próximo minuto
-    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'ENVIADO', enviadoAt: new Date().toISOString() }; });
+    await salvar(leadId, (x) => { x.condicionada = { ...(x.condicionada || {}), status: 'ENVIADO', enviadoAt: new Date().toISOString() }; if (construcaoCx) x.projetoPrefeitura = { perguntadoAt: new Date().toISOString() }; });
     await nota(liberado ? `📨 Avisei o cliente que a CAIXA aprovou ${brl(Number(c.valor))} (sem detalhes).` : '📨 Avisei o cliente que a CAIXA aprovou uma parcela pequena demais, que não dá o mínimo, e que não dá pra seguir pela CAIXA agora.');
     return;
   }
@@ -373,6 +374,32 @@ async function avisoComSimulacao(accountId: string, leadId: string, c: Cf): Prom
   if (st?.status === 'FAILED') return semPdf(String(st.detail || 'falhou').slice(0, 200)); // ex.: WhatsApp do código (QR) desconectado
   await nota(`✅ CAIXA aprovada na PRICE (proposta ${c.proposta || '?'}): pedi a simulação no simulador da CAIXA — a mensagem de aprovação vai ao cliente junto com o PDF.`);
   return 'ESPERA';
+}
+
+/** CONSTRUÇÃO NA CAIXA (Fabio 14/11): "sempre que aprovar um cliente na CAIXA para construção o CRM deve perguntar quando ele terá o projeto aprovado pela
+ *  prefeitura, pois a contratação só ocorre após esse projeto aprovado; ele fala mais ou menos a data e a IA coloca para Venda Futura falar com ele nessa data".
+ *  Vai no fim do aviso de aprovação (PDF da simulação ou texto) e marca `_caixaResultado.projetoPrefeitura.perguntadoAt`. */
+export const PERGUNTA_PROJETO_PREFEITURA = '🏗️ Como é uma construção, a CAIXA só faz a contratação depois que o projeto da obra estiver aprovado pela prefeitura. Você tem uma previsão de quando o projeto vai ser aprovado?';
+export const MOTIVO_PROJETO_PREFEITURA = 'PROJETO_PREFEITURA';
+
+/** Bloco pra IA: construção aprovada na CAIXA esperando o projeto da prefeitura — a data que o cliente der vira a retomada da Venda Futura; na retomada, pergunta se
+ *  o projeto já foi aprovado. '' se não for o caso. Pura. */
+export function aiProjetoPrefeituraContext(cf: Cf): string {
+  const pp = cf._caixaResultado?.projetoPrefeitura as Cf | undefined;
+  const motivo = cf._vendaFuturaMotivo === MOTIVO_PROJETO_PREFEITURA;
+  if ((!pp?.perguntadoAt && !motivo) || pp?.aprovadoAt) return '';
+  const br = (d: unknown) => String(d || '').slice(0, 10).split('-').reverse().join('/');
+  const estado = motivo && cf._vendaFuturaAt
+    ? `O card está em Venda Futura esperando o projeto: a retomada está marcada para ${br(cf._vendaFuturaAt)}, quando o CRM pergunta se o projeto já foi aprovado.`
+    : motivo && cf._vendaFuturaSentAt
+      ? 'O CRM mandou a mensagem de retomada da Venda Futura pra saber se o projeto da obra já foi aprovado pela prefeitura.'
+      : `No aviso de aprovação da CAIXA perguntamos ao cliente a previsão de ter o projeto da obra aprovado pela prefeitura${pp?.perguntadoAt ? ` (${br(pp.perguntadoAt)})` : ''}.`;
+  return `--- CONSTRUÇÃO NA CAIXA: PROJETO NA PREFEITURA (Fabio 14/11) ---
+A CAIXA aprovou o financiamento de construção, mas a contratação só acontece depois que o projeto da obra estiver APROVADO PELA PREFEITURA. ${estado}
+- Ele deu a previsão (data, mês ou "mais ou menos daqui a X"): use "moveToStage": "Venda Futura" + "resumeOn" = essa data (só o mês → dia 10; "uns 2 meses" → a data correspondente) e, na "reply", diga curto que vai falar com ele nessa data pra saber do projeto. Previsão vaga ("não sei", "logo"): sugira VOCÊ uma data (uns 30 dias) e já agende. Aqui NÃO vale o limite de 90 dias da Venda Futura: a data é a do projeto.
+- Ainda não foi aprovado (na retomada ou antes): pergunte a nova previsão e devolva "resumeOn" com ela (o card continua em Venda Futura).
+- O projeto JÁ FOI APROVADO: diga, curto, que ótimo e que a equipe já segue com a contratação, e marque "handoff": true com "handoffReason": "projeto da obra aprovado pela prefeitura — seguir com a contratação na CAIXA". Não peça documento nem o projeto (a equipe pede).
+- Não repita a pergunta da previsão se ele já respondeu na conversa.`;
 }
 
 /** Números da simulação oficial da CAIXA feita DEPOIS do aviso da aprovada na PRICE, com o mesmo valor (± 1%): o PDF foi ao cliente por fora do aviso (botão "PDF")

@@ -577,12 +577,15 @@ router.put('/:id/venda-futura', async (req: AuthRequest, res: Response) => {
       time = h;
     }
     const cf: Record<string, any> = { ...((lead.customFields || {}) as Record<string, any>) };
+    // Motivo da retomada (Fabio 14/11): 'PROJETO_PREFEITURA' = construção na CAIXA esperando o projeto da obra aprovado — a mensagem do dia pergunta por ele.
+    const motivo = req.body?.motivo === undefined ? undefined : req.body.motivo === 'PROJETO_PREFEITURA' ? 'PROJETO_PREFEITURA' : null;
+    if (motivo) cf._vendaFuturaMotivo = motivo; else if (motivo === null) delete cf._vendaFuturaMotivo;
     if (date) { cf._vendaFuturaAt = date; if (time) cf._vendaFuturaHora = time; else delete cf._vendaFuturaHora; delete cf._vendaFuturaFailAt; cf._vendaFuturaFails = 0; }
     else { delete cf._vendaFuturaAt; delete cf._vendaFuturaHora; cf._vendaFuturaBaseAt = new Date().toISOString(); }
     await prisma.lead.update({ where: { id: lead.id }, data: { customFields: cf as any } });
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'Usuário';
     const br = date ? `${date.split('-').reverse().join('/')}${time ? ` às ${time}` : ''}` : null;
-    await auditNote(lead.id, req.user!.id, br ? `📅 Venda Futura: retomada marcada para ${br} — por ${userName}. ${time ? 'Nesse horário' : 'Nesse dia'} o CRM manda a mensagem de retomada ao cliente (com a IA do card ligada).` : `📅 Venda Futura: sem data marcada — por ${userName}. A retomada segue de 30 em 30 dias.`);
+    await auditNote(lead.id, req.user!.id, br ? `📅 Venda Futura: retomada marcada para ${br}${cf._vendaFuturaMotivo === 'PROJETO_PREFEITURA' ? ' (perguntar se o projeto da obra já foi aprovado pela prefeitura)' : ''} — por ${userName}. ${time ? 'Nesse horário' : 'Nesse dia'} o CRM manda a mensagem de retomada ao cliente (com a IA do card ligada).` : `📅 Venda Futura: sem data marcada — por ${userName}. A retomada segue de 30 em 30 dias.`);
     logActivity({ accountId: req.user!.accountId, userId: req.user!.id, userName, action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: br ? `marcou a retomada da Venda Futura para ${br}` : 'tirou a data da Venda Futura' } as any);
     res.json({ ok: true, date, time });
   } catch (err: any) {

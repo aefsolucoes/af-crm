@@ -281,13 +281,16 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     const lib = condA?.tipo === 'liberado' && condA?.simDocId === docId ? condA : null;
     const taxaNom = pct(r.jurosNominais);
     const taxaTxt = taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—';
+    // Construção (Fabio 14/11): o aviso de aprovação termina perguntando a previsão do projeto aprovado pela prefeitura — a contratação só vem depois dele.
+    const cr = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
+    const perguntaProjeto = !!avisoProposta && !he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cfA);
     if (avisoProposta && pdfPronto && !erroPdf && rows.length) {
       const { renderApprovalText } = require('./approval-notice.service') as typeof import('./approval-notice.service');
       // Como no aviso de 11/11: "valor menor que o solicitado" e "aprovado no nome de" quando o tomador não é o 1º participante.
       const desejado = lib ? Number(lib.desejado) || 0 : 0;
       const tomador = lib ? (() => { const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); return cc.participantesDaAvaliacao(cc.participantesDa(cfA)).tomador; })() : null;
       const extra = { ...(desejado > fin ? { pedido: `R$ ${brl(desejado)}` } : {}), ...(tomador && Number(tomador.ordem) !== 1 && tomador.nome ? { nome: String(tomador.nome) } : {}) };
-      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: he, prazo: `${rows.length} meses`, taxa: taxaTxt, primeiraParcela: `R$ ${brl(rows[0].parcela)}`, ...extra } as any])}\n\nSegue a simulação da CAIXA em PDF 📄`;
+      const legenda = `${renderApprovalText([{ instituicao: 'CAIXA', valor: `R$ ${brl(fin)}`, liquido: he, prazo: `${rows.length} meses`, taxa: taxaTxt, primeiraParcela: `R$ ${brl(rows[0].parcela)}`, ...extra } as any])}\n\nSegue a simulação da CAIXA em PDF 📄${perguntaProjeto ? `\n\n${cr.PERGUNTA_PROJETO_PREFEITURA}` : ''}`;
       await prisma.simulationDocRequest.update({ where: { id: docId }, data: { caption: legenda.slice(0, 1000) } }).catch(() => {});
     }
     if (pdfPronto && !erroPdf) {
@@ -306,6 +309,7 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
           ? (ok ? { ...fr, condicionada: { ...(fr.condicionada || {}), status: 'ENVIADO', enviadoAt: agora, oficial } } : fr)
           : avisoProposta ? { ...fr, aprovadaAviso: { ...(fr.aprovadaAviso || {}), status: ok ? 'ENVIADO' : 'FALHOU', enviadoAt: ok ? agora : undefined } } : fr;
         if (corrigeLiberado && res.condicionada?.tipo === 'liberado') res = { ...res, condicionada: { ...res.condicionada, oficial } };
+        if (perguntaProjeto && ok) res = { ...res, projetoPrefeitura: { perguntadoAt: agora } };
         await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _caixaResultado: res, _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), ...(avisoProposta ? { avisoAprovacao: null } : {}) } } } });
         if (lib && ok) await nota(leadId, `📨 Avisei o cliente que a CAIXA aprovou R$ ${brl(fin)}: mensagem de aprovação com os números da simulação oficial da CAIXA (${rows.length} meses, ${taxaTxt}, 1ª parcela R$ ${brl(rows[0].parcela)}) e o PDF.`);
       }
