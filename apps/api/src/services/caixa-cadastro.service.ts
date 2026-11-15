@@ -644,7 +644,7 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   const cf = (l.customFields || {}) as Cf;
   const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
-  // Outro correspondente: o automático não encaminha; o clique direto (botão do card, /avaliar, conferência marcada) roda e fica anotado (Fabio 14/11).
+  // Outro correspondente: o automático (refazer em 360/PRICE) não encaminha; o clique (botão do card, análise pendente do clique, /avaliar, conferência marcada) roda e fica anotado (Fabio 14/11).
   const outroCca = outroCcaDe(cf);
   if (outroCca.length && !opts.manual) return `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não vai sozinha (Fabio 14/11) — rode pelo botão "Análise CAIXA" se quiser seguir`;
   if (outroCca.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Análise CAIXA pedida por ${por} com o cliente em OUTRO correspondente (${descreveOutroCca(outroCca)}).` } }).catch(() => {});
@@ -779,7 +779,8 @@ async function seguirAnalisePendente(accountId: string, leadId: string): Promise
   await gravarAnalisePendente(leadId, null);
   const agora = new Date().toISOString();
   await salvar(leadId, (x) => { x.conferencia = { status: 'CONFERIDO', por: `automático (análise autorizada por ${pend.por})`, em: agora }; });
-  const erro = await pedirAvaliacao(accountId, leadId, `${pend.por} (depois do cadastro)`, { enviar: pend.enviar, autorizacao: { por: pend.por, userId: pend.userId, em: pend.em, enviar: pend.enviar, denovo: false, via: pend.via } });
+  // A pendente nasce de um clique ("Análise CAIXA" com o cadastro faltando, ou "Cadastro CAIXA" com a análise em seguida): vale como o clique direto (Fabio 14/11).
+  const erro = await pedirAvaliacao(accountId, leadId, `${pend.por} (depois do cadastro)`, { enviar: pend.enviar, manual: true, autorizacao: { por: pend.por, userId: pend.userId, em: pend.em, enviar: pend.enviar, denovo: false, via: pend.via } });
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   if (erro) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Cadastro na CAIXA gravado, mas a análise de crédito autorizada por ${pend.por} NÃO foi pra fila: ${erro}. Rode pelo botão "Análise CAIXA" depois de acertar.` } }).catch(() => {});
