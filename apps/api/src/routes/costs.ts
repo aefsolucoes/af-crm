@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { costsOverview, createEntry, updateEntry, deleteEntry, setRate, currentMonth, validMonth } from '../services/costs.service';
+import { costsOverview, createEntry, updateEntry, deleteEntry, setSettings, currentMonth, validMonth } from '../services/costs.service';
 
 /** Painel de custos — só administrador (Fabio 22/10). */
 const router = Router();
@@ -32,13 +32,17 @@ router.delete('/entries/:id', async (req: AuthRequest, res: Response) => {
   try { await deleteEntry(req.user!.accountId, String(req.params.id)); res.json({ ok: true }); } catch (err) { fail(res, err, 'Erro ao apagar o lançamento', 400); }
 });
 
-// Cotação do dólar: número = fixa; null = automática (cotação do dia).
+// Cotação do dólar (número = fixa; null/'' = automática) e dias de fechamento/vencimento da fatura do cartão. Só muda o que vier no corpo.
 router.put('/settings', async (req: AuthRequest, res: Response) => {
   try {
-    const v = req.body?.usdBrl;
-    await setRate(req.user!.accountId, v === null || v === '' || v === undefined ? null : Number(v));
+    const b = req.body || {};
+    await setSettings(req.user!.accountId, {
+      ...('usdBrl' in b ? { usdBrl: b.usdBrl === null || b.usdBrl === '' ? null : Number(b.usdBrl) } : {}),
+      ...(b.cardClosingDay !== undefined ? { cardClosingDay: Number(b.cardClosingDay) } : {}),
+      ...(b.cardDueDay !== undefined ? { cardDueDay: Number(b.cardDueDay) } : {}),
+    });
     res.json({ ok: true });
-  } catch (err) { fail(res, err, 'Erro ao salvar a cotação', 400); }
+  } catch (err) { fail(res, err, 'Erro ao salvar a configuração', 400); }
 });
 
 export default router;

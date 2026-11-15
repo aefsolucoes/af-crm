@@ -1145,6 +1145,8 @@ model CostEntry {
   endMonth    String?
   kind        String   @default("EXTRA") // EXTRA | ACTUAL
   campaign    String? // Meta Ads: nome da campanha
+  paidAt      String? // 'YYYY-MM-DD' — dia da cobrança no cartão (recorrente: a 1ª cobrança; o dia se repete todo mês)
+  chargeDay   Int? // recorrente: dia do mês em que o cartão é cobrado
   note        String?
   createdById String?
   createdAt   DateTime @default(now())
@@ -1167,8 +1169,10 @@ model ProviderUsage {
 
 // Cotação do dólar do painel de custos: usdBrl nulo = automática (cotação do dia); preenchido = fixa, definida à mão.
 model CostSetting {
-  accountId String   @id
-  usdBrl    Float?
+  accountId      String   @id
+  usdBrl         Float?
+  cardClosingDay Int      @default(22) // fatura do cartão fecha nesse dia
+  cardDueDay     Int      @default(27) // e vence nesse
   updatedAt DateTime @updatedAt
 }
 
