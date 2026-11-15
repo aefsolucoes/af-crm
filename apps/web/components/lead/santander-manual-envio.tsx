@@ -62,7 +62,7 @@ export function SantanderManualEnvio({ leadId, produto, className }: { leadId: s
         <>
           {p?.status === 'ERRO' && <p className="text-amber-800">⚠️ O envio pelo portal falhou ({quando(p.fim)}): {p.erro}</p>}
           <p className="text-slate-600">
-            {e.prontoAt ? 'Documentação completa.' : e.faltando.length ? `Falta: ${e.faltando.join('; ')}.` : 'Pedido ao cliente: ' + (e.itens.join('; ') || 'comprovação de renda') + '.'}
+            {e.prontoAt ? `Documentação completa.${e.aiOn ? '' : ' A IA está desligada: clique em Enviar documentos ou ligue a IA do card (envia sozinho em até 5 min).'}` :e.faltando.length ? `Falta: ${e.faltando.join('; ')}.` : 'Pedido ao cliente: ' + (e.itens.join('; ') || 'comprovação de renda') + '.'}
             {e.docs.length ? ` Vai pro portal: ${e.docs.join('; ')}.` : ' Nenhum documento de renda recebido ainda.'}
           </p>
           <button onClick={enviar} disabled={busy || !e.docs.length} className="mt-1 inline-flex items-center gap-1 rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50" title="A extensão do Credimorar anexa os documentos na Análise manual, escreve o comentário de defesa e clica em Enviar; depois o CRM avisa a Letícia">

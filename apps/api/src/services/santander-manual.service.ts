@@ -312,8 +312,12 @@ async function encaminharSeCompleto(accountId: string, leadId: string, io?: Io):
     return;
   }
   const ondeBotao = st.produto === 'FH' ? 'aba Financiamento, linha do Santander' : 'aba Financiamento, bloco Análises de crédito';
-  await note(leadId, `📎 ${rot} (análise manual): o cliente mandou a documentação completa (${tipos.length ? Array.from(new Set(tipos)).join('; ') : `${docs.length} arquivo(s)`}). A IA deste card está DESLIGADA, então não enviei sozinho: clique em "📤 Enviar documentos" no card (${ondeBotao}) — a extensão do Credimorar anexa no portal, escreve o comentário de defesa e envia pra análise manual; depois aviso a Letícia.`);
-  await pushDono(accountId, leadId, `📎 ${rot} manual: documentação completa`, `${lead.name}: clique em "Enviar documentos" no card`);
+  await note(leadId, `📎 ${rot} (análise manual): o cliente mandou a DOCUMENTAÇÃO COMPLETA (${tipos.length ? Array.from(new Set(tipos)).join('; ') : `${docs.length} arquivo(s)`}). A IA deste card está DESLIGADA, então não enviei sozinho. Escolha:\n• clique em "📤 Enviar documentos" no card (${ondeBotao}) — a extensão do Credimorar anexa no portal, escreve o comentário de defesa e envia pra análise manual; ou\n• LIGUE A IA do card — em até 5 min o CRM envia sozinho.\nDepois do envio eu aviso a Letícia por e-mail.`);
+  // Aviso à EQUIPE TODA (Fabio 14/11: "AVISAR A EQUIPE QUE TEM A DOCUMENTAÇÃO COMPLETA PARA FAZER MANUAL OU LIGAR IA PARA FAZER") — antes ia só ao dono do card.
+  try {
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `📎 ${rot} manual: documentação completa`, body: `${lead.name}: clique em "Enviar documentos" no card ou ligue a IA pra enviar sozinho`.slice(0, 160), leadId }).catch(() => {});
+  } catch { /* aviso */ }
 }
 
 // ─── ENVIO PELO PORTAL (Fabio 14/11) ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
