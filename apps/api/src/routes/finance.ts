@@ -698,6 +698,39 @@ router.put('/notes/:id', validate(notaSchema), async (req: AuthRequest, res: Res
   }
 });
 
+// Receita no extrato = o PROCESSO de cada cliente (Fabio 15/11: "era pra estar o processo dos clientes, não a referência à NF"): uma receita por processo,
+// com a parte dele do que caiu (líquido, na proporção do valor bruto na nota), e a NF só como referência no fim. Nota sem processo do CRM: os clientes que ela cita.
+const marcaDaNota = /^Comissão — NF|· NF (nº|s\/ nº)/; // receitas que a própria nota lançou (as lançadas à mão não têm isso)
+function clientesCitados(nota: { aiRead?: any; note?: string | null }): string {
+  const daLeitura = (Array.isArray(nota.aiRead?.itens) ? nota.aiRead.itens : []).map((i: any) => String(i?.cliente || '').trim()).filter(Boolean);
+  if (daLeitura.length) return Array.from(new Set(daLeitura)).join(' e ');
+  const m = /Clientes?:\s*([^—·]+)/i.exec(nota.note || '');
+  return m ? m[1].replace(/\(R\$[^)]*\)/g, '').replace(/\s+/g, ' ').trim() : '';
+}
+async function lancarReceitasDaNota(accountId: string, userId: string, nota: { id: string; number: string | null; payer: string; aiRead?: any; note?: string | null }, provs: Array<{ id: string; leadId: string; leadName: string; amount: number }>, valor: number, when: Date): Promise<string[]> {
+  const ref = `NF ${nota.number ? `nº ${nota.number}` : 's/ nº'}`;
+  if (!provs.length) {
+    const tx = await prisma.transaction.create({ data: { description: `Comissão — ${clientesCitados(nota) || 'cliente não identificado na nota'} (${nota.payer}) · ${ref}`, amount: valor, type: 'INCOME', date: when, accountId, userId } });
+    return [tx.id];
+  }
+  const partes = notaSvc().dividirProporcional(valor, provs.map((p) => p.amount));
+  const ids: string[] = [];
+  for (let i = 0; i < provs.length; i++) {
+    const tx = await prisma.transaction.create({ data: { description: `Comissão — ${provs[i].leadName} (${nota.payer}) · ${ref}`, amount: partes[i], type: 'INCOME', date: when, accountId, userId } });
+    ids.push(tx.id);
+    await prisma.commissionProvision.update({ where: { id: provs[i].id }, data: { status: 'RECEIVED', receivedAmount: partes[i], receivedAt: when, transactionId: tx.id } });
+    await prisma.commissionSuggestion.updateMany({ where: { accountId, leadId: provs[i].leadId, status: 'PENDING' }, data: { status: 'CONFIRMED', transactionId: tx.id, resolvedAt: new Date() } });
+  }
+  return ids;
+}
+/** Receitas que a nota lançou (as dos processos dela + a da própria nota), só as com a marca da nota. */
+async function receitasLancadasPelaNota(accountId: string, nota: { id: string; transactionId: string | null }) {
+  const ids = new Set<string>((await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, transactionId: { not: null } }, select: { transactionId: true } })).map((p) => p.transactionId!));
+  if (nota.transactionId) ids.add(nota.transactionId);
+  const txs = await prisma.transaction.findMany({ where: { accountId, id: { in: Array.from(ids) } }, select: { id: true, description: true, amount: true, date: true } });
+  return txs.filter((t) => marcaDaNota.test(t.description));
+}
+
 // POST /api/finance/notes/:id/receive — o banco pagou a nota: UMA Receita com o total e baixa em todos os processos dela.
 router.post('/notes/:id/receive', async (req: AuthRequest, res: Response) => {
   try {
@@ -707,27 +740,46 @@ router.post('/notes/:id/receive', async (req: AuthRequest, res: Response) => {
     const { amount, date, transactionId, semReceita } = req.body as { amount?: number; date?: string; transactionId?: string; semReceita?: boolean };
     const liquido = nota.netAmount ?? Math.round((nota.totalAmount - (nota.retainedAmount || 0)) * 100) / 100; // o que cai na conta (bruto − impostos retidos)
     const provs = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'OPEN' } });
-    const brl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     // Receita que já foi lançada à mão (ex.: "Recebimento Credmorar …"): só liga, não lança de novo.
     const existente = transactionId ? await prisma.transaction.findFirst({ where: { id: transactionId, accountId, type: 'INCOME' }, include: { user: { select: { id: true, name: true } } } }) : null;
     if (transactionId && !existente) return res.status(404).json({ error: 'Receita não encontrada' });
     const valor = existente ? existente.amount : typeof amount === 'number' && amount > 0 ? amount : liquido;
     const when = existente ? existente.date : toDate(date) || new Date();
-    // Nota de antes do Financeiro existir no CRM (semReceita): só registra que foi paga, sem mexer no extrato/saldo.
-    const tx = existente || (semReceita ? null : await prisma.transaction.create({
-      data: { description: `Comissão — NF ${nota.number ? `nº ${nota.number} ` : ''}(${nota.payer}) · ${provs.length} processo${provs.length === 1 ? '' : 's'}${nota.retainedAmount ? ` · bruto ${brl(nota.totalAmount)}, retido ${brl(nota.retainedAmount)}` : ''}`, amount: valor, type: 'INCOME', date: when, accountId, userId: req.user!.id },
-      include: { user: { select: { id: true, name: true } } },
-    }));
-    // Cada processo recebe a sua parte do que caiu (líquido), na proporção do valor bruto dele na nota.
-    const partes = notaSvc().dividirProporcional(valor, provs.map((p) => p.amount));
-    for (let i = 0; i < provs.length; i++) {
-      await prisma.commissionProvision.update({ where: { id: provs[i].id }, data: { status: 'RECEIVED', receivedAmount: partes[i], receivedAt: when, transactionId: tx?.id || null } });
-      await prisma.commissionSuggestion.updateMany({ where: { accountId, leadId: provs[i].leadId, status: 'PENDING' }, data: { status: 'CONFIRMED', transactionId: tx?.id || null, resolvedAt: new Date() } });
+    if (existente || semReceita) {
+      // Receita lançada à mão (só liga) ou nota de antes do Financeiro (sem receita): os processos recebem a sua parte, sem mexer no extrato.
+      const partes = notaSvc().dividirProporcional(valor, provs.map((p) => p.amount));
+      for (let i = 0; i < provs.length; i++) {
+        await prisma.commissionProvision.update({ where: { id: provs[i].id }, data: { status: 'RECEIVED', receivedAmount: partes[i], receivedAt: when, transactionId: existente?.id || null } });
+        await prisma.commissionSuggestion.updateMany({ where: { accountId, leadId: provs[i].leadId, status: 'PENDING' }, data: { status: 'CONFIRMED', transactionId: existente?.id || null, resolvedAt: new Date() } });
+      }
+      await prisma.commissionNote.update({ where: { id: nota.id }, data: { status: 'RECEIVED', receivedAt: when, transactionId: existente?.id || null } });
+      return res.status(201).json(existente || { ok: true, semReceita: true });
     }
-    await prisma.commissionNote.update({ where: { id: nota.id }, data: { status: 'RECEIVED', receivedAt: when, transactionId: tx?.id || null } });
-    res.status(201).json(tx || { ok: true, semReceita: true });
+    const ids = await lancarReceitasDaNota(accountId, req.user!.id, nota, provs, valor, when);
+    await prisma.commissionNote.update({ where: { id: nota.id }, data: { status: 'RECEIVED', receivedAt: when, transactionId: ids[0] || null } });
+    res.status(201).json({ ok: true, receitas: ids.length, amount: valor });
   } catch (err: any) {
     res.status(500).json({ error: err?.message || 'Erro ao registrar o recebimento da nota' });
+  }
+});
+
+// POST /api/finance/notes/:id/redo-income — refaz as receitas de uma nota já recebida: uma por processo (com o nome do cliente), mesma data e mesmo total
+router.post('/notes/:id/redo-income', async (req: AuthRequest, res: Response) => {
+  try {
+    const accountId = req.user!.accountId;
+    const nota = await prisma.commissionNote.findFirst({ where: { id: req.params.id, accountId, status: 'RECEIVED' }, select: { id: true, number: true, payer: true, aiRead: true, note: true, transactionId: true, receivedAt: true } });
+    if (!nota) return res.status(404).json({ error: 'Nota recebida não encontrada' });
+    const velhas = await receitasLancadasPelaNota(accountId, nota);
+    if (!velhas.length) return res.json({ ok: true, refeitas: 0, motivo: 'a nota não lançou receita (ligada a receita lançada à mão ou sem receita)' });
+    const valor = Math.round(velhas.reduce((s, t) => s + t.amount, 0) * 100) / 100;
+    const when = velhas[0].date;
+    await prisma.transaction.deleteMany({ where: { id: { in: velhas.map((t) => t.id) } } });
+    const provs = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id }, orderBy: { createdAt: 'asc' } });
+    const ids = await lancarReceitasDaNota(accountId, req.user!.id, nota, provs, valor, when);
+    await prisma.commissionNote.update({ where: { id: nota.id }, data: { transactionId: ids[0] || null } });
+    res.json({ ok: true, refeitas: ids.length, valor });
+  } catch (err: any) {
+    res.status(500).json({ error: err?.message || 'Erro ao refazer as receitas' });
   }
 });
 
@@ -792,8 +844,8 @@ router.delete('/notes/:id', async (req: AuthRequest, res: Response) => {
     // Nota recebida tirada de propósito (Fabio 14/11: "vamos usar apenas as notas a partir de setembro"): a receita que a PRÓPRIA nota lançou sai junto;
     // receita lançada à mão e só ligada à nota fica. Processos dela voltam a ficar em aberto, com a estimativa.
     if (nota.status === 'RECEIVED') {
-      const tx = nota.transactionId ? await prisma.transaction.findFirst({ where: { id: nota.transactionId, accountId }, select: { id: true, description: true } }) : null;
-      if (tx && /^Comissão — NF/.test(tx.description)) await prisma.transaction.delete({ where: { id: tx.id } });
+      const lancadas = await receitasLancadasPelaNota(accountId, nota);
+      if (lancadas.length) await prisma.transaction.deleteMany({ where: { id: { in: lancadas.map((t) => t.id) } } });
       const recebidas = await prisma.commissionProvision.findMany({ where: { accountId, noteId: nota.id, status: 'RECEIVED' } });
       for (const p of recebidas) await prisma.commissionProvision.update({ where: { id: p.id }, data: { status: 'OPEN', receivedAmount: null, receivedAt: null, transactionId: null } });
     }
