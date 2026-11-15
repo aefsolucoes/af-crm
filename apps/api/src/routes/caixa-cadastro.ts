@@ -197,7 +197,7 @@ router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
     if (!aj) return res.status(400).json({ error: 'a avaliação deste card não tem ajuste pra reenviar' });
     ajuste = aj;
   }
-  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true, denovo: req.body?.denovo === true, ...(ajuste ? { ajuste } : {}) }).catch((e) => e?.message || 'erro');
+  const erro = await pedirAvaliacao(req.user!.accountId, req.params.leadId, quem, { enviar: req.body?.enviar === true, construcaoConferida: req.body?.construcaoConferida === true, denovo: req.body?.denovo === true, manual: true, ...(ajuste ? { ajuste } : {}) }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });

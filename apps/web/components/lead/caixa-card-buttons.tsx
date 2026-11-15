@@ -36,6 +36,8 @@ interface Estado {
   cadastro: { trava: Trava };
   analise: {
     trava: Trava; precisaConferir: boolean; produto: string;
+    /** Aviso que NÃO trava o botão (Fabio 14/11: cliente em outro correspondente). */
+    aviso?: string | null;
     /** Janela do "Cadastro CAIXA" mostra "rodar a análise em seguida" (Fabio 11/11). */
     podeEmSeguida?: boolean;
     tomador: string | null; incluir: string[]; fora: string[];
@@ -370,6 +372,9 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
 
           {modal === 'analise' && travaModal?.tipo === 'cadastro' && !erro && (
             <p className="text-xs rounded-lg bg-blue-50 border border-blue-200 text-[#005CA9] px-2.5 py-1.5">{travaModal.msg}</p>
+          )}
+          {modal === 'analise' && a.aviso && !faltaPre && !erro && (
+            <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1.5">⚠️ {a.aviso}</p>
           )}
           {(faltaPre || erro) && (
             <p className="text-xs rounded-lg bg-red-50 border border-red-200 text-red-700 px-2.5 py-1.5">{erro || faltaPre}</p>

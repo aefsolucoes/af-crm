@@ -638,14 +638,16 @@ export function avaliacaoParaRefazer(historico: Cf[], produto: string): Cf | nul
  *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo —
  *  salvo `denovo` (Fabio 03/11, Jézer/Fernanda: "JÁ FORAM AUTORIZADAS PELO PV … RODE A AVALIAÇÃO NOVAMENTE"): a anterior vai pro histórico (`avaliacao.anteriores`),
  *  o resultado dela sai de `_caixaResultado` (a consulta de Formulários Enviados roda de novo depois do novo envio) e a extensão refaz o mesmo roteiro. */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown>; construcaoConferida?: boolean } = {}): Promise<string | null> {
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown>; construcaoConferida?: boolean; manual?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
   const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
+  // Outro correspondente: o automático não encaminha; o clique direto (botão do card, /avaliar, conferência marcada) roda e fica anotado (Fabio 14/11).
   const outroCca = outroCcaDe(cf);
-  if (outroCca.length) return `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não é encaminhada (Fabio 14/11)`;
+  if (outroCca.length && !opts.manual) return `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não vai sozinha (Fabio 14/11) — rode pelo botão "Análise CAIXA" se quiser seguir`;
+  if (outroCca.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Análise CAIXA pedida por ${por} com o cliente em OUTRO correspondente (${descreveOutroCca(outroCca)}).` } }).catch(() => {});
   const anterior = cf._caixaCadastro?.avaliacao;
   const denovo = opts.denovo === true;
   if (!denovo && /^ENVIADA/i.test(String(anterior?.status || ''))) return `A Avaliação de Risco já foi ENVIADA à CAIXA (${String(anterior.fim || '').slice(0, 10)}) — o resultado sai na consulta`;
@@ -818,7 +820,7 @@ export async function marcarConferido(accountId: string, leadId: string, por: st
   await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por, em: new Date().toISOString() }; });
   const avaliar = he && AVALIACAO_APOS_CONFERENCIA;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cadastro na CAIXA conferido por ${por}.${avaliar ? ' A Avaliação de Risco foi pra fila da extensão.' : he ? ' A Avaliação de Risco NÃO roda agora (Fabio 31/10: nenhum crédito por enquanto).' : ' No Financiamento a Avaliação de Risco não roda sozinha.'}` } }).catch(() => {});
-  return avaliar ? pedirAvaliacao(accountId, leadId, `${por} (cadastro conferido)`) : null;
+  return avaliar ? pedirAvaliacao(accountId, leadId, `${por} (cadastro conferido)`, { manual: true }) : null;
 }
 
 const valorDe = (v: any): number | null => {
@@ -1081,9 +1083,8 @@ export function travaAnaliseCaixa(cf: Cf, fh: boolean): Trava {
   const quem = av?.autorizacao?.por || av?.por;
   if (st === 'FILA') return { tipo: 'andamento', msg: `Análise de crédito na fila da extensão da CAIXA desde ${quando(av!.pedidoEm)}${quem ? ` (autorizada por ${quem})` : ''}` };
   if (av?.status && !avaliacaoTerminada(cf)) return { tipo: 'andamento', msg: `A extensão está rodando a Avaliação de Risco na CAIXA (desde ${quando(av.inicio)})` };
-  // Cliente em outro correspondente (Fabio 14/11: "não encaminha para análise de crédito").
-  const outroCca = outroCcaDe(cf);
-  if (outroCca.length && !/^ENVIADA/i.test(st)) return { tipo: 'falta', msg: `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não é encaminhada. Resolva e consulte o nome de novo.` };
+  // Cliente em outro correspondente (Fabio 14/11): NÃO trava o botão — o clique é a autorização ("por que não está deixando rodar?"); o aviso vai no estado
+  // (analise.aviso) e só o envio AUTOMÁTICO (análise pendente depois do cadastro) fica segurado em pedirAvaliacao.
   // Consulta do resultado em andamento: a extensão gravaria o resultado antigo por cima do "aguardando a nova" — espera ela terminar.
   const res = cf._caixaResultado as Cf | undefined;
   if (res?.status === 'RODANDO' && res.inicio && Date.now() - Date.parse(res.inicio) < LEASE_MS) return { tipo: 'andamento', msg: `A extensão está consultando o resultado da avaliação em Formulários Enviados (desde ${quando(res.inicio)}) — espere terminar` };
@@ -1166,6 +1167,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
     cadastro: { trava: travaCadastroCaixa(cf) },
     analise: {
       trava: travaAnaliseCaixa(cf, !he),
+      // Cliente em outro correspondente (Fabio 14/11): aviso na janela, sem travar o botão.
+      aviso: oc.length ? `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(oc)}). Rodando agora, a análise vai mesmo assim — fica anotado com o seu nome.` : null,
       // Janela do "Cadastro CAIXA" mostra "rodar a análise em seguida" (Fabio 11/11).
       podeEmSeguida: !c.avaliacao?.status && !cf._caixaAnalisePendente && ((t) => !t || t.tipo === 'cadastro' || (t.tipo === 'falta' && !ficha))(travaAnaliseCaixa(cf, !he)),
       // Rodada anterior chegou à CAIXA → o cadastro já foi usado lá; a conferência só é pedida antes da 1ª avaliação.
@@ -1277,7 +1280,7 @@ export async function analiseCaixaPeloCard(accountId: string, leadId: string, qu
   if (conferir && !opts.conferido) return { erro: 'O cadastro gravado na CAIXA ainda não foi conferido: confira no Caixa Aqui e marque "Já conferi o cadastro" na confirmação.' };
   if (conferir) await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por: quem.nome, em: agora }; });
   const via = denovo ? 'botão Rodar análise CAIXA de novo do card' : 'botão Análise CAIXA do card';
-  const erro = await pedirAvaliacao(accountId, leadId, quem.nome, { enviar, denovo, autorizacao: { por: quem.nome, userId: quem.id, em: agora, enviar, denovo, via } });
+  const erro = await pedirAvaliacao(accountId, leadId, quem.nome, { enviar, denovo, manual: true, autorizacao: { por: quem.nome, userId: quem.id, em: agora, enviar, denovo, via } });
   if (erro) return { erro };
   const oQue = enviar ? 'A extensão preenche a operação e ENVIA à CAIXA; o resultado sai depois, na consulta de Formulários Enviados.' : 'A extensão preenche a operação e PARA antes de enviar (tela 3), pra conferir.';
   const ant = denovo ? ` Avaliação anterior: ${String(anterior!.status || '—').slice(0, 120)} (${quando(anterior!.fim || anterior!.pedidoEm)})${cf._caixaResultado?.status ? ` — resultado: ${String(cf._caixaResultado.status).slice(0, 140)}` : ''}; foi pro histórico.` : '';
