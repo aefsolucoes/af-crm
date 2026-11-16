@@ -255,8 +255,7 @@ export async function marcarVistoriaConcluida(accountId: string, leadId: string,
   await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${jur.name}" — vistoria concluída pelo Inter (crédito e imóvel aprovados)` } }).catch(() => {});
   const pede = /question[aá]rio|vencimento|assinatura|zeev/i.test(fresh) ? '\nO Inter pede as informações da contratação (questionário: vencimento, assinatura, registro, despesas de registro, dados dos proponentes, responsável na Zeev) — ver o e-mail na conversa.' : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Vistoria CONCLUÍDA pelo Inter: crédito e imóvel aprovados. Card levado para "${jur.name}".${pede}` } }).catch(() => {});
-  // Contratação: a certidão de ônus tem que estar ATUALIZADA (Fabio 16/11: "caso ela não esteja atualizada, a gente solicita ela atualizada na contratação").
-  await pedirCertidaoAtualizadaNaContratacao(accountId, leadId).catch((e: any) => console.warn('[Inter] certidão atualizada:', e?.message));
+  // Contratação: a certidão atualizada é pedida pelo updateLeadStage ao entrar em Análise Jurídica (todos os bancos — Fabio 16/11).
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '✅ Vistoria concluída pelo Inter', body: `${lead.name}: card foi pra ${jur.name}`, leadId }).catch(() => {}); } catch { /* aviso */ }
   io?.to(`account_${accountId}`).emit('new_conversation', { leadId });
   return jur.name;

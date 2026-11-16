@@ -146,6 +146,11 @@ export async function updateLeadStage(id: string, accountId: string, stageId: st
     (require('./ai-team-question.service') as typeof import('./ai-team-question.service')).perguntarProximoPasso({ accountId, leadId: id, evento: `o card foi de "${antes.stage?.name || '?'}" para "${stage.name}"`, ref: `etapa:${stageId}:${new Date().toISOString().slice(0, 16)}` })
       .catch((e: any) => console.error('[Processo] próximo passo (etapa):', e?.message));
   }
+  // Entrou na CONTRATAÇÃO (Análise Jurídica), qualquer banco (Fabio 16/11: "faz isso para todos os bancos"): certidão de ônus antiga/consulta → pede a atualizada
+  // (IA ligada: ONR com PIX ao cliente; desligada: push). A vistoria aceita certidão antiga; a contratação, não.
+  if (antes && antes.stageId !== stageId && /an[aá]lise jur[ií]dica/i.test(stage.name)) {
+    (require('./inter-email.service') as typeof import('./inter-email.service')).pedirCertidaoAtualizadaNaContratacao(accountId, id).catch((e: any) => console.error('[Contratação] certidão atualizada:', e?.message));
+  }
   // Ligou a IA agora (Fabio 05/11): ela retoma o que ficou parado — 2 min depois, pra quem moveu o card (aviso de aprovação…) falar primeiro.
   if (estava && !estava.aiAutoReplyActive) setTimeout(() => { (require('./whatsapp.service') as typeof import('./whatsapp.service')).retomarComIa(estava.accountId, id, null).catch((e: any) => console.error('[IA ligada] retomar:', e?.message)); }, 120_000);
   return atualizado;
