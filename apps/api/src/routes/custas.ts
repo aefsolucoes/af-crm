@@ -23,6 +23,15 @@ router.post('/fh/:leadId', async (req: AuthRequest, res: Response) => {
     res.json({ status: 'RODANDO' });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao calcular as custas' }); }
 });
+// Valores do card pra janela de confirmação.
+router.get('/fh/:leadId', async (req: AuthRequest, res: Response) => {
+  try {
+    const { dadosCustasFh } = require('../services/custas-fh.service') as typeof import('../services/custas-fh.service');
+    const out = await dadosCustasFh(req.user!.accountId, req.params.leadId);
+    if (!out.ok) return res.status(400).json({ error: out.erro });
+    res.json(out.dados);
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
 router.get('/fh/:leadId/resultado', (req: AuthRequest, res: Response) => {
   const j = jobs.get(req.params.leadId);
   if (!j) return res.json({ status: 'NADA' });
