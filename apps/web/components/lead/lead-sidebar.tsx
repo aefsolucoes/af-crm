@@ -10,6 +10,7 @@ import { LeadFhAnalysis } from './lead-fh-analysis';
 import { LeadCertidoes } from './lead-certidoes';
 import { LeadCertidoesProcesso } from './lead-certidoes-processo';
 import { LeadItbi } from './lead-itbi';
+import { LeadCustasFh } from './lead-custas-fh';
 import { LeadVistoria, LeadVistoriaSantander, LeadVistoriaCreditas, LeadVistoriaItau } from './lead-vistoria';
 import { CaixaCardButtons } from './caixa-card-buttons';
 import { useLeadAnalyses, FIELDS_FROM_ANALYSES } from '@/components/credit/shared';
@@ -559,6 +560,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {expanded && activeTab === 'Financiamento' && <LeadCertidoes leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadCertidoesProcesso leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}
+          {expanded && activeTab === 'Financiamento' && /habitacional/i.test(lead.pipeline?.department?.name || '') && <LeadCustasFh leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaSantander leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaCreditas leadId={lead.id} />}

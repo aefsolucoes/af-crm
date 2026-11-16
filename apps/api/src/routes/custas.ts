@@ -17,7 +17,7 @@ router.post('/fh/:leadId', async (req: AuthRequest, res: Response) => {
     const b = req.body || {};
     const { estimarCustasFh } = require('../services/custas-fh.service') as typeof import('../services/custas-fh.service');
     jobs.set(leadId, { status: 'RODANDO', em: Date.now() });
-    estimarCustasFh(req.user!.accountId, leadId, nome, { cidade: b.cidade, uf: b.uf, origemCidade: b.origemCidade, valorImovel: b.valorImovel, financiado: b.financiado, imovelNovo: b.imovelNovo === true, primeiraAquisicao: b.primeiraAquisicao === true })
+    estimarCustasFh(req.user!.accountId, leadId, nome, { cidade: b.cidade, uf: b.uf, origemCidade: b.origemCidade, valorImovel: b.valorImovel, financiado: b.financiado, imovelNovo: b.imovelNovo === true, primeiraAquisicao: b.primeiraAquisicao === true, banco: typeof b.banco === 'string' ? b.banco : undefined })
       .then((out) => jobs.set(leadId, out.ok ? { status: 'PRONTO', em: Date.now(), mensagem: out.mensagem } : { status: 'ERRO', em: Date.now(), erro: out.erro }))
       .catch((e: any) => jobs.set(leadId, { status: 'ERRO', em: Date.now(), erro: e?.message || 'Erro ao calcular as custas' }));
     res.json({ status: 'RODANDO' });
@@ -31,6 +31,23 @@ router.get('/fh/:leadId', async (req: AuthRequest, res: Response) => {
     if (!out.ok) return res.status(400).json({ error: out.erro });
     res.json(out.dados);
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+// Cidades da UF pra lista da janela (Fabio 16/11: "a cidade e UF deve ter as opções"), pelo IBGE — guardadas em memória.
+const municipiosCache = new Map<string, string[]>();
+router.get('/municipios/:uf', async (req: AuthRequest, res: Response) => {
+  const uf = String(req.params.uf || '').toUpperCase();
+  if (!/^[A-Z]{2}$/.test(uf)) return res.status(400).json({ error: 'UF inválida' });
+  try {
+    let lista = municipiosCache.get(uf);
+    if (!lista) {
+      const r = await fetch(`https://servicodados.ibge.gov.br/api/v1/localidades/estados/${uf}/municipios?orderBy=nome`, { signal: AbortSignal.timeout(15_000) });
+      if (!r.ok) throw new Error(`IBGE ${r.status}`);
+      const dados = (await r.json()) as { nome: string }[];
+      lista = (Array.isArray(dados) ? dados : []).map((m) => m.nome).filter(Boolean).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+      if (lista.length) municipiosCache.set(uf, lista);
+    }
+    res.json(lista);
+  } catch (e: any) { res.status(502).json({ error: e?.message || 'Não consegui carregar as cidades' }); }
 });
 router.get('/fh/:leadId/resultado', (req: AuthRequest, res: Response) => {
   const j = jobs.get(req.params.leadId);

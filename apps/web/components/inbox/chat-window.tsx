@@ -3,8 +3,9 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, Fra
 import { useRouter } from 'next/navigation';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Message, Channel, Note } from '@/types';
-import { cn, formatDateTime, valorParaEdicao, maskMoneyInput } from '@/lib/utils';
-import { Calculator, Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail, ScrollText, Copy } from 'lucide-react';
+import { cn, formatDateTime } from '@/lib/utils';
+import { useComposerDraft } from '@/store/composer-draft.store';
+import { Send, Paperclip, Check, CheckCheck, Sparkles, Loader2, FileText, Clock, BadgeCheck, Forward, Reply, Search, X, AlertCircle, User, MessageCircle, UserPlus, Star, Pin, Link2, ChevronLeft, Info, ChevronDown, Lightbulb, Mic, Trash2, MousePointerClick, Phone, PhoneOff, PhoneOutgoing, PhoneIncoming, PhoneMissed, Bot, Mail, ScrollText, Copy } from 'lucide-react';
 import api from '@/lib/api';
 import { startSendLocation } from '@/lib/send-location';
 import { toast } from '@/components/ui/toast';
@@ -621,48 +622,17 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   }
   // Texto/template que veio de uma SUGESTÃO da IA (Sugerir resposta / chat do Resumo): mandar não desliga a IA do card (Fabio 03/11). Campo esvaziado = volta a ser texto da pessoa.
   const [veioDaIa, setVeioDaIa] = useState(false);
-  // Botão "Custas" (Fabio 16/11): estimativa de ITBI + registro do Financiamento Habitacional pela cidade da certidão de ônus/card — a mensagem cai no campo pra revisar e enviar.
-  const { data: deptsCustas } = useQuery<{ id: string; name: string }[]>({ queryKey: ['departments'], queryFn: async () => (await api.get('/api/departments')).data, staleTime: 10 * 60_000 });
-  const ehFh = !!departmentId && /habitacional/i.test(deptsCustas?.find((d) => d.id === departmentId)?.name || '');
-  const [custasBusy, setCustasBusy] = useState(false);
-  // Janela de confirmação (Fabio 16/11: "abra um push com os valores de confirmação para o cálculo"): os valores do card vêm preenchidos e podem ser corrigidos.
-  const [custasForm, setCustasForm] = useState<{ cidade: string; uf: string; origemCidade: string; valorImovel: string; financiado: string; imovelNovo: boolean; primeiraAquisicao: boolean } | null>(null);
-  const brNum = (v: string) => Number(String(v || '').replace(/\./g, '').replace(',', '.')) || 0;
-  async function abrirCustas() {
-    if (custasBusy) return;
-    setCustasBusy(true);
-    try {
-      const { data } = await api.get(`/api/custas/fh/${leadId}`);
-      setCustasForm({ cidade: data.cidade || '', uf: data.uf || '', origemCidade: data.origemCidade || '', valorImovel: valorParaEdicao(data.valorImovel || ''), financiado: valorParaEdicao(data.financiado || ''), imovelNovo: !!data.imovelNovo, primeiraAquisicao: !!data.primeiraAquisicao });
-    } catch (e: any) {
-      toast(e?.response?.data?.error || 'Não consegui ler os dados do card', 'error');
-    } finally { setCustasBusy(false); }
-  }
-  async function calcularCustas() {
-    if (!custasForm || custasBusy) return;
-    setCustasBusy(true);
-    try {
-      const f = custasForm;
-      await api.post(`/api/custas/fh/${leadId}`, { cidade: f.cidade, uf: f.uf, origemCidade: f.origemCidade, valorImovel: brNum(f.valorImovel), financiado: brNum(f.financiado), imovelNovo: f.imovelNovo, primeiraAquisicao: f.primeiraAquisicao });
-      // A pesquisa roda no servidor (1–2 min): consulta o resultado a cada 5 s, até 4 min.
-      let data: any = null;
-      for (let t = 0; t < 48; t++) {
-        await new Promise((r) => setTimeout(r, 5000));
-        const r = (await api.get(`/api/custas/fh/${leadId}/resultado`)).data;
-        if (r?.status === 'PRONTO' || r?.status === 'ERRO') { data = r; break; }
-      }
-      if (!data) throw new Error('A pesquisa demorou demais — tente de novo');
-      if (data.status === 'ERRO') throw new Error(data.erro || 'Não consegui calcular as custas agora');
-      setContent(data.mensagem);
-      setVeioDaIa(true);
-      setShowTemplates(false); setShowAI(false);
-      setCustasForm(null);
-      toast('Estimativa no campo de mensagem — confira antes de enviar (fontes nas anotações do card)', 'success');
-      inputRef.current?.focus();
-    } catch (e: any) {
-      toast(e?.response?.data?.error || e?.message || 'Não consegui calcular as custas agora', 'error');
-    } finally { setCustasBusy(false); }
-  }
+  // Texto mandado pro campo por outro painel (ex.: "Custas" da aba Financiamento, Fabio 16/11) — cai aqui pra revisar e enviar.
+  const draftExterno = useComposerDraft((st) => st.draft);
+  useEffect(() => {
+    if (!draftExterno || draftExterno.leadId !== leadId) return;
+    setContent(draftExterno.text);
+    setVeioDaIa(true);
+    setShowTemplates(false); setShowAI(false);
+    useComposerDraft.getState().clear();
+    inputRef.current?.focus();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftExterno, leadId]);
   const [tplDaIa, setTplDaIa] = useState(false);
   useEffect(() => { if (!content.trim()) setVeioDaIa(false); }, [content]);
   useEffect(() => { setVeioDaIa(false); setTplDaIa(false); }, [leadId]);
@@ -2711,42 +2681,6 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         </div>
       )}
 
-      <Modal open={!!custasForm} onClose={() => { if (!custasBusy) setCustasForm(null); }} title="Custas do financiamento (ITBI e registro)" size="sm">
-        {custasForm && (
-          <div className="space-y-3 text-sm text-slate-600">
-            <p className="text-xs">Confira os valores do cálculo. A estimativa pesquisa a alíquota do ITBI da prefeitura e a tabela de registro do estado (fontes oficiais) e põe a mensagem no campo pra você revisar — nada é enviado sozinho.</p>
-            <div className="grid grid-cols-[1fr_4.5rem] gap-2">
-              <label className="text-xs">Cidade{custasForm.origemCidade ? <span className="text-slate-400"> · pela {custasForm.origemCidade}</span> : null}
-                <input value={custasForm.cidade} onChange={(e) => setCustasForm({ ...custasForm, cidade: e.target.value, origemCidade: 'confirmação da equipe' })} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800" />
-              </label>
-              <label className="text-xs">UF
-                <input value={custasForm.uf} maxLength={2} onChange={(e) => setCustasForm({ ...custasForm, uf: e.target.value.toUpperCase().replace(/[^A-Z]/g, ''), origemCidade: 'confirmação da equipe' })} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800 uppercase" />
-              </label>
-              <label className="text-xs">Valor do imóvel (R$)
-                <input value={custasForm.valorImovel} inputMode="decimal" onChange={(e) => setCustasForm({ ...custasForm, valorImovel: maskMoneyInput(e.target.value) })} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800" />
-              </label>
-              <span />
-              <label className="text-xs">Valor financiado (R$)
-                <input value={custasForm.financiado} inputMode="decimal" onChange={(e) => setCustasForm({ ...custasForm, financiado: maskMoneyInput(e.target.value) })} className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm text-slate-800" />
-              </label>
-            </div>
-            <label className="flex items-start gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={custasForm.imovelNovo} onChange={(e) => setCustasForm({ ...custasForm, imovelNovo: e.target.checked })} className="mt-0.5" />
-              <span>Imóvel novo (1ª venda, da construtora) — em algumas cidades o ITBI é menor</span>
-            </label>
-            <label className="flex items-start gap-2 text-xs cursor-pointer">
-              <input type="checkbox" checked={custasForm.primeiraAquisicao} onChange={(e) => setCustasForm({ ...custasForm, primeiraAquisicao: e.target.checked })} className="mt-0.5" />
-              <span>1ª aquisição de imóvel residencial pelo SFH — registro com 50% de desconto</span>
-            </label>
-            <div className="flex justify-end gap-2 pt-1">
-              <button onClick={() => setCustasForm(null)} disabled={custasBusy} className="text-sm px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-50">Cancelar</button>
-              <button onClick={calcularCustas} disabled={custasBusy || !custasForm.cidade.trim() || custasForm.uf.length !== 2 || !brNum(custasForm.valorImovel)} className="text-sm px-4 py-2 rounded-lg text-white bg-[#00a884] disabled:opacity-50 inline-flex items-center gap-1.5">
-                {custasBusy ? <><Loader2 size={14} className="animate-spin" /> Calculando… (até 2 min)</> : 'Calcular'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
 
       {/* Templates/IA no celular: em vez de sumir (ficava só no computador),
           ganham uma linha própria ACIMA da barra de digitar -- pedido real
@@ -2776,17 +2710,6 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           >
             <Sparkles size={14} /> IA
           </button>
-          {ehFh && (
-            <button
-              type="button"
-              onClick={abrirCustas}
-              disabled={custasBusy}
-              title="Estimativa de ITBI e registro"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef] disabled:opacity-60"
-            >
-              {custasBusy ? <Loader2 size={14} className="animate-spin" /> : <Calculator size={14} />} Custas
-            </button>
-          )}
         </div>
       )}
 
@@ -2897,17 +2820,6 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
             >
               <Sparkles size={16} /> Ajustar com IA
             </button>
-            {ehFh && (
-              <button
-                type="button"
-                onClick={abrirCustas}
-                disabled={custasBusy}
-                title="Calcula a estimativa de ITBI e registro do financiamento pela cidade do imóvel (certidão de ônus ou card) e põe a mensagem no campo pra você revisar e enviar"
-                className="hidden md:flex flex-shrink-0 h-10 px-3 gap-1.5 rounded-full items-center justify-center text-xs font-medium transition-all bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef] disabled:opacity-60"
-              >
-                {custasBusy ? <Loader2 size={16} className="animate-spin" /> : <Calculator size={16} />} Custas
-              </button>
-            )}
           </>
         )}
         {recording ? (

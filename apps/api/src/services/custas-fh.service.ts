@@ -7,7 +7,9 @@ import { prisma } from '../lib/prisma';
  * - Cidade/UF: 1º a certidão de ônus/matrícula lida (endereço ou cartório), depois o card (cidade_imovel, endereço "Cidade/UF", proposta), por fim o CEP (só a UF).
  * - Alíquota do ITBI da prefeitura (com a redução da parte financiada pelo SFH, onde existir) e a tabela de emolumentos do Registro de Imóveis do estado: pesquisa na web
  *   (fontes oficiais), no servidor. O ITBI é calculado aqui (a conta não fica com o modelo); o registro vem da tabela.
- * - Escritura: no financiamento bancário o contrato tem força de escritura pública — não há escritura em cartório de notas.
+ * - Escritura: Fabio 16/11 ("não colocar isso para o cliente, pode calcular os custos da escritura também") — calcula a escritura pública de compra e venda no tabelionato de notas
+ *   pela tabela do estado (antes a mensagem dizia que o contrato do banco tem força de escritura e não tinha custo).
+ * - Banco CAIXA ou BRB (Fabio 16/11): a mensagem avisa do pacote comercial e do seguro da taxa bonificada, apresentados no final do processo.
  * - Devolve a mensagem pronta pro cliente (a equipe revisa no campo antes de enviar) e grava uma nota com as fontes. Cache por cidade + valores (7 dias).
  */
 
@@ -16,10 +18,11 @@ export type CustasFh = {
   cidade: string; uf: string; valorImovel: number; financiado: number;
   itbi: { valor: number; aliquotaGeral: number; aliquotaFinanciado: number | null; regra: string; fonte: string };
   registro: { total: number; compraVenda: number | null; alienacao: number | null; obs: string; fonte: string };
-  total: number; confianca: string; origemCidade: string; imovelNovo?: boolean; primeiraAquisicao?: boolean;
+  escritura: { valor: number; obs: string; fonte: string } | null;
+  total: number; confianca: string; origemCidade: string; imovelNovo?: boolean; primeiraAquisicao?: boolean; banco?: string;
 };
 
-const cache = new Map<string, { em: number; v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao'> }>();
+const cache = new Map<string, { em: number; v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao' | 'banco'> }>();
 const CACHE_MS = 7 * 86_400_000;
 
 const num = (v: unknown): number => {
@@ -72,8 +75,8 @@ export async function pesquisar(cidade: string, uf: string, valorImovel: number,
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 150_000);
   try {
-    const sistema = 'Você estima as custas de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais: lei/decreto/site da prefeitura (ITBI: alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo) e a tabela de emolumentos do Registro de Imóveis do estado vigente (Tribunal de Justiça/Corregedoria, ANOREG, Colégio Registral). Calcule o registro do contrato: registro da compra e venda (pelo valor do imóvel) + registro da alienação fiduciária/hipoteca (pelo valor financiado), com as taxas/fundos/ISS que a tabela do estado já soma ao emolumento; se o estado der desconto do SFH no registro, aplique e diga. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição. NÃO inclua escritura (o contrato do banco tem força de escritura pública), certidões nem avaliação do banco. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"registro":{"compraVenda":<R$>,"alienacao":<R$>,"total":<R$>,"obs":"texto curto","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
-    const messages: any[] = [{ role: 'user', content: `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador financiada pelo SFH (aplique o desconto de 50% do registro).' : 'Não é (ou não se sabe se é) a 1ª aquisição pelo SFH: calcule o registro SEM o desconto.'} Estime o ITBI e o registro do contrato no Registro de Imóveis.` }];
+    const sistema = 'Você estima as custas de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais: lei/decreto/site da prefeitura (ITBI: alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo) e a tabela de emolumentos do Registro de Imóveis do estado vigente (Tribunal de Justiça/Corregedoria, ANOREG, Colégio Registral). Calcule o registro do contrato: registro da compra e venda (pelo valor do imóvel) + registro da alienação fiduciária/hipoteca (pelo valor financiado), com as taxas/fundos/ISS que a tabela do estado já soma ao emolumento; se o estado der desconto do SFH no registro, aplique e diga. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição (vale pro registro e pra escritura). Calcule também a ESCRITURA PÚBLICA de compra e venda no Tabelionato de Notas pelo valor do imóvel, pela tabela de emolumentos do tabelionato de notas do estado vigente (com as taxas/fundos/ISS que a tabela soma). NÃO inclua certidões nem a avaliação do banco. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"registro":{"compraVenda":<R$>,"alienacao":<R$>,"total":<R$>,"obs":"texto curto","fonte":"url oficial"},"escritura":{"valor":<R$>,"obs":"texto curto","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
+    const messages: any[] = [{ role: 'user', content: `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador financiada pelo SFH (aplique o desconto de 50% do registro).' : 'Não é (ou não se sabe se é) a 1ª aquisição pelo SFH: calcule o registro SEM o desconto.'} Estime o ITBI, o registro do contrato no Registro de Imóveis e a escritura pública no Tabelionato de Notas.` }];
     let texto = '';
     let ultimo: any = null;
     const chama = async (maxTokens: number) => {
@@ -108,7 +111,29 @@ export async function pesquisar(cidade: string, uf: string, valorImovel: number,
   finally { clearTimeout(timer); }
 }
 
-export type DadosCustas = { cidade: string; uf: string; origemCidade: string; valorImovel: number; financiado: number; imovelNovo: boolean; primeiraAquisicao: boolean };
+/** Mensagem pro cliente no formato do modelo "Taxas Financiamento Habitacional" (pura). */
+export function montarMensagemCustas(c: CustasFh, nome?: string | null): string {
+  // Formato do modelo "Taxas Financiamento Habitacional" das respostas rápidas (Fabio 16/11: "temos uma msg de taxas, se quiser pode usar aquele modelo"), com os valores calculados.
+  const itbiRegra = c.itbi.aliquotaFinanciado !== null
+    ? `${pct(c.itbi.aliquotaGeral)} sobre a parte paga com recursos próprios e ${pct(c.itbi.aliquotaFinanciado)} sobre a parte financiada, pela lei do município`
+    : `${pct(c.itbi.aliquotaGeral)} sobre o valor do imóvel, pela lei do município`;
+  const totalTxt = c.escritura ? 'escritura, ITBI e registro' : 'ITBI e registro';
+  return `${nome ? `${nome}, n` : 'N'}o processo de financiamento, além da entrada e das parcelas, existem algumas taxas obrigatórias que precisam ser pagas. Fiz uma estimativa pro imóvel em ${c.cidade}/${c.uf}:\n\n`
+    + (c.escritura ? `Escritura pública ou contrato particular: cerca de ${brl(c.escritura.valor)}\n\n` : '')
+    + `ITBI – Imposto de Transmissão de Bens Imóveis: ${brl(c.itbi.valor)} (${itbiRegra})\n\n`
+    + `Registro do imóvel: cerca de ${brl(c.registro.total)} (no cartório de registro de imóveis)\n\n`
+    + `Vistoria do imóvel: até R$ 3.500,00 (de acordo com a empresa avaliadora e a localização)\n\n`
+    + `Total estimado (${totalTxt}): ${brl(c.total)}\n\n`
+    + (c.primeiraAquisicao ? `O registro já está com o desconto de 50% da 1ª aquisição pelo SFH.\n\n` : `Se for a sua 1ª aquisição de imóvel residencial pelo SFH, o registro tem 50% de desconto.\n\n`)
+    + (ehCaixaOuBrb(c.banco || '') ? `⚠️ Observação: pela ${/caixa/i.test(c.banco || '') ? 'CAIXA' : 'BRB'}, para ter acesso à taxa bonificada há um pacote comercial e um seguro, que são apresentados no final do processo.\n\n` : '')
+    + `São valores estimados: o valor exato é confirmado pela prefeitura (ITBI) e pelos cartórios (escritura e registro).`;
+}
+
+export type DadosCustas = { cidade: string; uf: string; origemCidade: string; valorImovel: number; financiado: number; imovelNovo: boolean; primeiraAquisicao: boolean; banco: string };
+
+/** Banco por onde o FH segue: "Seguir com esta"/equipe (`_fhChosen`), opção CAIXA/BRB (`_optouCaixa`) ou a instituição do card. */
+const bancoDoCard = (cf: Cf): string => String(cf._fhChosen?.bank || cf._optouCaixa?.banco || cf.instituicao || '').trim();
+const ehCaixaOuBrb = (b: string) => /caixa|\bbrb\b|banco de bras[ií]lia/i.test(b);
 
 /** Valores do card pra janela de confirmação (Fabio 16/11: "abra um push com os valores de confirmação para o cálculo"). */
 export async function dadosCustasFh(accountId: string, leadId: string): Promise<{ ok: true; dados: DadosCustas } | { ok: false; erro: string }> {
@@ -119,7 +144,7 @@ export async function dadosCustasFh(accountId: string, leadId: string): Promise<
   const valorImovel = num(cf.valor_imovel);
   const financiado = num(cf.valor_credito) || Math.max(0, valorImovel - num(cf.valor_entrada));
   const loc = await cidadeDoImovel(leadId, cf);
-  return { ok: true, dados: { cidade: loc?.cidade || String(cf.cidade_imovel || ''), uf: loc?.uf || ufDoCep(cf.imovel_cep) || '', origemCidade: loc?.origem || '', valorImovel, financiado, imovelNovo: false, primeiraAquisicao: false } };
+  return { ok: true, dados: { cidade: loc?.cidade || String(cf.cidade_imovel || ''), uf: loc?.uf || ufDoCep(cf.imovel_cep) || '', origemCidade: loc?.origem || '', valorImovel, financiado, imovelNovo: false, primeiraAquisicao: false, banco: bancoDoCard(cf) } };
 }
 
 export async function estimarCustasFh(accountId: string, leadId: string, por?: string, conf?: Partial<DadosCustas>): Promise<{ ok: true; mensagem: string; custas: CustasFh } | { ok: false; erro: string }> {
@@ -135,7 +160,8 @@ export async function estimarCustasFh(accountId: string, leadId: string, por?: s
   const loc = conf?.cidade?.trim() && /^[A-Z]{2}$/.test(ufConf) ? { cidade: conf.cidade.trim(), uf: ufConf, origem: conf.origemCidade || 'confirmação da equipe' } : await cidadeDoImovel(leadId, cf);
   if (!loc) return { ok: false, erro: 'Não achei a cidade/UF do imóvel (certidão de ônus, card ou CEP)' };
   const flags = { imovelNovo: conf?.imovelNovo === true, primeiraAquisicao: conf?.primeiraAquisicao === true };
-  const chave = `${loc.uf}|${loc.cidade.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()}|${Math.round(valorImovel)}|${Math.round(financiado)}|${flags.imovelNovo ? 'N' : 'U'}|${flags.primeiraAquisicao ? '1' : '0'}`;
+  const banco = conf?.banco !== undefined && conf.banco !== null ? String(conf.banco).trim() : bancoDoCard(cf);
+  const chave = `v2|${loc.uf}|${loc.cidade.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()}|${Math.round(valorImovel)}|${Math.round(financiado)}|${flags.imovelNovo ? 'N' : 'U'}|${flags.primeiraAquisicao ? '1' : '0'}`;
   let base = cache.get(chave);
   if (!base || Date.now() - base.em > CACHE_MS) {
     const r = await pesquisar(loc.cidade, loc.uf, valorImovel, financiado, flags);
@@ -147,29 +173,25 @@ export async function estimarCustasFh(accountId: string, leadId: string, por?: s
     const itbi = aliqF !== null && aliqF < aliqG && financiado > 0
       ? (Math.max(0, valorImovel - financiado) * aliqG + Math.min(financiado, valorImovel) * aliqF) / 100
       : (valorImovel * aliqG) / 100;
-    const v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao'> = {
+    const escrituraValor = num(r?.escritura?.valor);
+    const v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao' | 'banco'> = {
       cidade: String(r.cidade || loc.cidade), uf: String(r.uf || loc.uf).toUpperCase(), valorImovel, financiado,
       itbi: { valor: Math.round(itbi * 100) / 100, aliquotaGeral: aliqG, aliquotaFinanciado: aliqF !== null && aliqF < aliqG ? aliqF : null, regra: String(r.itbi?.regra || '').slice(0, 300), fonte: String(r.itbi?.fonte || '').slice(0, 300) },
       registro: { total: Math.round(regTotal * 100) / 100, compraVenda: num(r.registro?.compraVenda) || null, alienacao: num(r.registro?.alienacao) || null, obs: String(r.registro?.obs || '').slice(0, 300), fonte: String(r.registro?.fonte || '').slice(0, 300) },
+      escritura: escrituraValor ? { valor: Math.round(escrituraValor * 100) / 100, obs: String(r.escritura?.obs || '').slice(0, 300), fonte: String(r.escritura?.fonte || '').slice(0, 300) } : null,
       total: 0, confianca: String(r.confianca || '').toLowerCase(),
     };
-    v.total = Math.round((v.itbi.valor + v.registro.total) * 100) / 100;
+    v.total = Math.round((v.itbi.valor + v.registro.total + (v.escritura?.valor || 0)) * 100) / 100;
     base = { em: Date.now(), v };
     cache.set(chave, base);
   }
-  const c: CustasFh = { ...base.v, origemCidade: loc.origem, imovelNovo: flags.imovelNovo, primeiraAquisicao: flags.primeiraAquisicao };
+  const c: CustasFh = { ...base.v, origemCidade: loc.origem, imovelNovo: flags.imovelNovo, primeiraAquisicao: flags.primeiraAquisicao, banco };
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);
   const itbiTxt = c.itbi.aliquotaFinanciado !== null
     ? `${pct(c.itbi.aliquotaGeral)} sobre a parte paga com recursos próprios e ${pct(c.itbi.aliquotaFinanciado)} sobre a parte financiada`
     : `${pct(c.itbi.aliquotaGeral)} sobre ${brl(c.valorImovel)}`;
-  const mensagem = `${nome ? `${nome}, s` : 'S'}egue uma estimativa dos custos do financiamento do imóvel em ${c.cidade}/${c.uf}:\n`
-    + `• ITBI (prefeitura): ${brl(c.itbi.valor)} (${itbiTxt})\n`
-    + `• Registro do contrato no cartório de registro de imóveis: cerca de ${brl(c.registro.total)}\n`
-    + `• Escritura: não tem custo de escritura em cartório, porque o contrato do banco já tem força de escritura pública\n\n`
-    + `Total aproximado: ${brl(c.total)}.\n\n`
-    + (flags.primeiraAquisicao ? `O registro já está com o desconto de 50% da 1ª aquisição pelo SFH.\n\n` : `Se for a sua 1ª aquisição de imóvel residencial pelo SFH, o registro tem 50% de desconto.\n\n`)
-    + `São valores estimados: o valor exato é confirmado pela prefeitura (ITBI) e pelo cartório (registro).`;
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🧮 Estimativa de custas do FH${por ? ` (pedida por ${por})` : ''} — ${c.cidade}/${c.uf} (cidade pela ${c.origemCidade}); imóvel ${brl(c.valorImovel)}${flags.imovelNovo ? ' (novo)' : ''}, financiado ${brl(c.financiado)}${flags.primeiraAquisicao ? ', 1ª aquisição SFH' : ''}.\n• ITBI ${brl(c.itbi.valor)} — ${c.itbi.regra || itbiTxt}${c.itbi.fonte ? ` (fonte: ${c.itbi.fonte})` : ''}\n• Registro ${brl(c.registro.total)}${c.registro.compraVenda ? ` (compra e venda ${brl(c.registro.compraVenda)}` : ''}${c.registro.alienacao ? ` + alienação ${brl(c.registro.alienacao)})` : c.registro.compraVenda ? ')' : ''}${c.registro.obs ? ` — ${c.registro.obs}` : ''}${c.registro.fonte ? ` (fonte: ${c.registro.fonte})` : ''}\n• Total ${brl(c.total)} · confiança da pesquisa: ${c.confianca || '—'}. Estimativa: conferir antes de afirmar ao cliente.` } }).catch(() => {});
+  const mensagem = montarMensagemCustas(c, nome);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🧮 Estimativa de custas do FH${por ? ` (pedida por ${por})` : ''} — ${c.cidade}/${c.uf} (cidade pela ${c.origemCidade}); imóvel ${brl(c.valorImovel)}${flags.imovelNovo ? ' (novo)' : ''}, financiado ${brl(c.financiado)}${flags.primeiraAquisicao ? ', 1ª aquisição SFH' : ''}.\n• ITBI ${brl(c.itbi.valor)} — ${c.itbi.regra || itbiTxt}${c.itbi.fonte ? ` (fonte: ${c.itbi.fonte})` : ''}\n• Registro ${brl(c.registro.total)}${c.registro.compraVenda ? ` (compra e venda ${brl(c.registro.compraVenda)}` : ''}${c.registro.alienacao ? ` + alienação ${brl(c.registro.alienacao)})` : c.registro.compraVenda ? ')' : ''}${c.registro.obs ? ` — ${c.registro.obs}` : ''}${c.registro.fonte ? ` (fonte: ${c.registro.fonte})` : ''}\n• Escritura ${c.escritura ? `${brl(c.escritura.valor)}${c.escritura.obs ? ` — ${c.escritura.obs}` : ''}${c.escritura.fonte ? ` (fonte: ${c.escritura.fonte})` : ''}` : 'não achada na pesquisa'}${banco ? `\n• Banco: ${banco}` : ''}\n• Total ${brl(c.total)} · confiança da pesquisa: ${c.confianca || '—'}. Estimativa: conferir antes de afirmar ao cliente.` } }).catch(() => {});
   return { ok: true, mensagem, custas: c };
 }
