@@ -185,7 +185,7 @@ async function certidaoSozinha(leadId: string): Promise<boolean> {
   return !!l?.aiAutoReplyActive;
 }
 /** Etapas em que a certidão ainda é oferecida/emitida sozinha: aguardando a documentação ou documentação recebida sem a certidão (o Santander não pede vistoria sem ela — Fabio 14/11). Texto sem acento. */
-const ETAPA_CERTIDAO = /aguardando document|documentacao recebida/i;
+const ETAPA_CERTIDAO = /aguardando document|documentacao recebida|vistoria do imovel/i; // + Vistoria do Imóvel: a vistoria só sai com a certidão (Fabio 16/11)
 
 async function salvaOferta(leadId: string, patch: Record<string, unknown>) {
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });

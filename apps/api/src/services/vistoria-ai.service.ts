@@ -139,6 +139,9 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
     }
     return;
   }
+  // A vistoria só sai com a CERTIDÃO DE ÔNUS (Fabio 16/11, todos os bancos): sem ela em mãos, a IA (ligada) oferece a emissão pelo ONR ao cliente — no "sim" o CRM pede e
+  // manda o PIX. Uma vez por matrícula; sem matrícula nos documentos, pelo endereço (se o cliente disse que não tem escritura/contrato).
+  await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).maybeOfferCertidao(accountId, leadId, io as any, { porEnderecoOk: true }).catch((e: any) => console.warn('[Vistoria IA] oferta da certidão:', e?.message));
   // Laudo do outro banco reprovou o imóvel e o cliente aceitou seguir por este (Fabio 14/11: "sim, pedir sozinho"): a vistoria sai sozinha mesmo com a chave geral desligada.
   const lr = cf._laudoReprovado as { status?: string; outro?: string } | undefined;
   const forcado = lr?.status === 'ESCOLHEU' && lr?.outro === banco;
