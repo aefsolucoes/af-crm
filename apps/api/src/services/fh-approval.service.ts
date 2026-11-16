@@ -704,7 +704,7 @@ export async function pedidoDocsImovelVendedor(accountId: string, cf: Cf): Promi
     try {
       const { extractFolderId, listAllFilesInFolderTree } = await import('./google.service');
       const files = await listAllFilesInFolderTree(accountId, extractFolderId(link), 3);
-      temImovel = files.some((f) => /^IMOVEL/i.test(f.path) && /MATRICULA|ONUS/i.test(f.name));
+      temImovel = files.some((f) => /^IMOVEL/i.test(f.path) && /MATRICULA|ONUS/i.test(f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))); // com acento também ("Certidão de ônus …" subida pela equipe — Adriano 16/11)
       temVendedor = files.some((f) => /^VENDEDOR/i.test(f.path));
     } catch { /* sem leitura da pasta: pede tudo */ }
   }

@@ -17,6 +17,8 @@ const firstName = (full: string | null | undefined) => {
   const w = String(full || '').trim().split(/\s+/)[0] || '';
   return w ? w.charAt(0).toUpperCase() + w.slice(1).toLowerCase() : '';
 };
+/** Nome de arquivo sem acento: a equipe sobe "Certidão de ônus …" direto na pasta (Adriano 16/11) e as regras procuram CERTIDAO/ONUS. */
+const semAcento = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 const titleCase = (s: string) => s.toLowerCase().replace(/(^|\s)(\S)/g, (_m, a, b) => a + b.toUpperCase()).replace(/\b(Da|De|Do|Das|Dos|E)\b/g, (m) => m.toLowerCase());
 
 export interface VistoriaPreview {
@@ -93,9 +95,9 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   const idCert = cert ? (await prisma.certidaoRequest.findUnique({ where: { id: cert.id }, select: { driveFileId: true } }))?.driveFileId : null;
   // Marcados por padrão: a certidão de ônus da matrícula atual e o cadastro imobiliário (IPTU) do imóvel. NÃO marca "GUIA IPTU" etc.: já veio guia de OUTRO imóvel (Pedro, 19/10) — só vai se alguém conferir e marcar.
   // Sem certidão emitida pelo ONR, vale a matrícula/certidão de ônus que o CLIENTE mandou (nome "MATRICULA DO IMOVEL"/"CERTIDAO DE ONUS" na pasta IMOVEL — Luiz, 21/10).
-  const anexos = doImovel.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, checked: f.id === idCert || (!idCert && /^(MATRICULA DO IMOVEL|CERTIDAO DE ONUS)/i.test(f.name) && !/ \d\.pdf$/i.test(f.name)) || (/CADASTRO IMOBILIARIO/i.test(f.name) && !/ 2\.pdf$/i.test(f.name)) }));
-  const temMat = anexos.some((a) => a.checked && (a.id === idCert || /MATRICULA|ONUS/i.test(a.name)));
-  const temCad = anexos.some((a) => a.checked && /CADASTRO IMOBILIARIO/i.test(a.name));
+  const anexos = doImovel.map((f) => ({ id: f.id, name: f.name, path: f.path, size: f.size, checked: f.id === idCert || (!idCert && /^(MATRICULA DO IMOVEL|CERTIDAO DE ONUS)/i.test(semAcento(f.name)) && !/ \d\.pdf$/i.test(f.name)) || (/CADASTRO IMOBILIARIO/i.test(semAcento(f.name)) && !/ 2\.pdf$/i.test(f.name)) }));
+  const temMat = anexos.some((a) => a.checked && (a.id === idCert || /MATRICULA|ONUS/i.test(semAcento(a.name))));
+  const temCad = anexos.some((a) => a.checked && /CADASTRO IMOBILIARIO/i.test(semAcento(a.name)));
   const listaAnexos = [temMat ? 'a matrícula atualizada do imóvel (certidão de ônus)' : '', temCad ? 'o cadastro imobiliário do imóvel (IPTU)' : ''].filter(Boolean);
   const linhas = [
     `Olá${consultor ? `, ${consultor}` : ''}, tudo bem?`,

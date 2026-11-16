@@ -206,7 +206,7 @@ async function uma(accountId: string, leadId: string, io: Io): Promise<void> {
   const pv = await vistoriaPreview(accountId, leadId);
   if (pv.jaSolicitadaEm) { await salva(leadId, { status: 'ENVIADA', at: pv.jaSolicitadaEm }); return; }
   const marcados = pv.anexos.filter((a) => a.checked);
-  const temMatricula = marcados.some((a) => /MATRICULA|ONUS/i.test(a.name));
+  const temMatricula = marcados.some((a) => /MATRICULA|ONUS/i.test(a.name.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))); // "Certidão de ônus …" subida pela equipe (Adriano 16/11)
   const faltas = [!pv.engajamentoRecebido && 'o e-mail de engajamento do Inter', !pv.to && 'o e-mail do consultor do Inter', !temMatricula && 'a matrícula/certidão de ônus na pasta IMOVEL do Drive'].filter(Boolean) as string[];
   if (faltas.length) {
     // Sem o e-mail de engajamento do Inter é porque o cliente ainda não "seguiu com a proposta" no portal: o CRM pergunta a ele (uma vez) e a equipe clica depois do SIM (inter-seguir.service).

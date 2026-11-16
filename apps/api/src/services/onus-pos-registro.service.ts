@@ -26,7 +26,7 @@ export async function renomearOnusPosRegistro(accountId: string, leadId: string)
   const { arquivosDoImovel } = require('./vistoria-inter.service') as typeof import('./vistoria-inter.service');
   const doImovel = await arquivosDoImovel(accountId, cf).catch(() => []);
   const cert = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, orderBy: { finishedAt: 'desc' }, select: { driveFileId: true, matricula: true } });
-  const arq = (cert && doImovel.find((f) => f.id === cert.driveFileId)) || [...doImovel].reverse().find((f) => /ONUS|MATRICULA/i.test(f.name)) || null;
+  const arq = (cert && doImovel.find((f) => f.id === cert.driveFileId)) || [...doImovel].reverse().find((f) => /ONUS|MATRICULA/i.test(f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) || null;
   if (!arq) return { ok: false, motivo: 'não achei a certidão de ônus na pasta IMOVEL' };
   const para = nomeOnusPosRegistro(cert?.matricula || String(cf.numero_matricula || '').trim());
   if (arq.name === para) return { ok: true, de: arq.name, para };
@@ -71,7 +71,7 @@ export async function enviarOnusPosRegistroInter(p: { accountId: string; leadId:
   const { arquivosDoImovel } = require('./vistoria-inter.service') as typeof import('./vistoria-inter.service');
   const doImovel = await arquivosDoImovel(p.accountId, cf).catch(() => []);
   const cert = await prisma.certidaoRequest.findFirst({ where: { accountId: p.accountId, leadId: p.leadId, status: 'ISSUED', driveFileId: { not: null } }, orderBy: { finishedAt: 'desc' }, select: { driveFileId: true, matricula: true, finishedAt: true } });
-  const arquivo = (cert && doImovel.find((f) => f.id === cert.driveFileId)) || [...doImovel].reverse().find((f) => /ONUS|MATRICULA/i.test(f.name)) || null;
+  const arquivo = (cert && doImovel.find((f) => f.id === cert.driveFileId)) || [...doImovel].reverse().find((f) => /ONUS|MATRICULA/i.test(f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, ''))) || null;
   if (!arquivo) {
     await avisar(p.accountId, p.leadId, lead.name, '⚠️ Pagamento ao vendedor (Inter): NÃO enviei — não achei a certidão de ônus pós-registro na pasta IMOVEL do Drive. Peça a certidão (Jarvis: "pede a certidão de ônus do cliente") e, quando sair, peça o envio de novo.');
     return { ok: false, motivo: 'sem certidão de ônus na pasta IMOVEL' };
