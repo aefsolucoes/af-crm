@@ -26,6 +26,8 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<Form | null>(null);
   const [mensagem, setMensagem] = useState<string | null>(null);
+  // Filtro digitado da lista de cidades (Fabio 16/11: "coloca pra digitar um filtro, caso precise pesquisar cidade").
+  const [filtro, setFiltro] = useState('');
   const setDraft = useComposerDraft((s) => s.setDraft);
   useEffect(() => { setMensagem(null); setForm(null); }, [leadId]);
 
@@ -46,6 +48,7 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
 
   async function abrir() {
     if (busy) return;
+    setFiltro('');
     setBusy(true);
     try {
       const { data } = await api.get(`/api/custas/fh/${leadId}`);
@@ -89,6 +92,15 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
 
   const mudar = (p: Partial<Form>) => setForm((f) => (f ? { ...f, ...p } : f));
   const listaCidades = !municipiosErro && UFS.includes(uf);
+  const filtradas = filtro.trim() ? (municipios || []).filter((m) => normCidade(m).includes(normCidade(filtro))) : (municipios || []);
+  function filtrar(texto: string) {
+    setFiltro(texto);
+    // Sobrou uma cidade só (ou o nome exato) → já seleciona.
+    const lista = texto.trim() ? (municipios || []).filter((m) => normCidade(m).includes(normCidade(texto))) : [];
+    const exata = lista.find((m) => normCidade(m) === normCidade(texto));
+    const escolhida = exata || (lista.length === 1 ? lista[0] : null);
+    if (escolhida && escolhida !== form?.cidade) mudar({ cidade: escolhida, origemCidade: 'confirmação da equipe' });
+  }
 
   return (
     <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
@@ -121,17 +133,21 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
             <div className="grid grid-cols-[1fr_5rem] gap-2">
               <label className="text-xs">Cidade{form.origemCidade ? <span className="text-slate-400"> · pela {form.origemCidade}</span> : null}
                 {listaCidades ? (
-                  <select value={form.cidade} disabled={municipiosCarregando} onChange={(e) => mudar({ cidade: e.target.value, origemCidade: 'confirmação da equipe' })} className={inputCls}>
+                  <>
+                    <input value={filtro} onChange={(e) => filtrar(e.target.value)} placeholder="Digite pra filtrar a cidade" disabled={municipiosCarregando} className={inputCls} />
+                    <select value={form.cidade} disabled={municipiosCarregando} onChange={(e) => mudar({ cidade: e.target.value, origemCidade: 'confirmação da equipe' })} className={inputCls}>
                     <option value="">{municipiosCarregando ? 'Carregando cidades…' : 'Escolha a cidade'}</option>
-                    {form.cidade && !(municipios || []).includes(form.cidade) && <option value={form.cidade}>{form.cidade}</option>}
-                    {(municipios || []).map((m) => <option key={m} value={m}>{m}</option>)}
+                    {form.cidade && !filtradas.includes(form.cidade) && <option value={form.cidade}>{form.cidade}</option>}
+                    {filtradas.map((m) => <option key={m} value={m}>{m}</option>)}
                   </select>
+                  {filtro.trim() && <span className="mt-0.5 block text-[11px] text-slate-400">{filtradas.length ? `${filtradas.length} cidade${filtradas.length > 1 ? 's' : ''}` : 'Nenhuma cidade com esse nome nesta UF'}</span>}
+                  </>
                 ) : (
                   <input value={form.cidade} onChange={(e) => mudar({ cidade: e.target.value, origemCidade: 'confirmação da equipe' })} placeholder={UFS.includes(uf) ? '' : 'Escolha a UF'} className={inputCls} />
                 )}
               </label>
               <label className="text-xs">UF
-                <select value={form.uf} onChange={(e) => mudar({ uf: e.target.value, cidade: e.target.value === form.uf ? form.cidade : '', origemCidade: 'confirmação da equipe' })} className={inputCls}>
+                <select value={form.uf} onChange={(e) => { setFiltro(''); mudar({ uf: e.target.value, cidade: e.target.value === form.uf ? form.cidade : '', origemCidade: 'confirmação da equipe' }); }} className={inputCls}>
                   {!UFS.includes(form.uf) && <option value="">—</option>}
                   {UFS.map((u) => <option key={u} value={u}>{u}</option>)}
                 </select>
