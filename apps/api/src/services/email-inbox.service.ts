@@ -335,13 +335,15 @@ async function findLeadFor(accountId: string, addresses: string[], inReplyTo: st
   const { SITE_FORM_SENDERS } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
   for (const address of addresses) {
     if (!address || ownAddresses.has(address) || SITE_FORM_SENDERS.has(address)) continue;
+    // Banco/sistema nunca é o cliente, mesmo que o endereço tenha parado no contato do card (Fabio 16/11: contato do Alexandro = luana.aranda@inter.co,
+    // e todo e-mail da Luana — Ailon, Robison — caía na conversa dele). E-mail de banco vai pro card pelo fio ou pelo leitor do banco (inter-email).
+    if (isInstitutionalSender(address)) continue;
     const lead = await prisma.lead.findFirst({
       where: { accountId, isGroup: false, contact: { email: { equals: address, mode: 'insensitive' } } },
       orderBy: [{ archived: 'asc' }, { updatedAt: 'desc' }],
       select: { id: true },
     });
     if (lead) return lead.id;
-    if (isInstitutionalSender(address)) continue; // banco/sistema: nunca "lembra" o card do último vínculo manual
     // Remetente que alguém já vinculou a um card na mão ("Vincular a um card").
     const remembered = await prisma.emailMessage.findFirst({
       where: { leadId: { not: null }, emailAccount: { accountId }, OR: [{ fromAddress: address }, { folder: 'SENT', toList: { array_contains: [{ address }] } }] },
@@ -511,7 +513,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   // Só Entrada e Enviados vão pra conversa do card (spam/lixeira/rascunho não).
   const convo = folder === 'INBOX' || folder === 'SENT';
   const counterparts = folder === 'INBOX' ? (from ? [from.address] : []) : [...to, ...cc].map((a) => a.address);
-  const leadId = convo ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
+  let leadId = convo ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
 
   const row = await prisma.emailMessage.create({
     data: {
@@ -549,7 +551,9 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   // Inter escrevendo sobre UM cliente (engajamento automático, vistoria, pendência): liga só este e-mail ao card pelo nº da proposta/nome, nota + push (inter-email.service).
   if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/i.test(from.address) && !opts.initial && Date.now() - date.getTime() < 48 * 3_600_000) {
     const { handleInterEmail } = require('./inter-email.service') as typeof import('./inter-email.service');
-    await handleInterEmail(acc, { id: row.id, subject: env.subject || null, textBody, htmlBody, fromAddress: from.address, date }, opts.io as any).catch((err) => console.warn('[Inter e-mail] falhou:', err?.message));
+    const ligou = await handleInterEmail(acc, { id: row.id, subject: env.subject || null, textBody, htmlBody, fromAddress: from.address, date }, opts.io as any).catch((err) => { console.warn('[Inter e-mail] falhou:', err?.message); return false; });
+    // O card que o leitor do Inter escolheu (proposta/CPF/nome) vale no lugar do card do fio: o e-mail entra numa conversa só (Fabio 16/11: o do Ailon entrou no Ailon E no Alexandro).
+    if (ligou) leadId = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId || leadId;
   }
 
   // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
@@ -888,7 +892,11 @@ export async function sendEmailFrom(params: {
     : null;
   // Mandou pelo card de um cliente sem e-mail cadastrado: guarda o endereço
   // no contato, senão a resposta dele não teria como voltar pra conversa.
-  if (explicitLead?.contactId && !explicitLead.contact?.email?.trim() && to.length === 1) {
+  // Endereço de banco/sistema ou nosso nunca vira o e-mail do cliente (Fabio 16/11: o e-mail pra Luana do Inter, mandado pelo card do Alexandro, gravou luana.aranda@inter.co no contato dele).
+  const { SITE_FORM_SENDERS: FORM } = require('./site-proposal-email.service') as typeof import('./site-proposal-email.service');
+  const destino = String(to[0] || '').toLowerCase();
+  const nossoDominio = destino.split('@')[1] === acc.address.toLowerCase().split('@')[1];
+  if (explicitLead?.contactId && !explicitLead.contact?.email?.trim() && to.length === 1 && !isInstitutionalSender(destino) && !FORM.has(destino) && !nossoDominio) {
     await prisma.contact.update({ where: { id: explicitLead.contactId }, data: { email: to[0] } }).catch(() => {});
   }
   const leadId = explicitLead?.id || parent?.leadId || await findLeadFor(acc.accountId, [...to, ...cc], null, new Set([acc.address]));

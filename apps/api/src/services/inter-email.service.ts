@@ -109,36 +109,50 @@ export function extractInterSignals(subject: string | null | undefined, text: st
   return { proposta: ps.proposta || pb.proposta, cpfs, nomes: [...nomes].filter((n) => tokens(n).length >= 1 && !NOME_PARADO.test(norm(n))) };
 }
 
-/** Escolhe o card entre os candidatos. Nunca adivinha: se sobrar mais de um, devolve a lista (a equipe liga à mão). Pura (testável). */
-export function pickLead(cands: LeadCandidate[], sig: InterSignals): { id: string | null; ambiguous: string[] } {
+/** Escolhe o card entre os candidatos. Nunca adivinha: se sobrar mais de um, devolve a lista (a equipe liga à mão). `via` = pista que decidiu (proposta/CPF são fortes; nome é fraco). Pura (testável). */
+export function pickLead(cands: LeadCandidate[], sig: InterSignals): { id: string | null; ambiguous: string[]; via?: 'proposta' | 'cpf' | 'nome' } {
   const nomeDe = (c: LeadCandidate) => [c.name, c.p1, c.p2].filter(Boolean) as string[];
-  const unico = (xs: LeadCandidate[]) => (xs.length === 1 ? { id: xs[0].id, ambiguous: [] as string[] } : null);
+  const unico = (xs: LeadCandidate[], via: 'proposta' | 'cpf') => (xs.length === 1 ? { id: xs[0].id, ambiguous: [] as string[], via } : null);
   const nomes = (xs: LeadCandidate[]) => xs.map((c) => c.name || c.p1 || c.id).slice(0, 5);
   // 1) nº da proposta (sem zeros à esquerda)
   if (sig.proposta) {
     const hit = cands.filter((c) => c.proposta && stripZeros(c.proposta) === sig.proposta);
-    const u = unico(hit); if (u) return u;
+    const u = unico(hit, 'proposta'); if (u) return u;
     if (hit.length > 1) return { id: null, ambiguous: nomes(hit) };
   }
   // 2) CPF no texto
   if (sig.cpfs.length) {
     const hit = cands.filter((c) => [c.cpf1, c.cpf2].some((x) => x && sig.cpfs.includes(String(x).replace(/\D/g, ''))));
-    const u = unico(hit); if (u) return u;
+    const u = unico(hit, 'cpf'); if (u) return u;
   }
   // 3) nome: o do e-mail precisa começar igual (1º nome) e todas as palavras dele estarem no nome do card — serve pra "PEDRO", "Pedro Paiva" ou o nome inteiro
   let melhor: LeadCandidate[] = [];
   let ambiguo: LeadCandidate[] = [];
+  const longos = sig.nomes.map(tokens).filter((t) => t.length >= 2);
   for (const nm of sig.nomes) {
     const st = tokens(nm);
     if (!st.length) continue;
+    // Só o 1º nome ("Maria") quando o e-mail traz o nome inteiro com esse 1º nome ("MARIA ROSA MARCELLI") e ele não bateu com nenhum card aberto:
+    // é a mesma pessoa, não outra Maria (Fabio 16/11: e-mail da Maria Rosa, card Perdido, caiu na Maria do Carmo).
+    if (st.length === 1 && longos.some((l) => l[0] === st[0])) continue;
     let hit = cands.filter((c) => nomeDe(c).some((n) => { const ct = tokens(n); return ct.length > 0 && ct[0] === st[0] && st.every((t) => ct.includes(t)); }));
     if (st.length === 1) hit = hit.filter((c) => c.inter); // só o primeiro nome: só entre quem tem a ver com o Inter
     if (hit.length > 1) { const rec = hit.filter((c) => c.interRecent); if (rec.length >= 1) hit = rec; }
     if (hit.length === 1) { if (st.length >= 2 || !melhor.length) melhor = hit; if (st.length >= 2) break; }
     else if (hit.length > 1 && !ambiguo.length) ambiguo = hit;
   }
-  if (melhor.length === 1) return { id: melhor[0].id, ambiguous: [] };
+  if (melhor.length === 1) return { id: melhor[0].id, ambiguous: [], via: 'nome' };
   return { id: null, ambiguous: nomes(ambiguo) };
+}
+
+/** O nº da proposta é de um card FECHADO (Perdido/Ganho) ou arquivado — que não está entre os candidatos (só abertos)? */
+async function propostaDeCardFechado(accountId: string, proposta: string): Promise<boolean> {
+  const r = await prisma.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS n FROM "Lead" l
+    WHERE l."accountId" = ${accountId} AND (l.status <> 'OPEN' OR l.archived)
+      AND (ltrim(coalesce(l."customFields"->>'num_proposta', ''), '0') = ${proposta}
+        OR EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank IN ('INTER', 'INTER_FH') AND ltrim(coalesce(ca."proposalNumber", ''), '0') = ${proposta}))`;
+  return (r[0]?.n || 0) > 0;
 }
 
 export async function loadCandidates(accountId: string): Promise<LeadCandidate[]> {
@@ -186,10 +200,12 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado
   if (!sig.proposta && !sig.cpfs.length && !sig.nomes.length) return false;
   const achou = pickLead(await loadCandidates(acc.accountId), sig);
-  if (!achou.id) { // resposta no mesmo fio de um e-mail que já é do card ("Re: Home Equity - PEDRO" com vários Pedros): vale o card do fio
-    const doFio = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId;
-    if (doFio) { achou.id = doFio; achou.ambiguous = []; }
-  }
+  // Resposta no mesmo fio de um e-mail que já é de um card ("Re: Home Equity - PEDRO" com vários Pedros): o fio vale mais que o NOME (pista fraca);
+  // proposta/CPF continuam mandando. (Fabio 16/11: "Re: … 5752558 - MARIA ROSA MARCELLI", card dela Perdido, foi pra Maria do Carmo pelo "Maria".)
+  const doFio = achou.via === 'proposta' || achou.via === 'cpf' ? null : (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId;
+  if (doFio) { achou.id = doFio; achou.ambiguous = []; }
+  // A proposta do e-mail é de um card fechado: o e-mail é desse cliente — nunca chuta outro card aberto pelo nome.
+  else if (achou.via === 'nome' && sig.proposta && await propostaDeCardFechado(acc.accountId, sig.proposta).catch(() => false)) return false;
   if (!achou.id) {
     if (achou.ambiguous.length > 1 && kind !== 'OUTRO') { // o Inter escreveu, mas há mais de um card possível: avisa a equipe pra ligar à mão (nunca adivinha)
       try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}: qual cliente?`, body: `"${sig.nomes[0] || subject}" pode ser: ${achou.ambiguous.join(' / ')}` }).catch(() => {}); } catch { /* aviso */ }
