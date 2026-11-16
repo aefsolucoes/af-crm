@@ -554,6 +554,8 @@ export function matriculaPorFolhas(cache: Record<string, DocReview>, info: Recor
     if (ordens.some((o, k) => k > 0 && o !== ordens[k - 1] + 1)) continue; // buraco entre as folhas
     const ultima = cache[ultimaPorOrdem.get(ordens[ordens.length - 1])!.id];
     if (ultima && ultima.resultado === 'PROBLEMA' && (ultima.problemas || []).some((p) => CONTINUA.test(p) && !/falta(m)? a(s)? (folha|ficha) 0?1\b|anterior/i.test(p))) continue; // a última diz que continua
+    // "Página 1 de 2" na última foto = falta página (Fabio 16/11, Francisco: a leitura pediu a página 2 e esta junção apagou o pedido — "página" contava como problema de folha resolvido).
+    if (ultima && ultima.resultado === 'PROBLEMA' && (ultima.problemas || []).some((p) => { const m = /p[aá]gina\s*(\d+)\s*(?:de|\/)\s*(\d+)/i.exec(p); return !!m && Number(m[1]) < Number(m[2]); })) continue;
     const usadas = new Set([...ultimaPorOrdem.values()].map((u) => u.id));
     for (const f of fotos) {
       const r = cache[f.id];
