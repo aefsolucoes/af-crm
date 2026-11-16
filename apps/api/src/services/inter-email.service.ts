@@ -132,9 +132,9 @@ export function pickLead(cands: LeadCandidate[], sig: InterSignals): { id: strin
   for (const nm of sig.nomes) {
     const st = tokens(nm);
     if (!st.length) continue;
-    // Só o 1º nome ("Maria") quando o e-mail traz o nome inteiro com esse 1º nome ("MARIA ROSA MARCELLI") e ele não bateu com nenhum card aberto:
-    // é a mesma pessoa, não outra Maria (Fabio 16/11: e-mail da Maria Rosa, card Perdido, caiu na Maria do Carmo).
-    if (st.length === 1 && longos.some((l) => l[0] === st[0])) continue;
+    // Só o 1º nome ("Maria") vale apenas quando o e-mail não traz nº da proposta nem nome completo ("Home Equity - PEDRO"). Com proposta/nome completo,
+    // o card tem de bater com eles (Fabio 16/11: e-mail da Maria Rosa, card Perdido, caiu na Maria do Carmo pelo "Maria").
+    if (st.length === 1 && (sig.proposta || longos.length)) continue;
     let hit = cands.filter((c) => nomeDe(c).some((n) => { const ct = tokens(n); return ct.length > 0 && ct[0] === st[0] && st.every((t) => ct.includes(t)); }));
     if (st.length === 1) hit = hit.filter((c) => c.inter); // só o primeiro nome: só entre quem tem a ver com o Inter
     if (hit.length > 1) { const rec = hit.filter((c) => c.interRecent); if (rec.length >= 1) hit = rec; }
@@ -145,14 +145,33 @@ export function pickLead(cands: LeadCandidate[], sig: InterSignals): { id: strin
   return { id: null, ambiguous: nomes(ambiguo) };
 }
 
-/** O nº da proposta é de um card FECHADO (Perdido/Ganho) ou arquivado — que não está entre os candidatos (só abertos)? */
-async function propostaDeCardFechado(accountId: string, proposta: string): Promise<boolean> {
-  const r = await prisma.$queryRaw<{ n: number }[]>`
-    SELECT count(*)::int AS n FROM "Lead" l
-    WHERE l."accountId" = ${accountId} AND (l.status <> 'OPEN' OR l.archived)
-      AND (ltrim(coalesce(l."customFields"->>'num_proposta', ''), '0') = ${proposta}
-        OR EXISTS (SELECT 1 FROM "CreditAnalysis" ca WHERE ca."leadId" = l.id AND ca.bank IN ('INTER', 'INTER_FH') AND ltrim(coalesce(ca."proposalNumber", ''), '0') = ${proposta}))`;
-  return (r[0]?.n || 0) > 0;
+/** O e-mail traz quem é o cliente (nº da proposta, CPF ou nome com 2+ palavras)? Pura (testável). */
+export function emailIdentificaCliente(sig: InterSignals): boolean {
+  return !!sig.proposta || sig.cpfs.length > 0 || sig.nomes.some((n) => tokens(n).length >= 2);
+}
+
+/** O card bate com o e-mail? Sem identificação no e-mail, qualquer card serve; com ela, tem de bater o nº da proposta, o CPF ou o nome (2+ palavras, 1º nome igual).
+ *  `propostas` = do card e das análises do Inter dele. Pura (testável). */
+export function cardBateComEmail(card: { nomes: string[]; cpfs: string[]; propostas: string[] }, sig: InterSignals): boolean {
+  if (!emailIdentificaCliente(sig)) return true;
+  if (sig.proposta && card.propostas.some((p) => stripZeros(p) === sig.proposta)) return true;
+  if (sig.cpfs.length && card.cpfs.some((c) => sig.cpfs.includes(String(c).replace(/\D/g, '')))) return true;
+  const longos = sig.nomes.map(tokens).filter((t) => t.length >= 2);
+  return card.nomes.some((n) => { const ct = tokens(n); return longos.some((l) => ct[0] === l[0] && l.every((t) => ct.includes(t))); });
+}
+
+/** Lê do banco o que `cardBateComEmail` precisa (vale pra card fechado também — o fio pode ser de um Perdido). */
+async function cardDoFioBate(leadId: string, sig: InterSignals): Promise<boolean> {
+  if (!emailIdentificaCliente(sig)) return true;
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  if (!l) return false;
+  const cf = (l.customFields || {}) as Record<string, unknown>;
+  const cas = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, proposalNumber: { not: null } }, select: { proposalNumber: true } });
+  return cardBateComEmail({
+    nomes: [l.name, cf.participante_1, cf.participante_2].map((x) => String(x || '')).filter(Boolean),
+    cpfs: [cf.cpf_1, cf.cpf_2].map((x) => String(x || '')).filter(Boolean),
+    propostas: [String(cf.num_proposta || ''), ...cas.map((c) => String(c.proposalNumber || ''))].filter(Boolean),
+  }, sig);
 }
 
 export async function loadCandidates(accountId: string): Promise<LeadCandidate[]> {
@@ -190,8 +209,8 @@ export function interEmailTexto(textBody: string | null | undefined, htmlBody: s
   return t;
 }
 
-/** Chamado pelo leitor de e-mail para cada e-mail NOVO do Inter. Devolve true se ligou a um card. */
-export async function handleInterEmail(acc: { accountId: string }, row: { id: string; subject: string | null; textBody: string | null; htmlBody?: string | null; fromAddress?: string | null; date?: Date }, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } }): Promise<boolean> {
+/** Chamado pelo leitor de e-mail para cada e-mail NOVO do Inter. Devolve true se ligou a um card; 'SEM_CARD' se o e-mail diz quem é o cliente e nenhum card bate (não liga a nenhum). */
+export async function handleInterEmail(acc: { accountId: string }, row: { id: string; subject: string | null; textBody: string | null; htmlBody?: string | null; fromAddress?: string | null; date?: Date }, io?: { to: (room: string) => { emit: (event: string, payload: unknown) => void } }): Promise<boolean | 'SEM_CARD'> {
   const subject = row.subject || '';
   const text = interEmailTexto(row.textBody, row.htmlBody);
   const fresh = freshPart(text);
@@ -200,17 +219,19 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado
   if (!sig.proposta && !sig.cpfs.length && !sig.nomes.length) return false;
   const achou = pickLead(await loadCandidates(acc.accountId), sig);
-  // Resposta no mesmo fio de um e-mail que já é de um card ("Re: Home Equity - PEDRO" com vários Pedros): o fio vale mais que o NOME (pista fraca);
-  // proposta/CPF continuam mandando. (Fabio 16/11: "Re: … 5752558 - MARIA ROSA MARCELLI", card dela Perdido, foi pra Maria do Carmo pelo "Maria".)
-  const doFio = achou.via === 'proposta' || achou.via === 'cpf' ? null : (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId;
-  if (doFio) { achou.id = doFio; achou.ambiguous = []; }
-  // A proposta do e-mail é de um card fechado: o e-mail é desse cliente — nunca chuta outro card aberto pelo nome.
-  else if (achou.via === 'nome' && sig.proposta && await propostaDeCardFechado(acc.accountId, sig.proposta).catch(() => false)) return false;
+  // Resposta no mesmo fio de um e-mail que já é de um card ("Re: Home Equity - PEDRO" com vários Pedros): o fio vale mais que o NOME (pista fraca) —
+  // mas só se o card do fio bate com a proposta/CPF/nome completo do e-mail; proposta/CPF de card aberto continuam mandando.
+  // (Fabio 16/11: "Re: … 5752558 - MARIA ROSA MARCELLI", card dela Perdido, foi pra Maria do Carmo pelo "Maria".)
+  if (achou.via !== 'proposta' && achou.via !== 'cpf') {
+    const doFio = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId;
+    if (doFio && await cardDoFioBate(doFio, sig).catch(() => false)) { achou.id = doFio; achou.ambiguous = []; }
+  }
   if (!achou.id) {
-    if (achou.ambiguous.length > 1 && kind !== 'OUTRO') { // o Inter escreveu, mas há mais de um card possível: avisa a equipe pra ligar à mão (nunca adivinha)
-      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title: `📬 Inter — ${KIND_LABEL[kind]}: qual cliente?`, body: `"${sig.nomes[0] || subject}" pode ser: ${achou.ambiguous.join(' / ')}` }).catch(() => {}); } catch { /* aviso */ }
-    }
-    return false;
+    const push = (title: string, body: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(acc.accountId, { title, body }).catch(() => {}); } catch { /* aviso */ } };
+    if (achou.ambiguous.length > 1 && kind !== 'OUTRO') push(`📬 Inter — ${KIND_LABEL[kind]}: qual cliente?`, `"${sig.nomes[0] || subject}" pode ser: ${achou.ambiguous.join(' / ')}`); // nunca adivinha
+    else if (emailIdentificaCliente(sig)) push('📬 E-mail do Inter sem card', `"${sig.nomes.find((n) => tokens(n).length >= 2) || sig.nomes[0] || subject}"${sig.proposta ? ` (proposta ${sig.proposta})` : ''} não bateu com nenhum card: ficou só no E-mail. Vincule à mão se for de algum card.`);
+    // E-mail que diz quem é o cliente e não bateu com card nenhum: não vai pra card nenhum (nem pro do fio) — o leitor de e-mail tira o vínculo.
+    return emailIdentificaCliente(sig) ? 'SEM_CARD' : false;
   }
   const leadId = achou.id;
   const alvo = { proposta: sig.proposta };

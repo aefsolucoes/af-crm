@@ -553,7 +553,12 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
     const { handleInterEmail } = require('./inter-email.service') as typeof import('./inter-email.service');
     const ligou = await handleInterEmail(acc, { id: row.id, subject: env.subject || null, textBody, htmlBody, fromAddress: from.address, date }, opts.io as any).catch((err) => { console.warn('[Inter e-mail] falhou:', err?.message); return false; });
     // O card que o leitor do Inter escolheu (proposta/CPF/nome) vale no lugar do card do fio: o e-mail entra numa conversa só (Fabio 16/11: o do Ailon entrou no Ailon E no Alexandro).
-    if (ligou) leadId = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId || leadId;
+    if (ligou === true) leadId = (await prisma.emailMessage.findUnique({ where: { id: row.id }, select: { leadId: true } }).catch(() => null))?.leadId || leadId;
+    // O e-mail diz quem é o cliente (proposta/nome completo/CPF) e nenhum card bate — nem o do fio: fica sem card (a equipe recebeu o aviso).
+    else if (ligou === 'SEM_CARD') {
+      leadId = null;
+      await prisma.emailMessage.update({ where: { id: row.id }, data: { leadId: null } }).catch(() => {});
+    }
   }
 
   // Proposta preenchida no site (FormSubmit) → vai pro card do cliente.
