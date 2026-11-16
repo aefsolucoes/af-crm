@@ -59,7 +59,8 @@ export async function vistoriaPreview(accountId: string, leadId: string): Promis
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
   const nome = titleCase(String(cf.participante_1 || lead.name || '').trim()) || 'Cliente';
-  const proposta = String(cf.num_proposta || '').trim();
+  // nº da proposta no e-mail: a do card, menos quando ela é a do Credimorar (FH) — aí a do Inter rodada no nosso portal, que é a que o consultor enxerga (Adriano 16/11)
+  const proposta = (await propostaParaSeguir(leadId, cf)).numero || String(cf.num_proposta || '').trim();
 
   // e-mails do Inter já ligados a este card (o vigia liga pelo nº da proposta/nome)
   const emails = await prisma.emailMessage.findMany({
@@ -378,11 +379,30 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
 // confirmação ("Aprovar" — o aceite do cliente, que não dá pra desfazer): quem dá o último clique é a equipe. Estado em customFields._seguirStatus: REQUESTED | RUNNING | READY | FAILED.
 export type SeguirJob = { leadId: string; leadName: string; proposta: string; /** true = a extensão também confirma o aceite ("Aprovar") — só quando a equipe pediu no botão do card, com a janela de confirmação */ confirmar: boolean };
 
+const soDigitos = (s: unknown) => String(s || '').replace(/\D/g, '');
+
+/** Nº da proposta do Inter pro "Seguir com proposta" no NOSSO portal (e pro e-mail da vistoria). Vale a do card (num_proposta, a da ⭐) — menos quando ela veio pelo CREDIMORAR:
+ *  a simulação FH do Credimorar manda pro Inter e devolve um nº que aparece no nosso portal SEM "Seguir com proposta" (abre com valor R$ 0,00 e só "Excluir"/"Detalhes" — Adriano 16/11:
+ *  6 tentativas na 005724484 enquanto a 005772924, rodada no nosso portal, tinha o botão). Aí vale a do Inter rodada no nosso portal (INTER/INTER_FH aprovada): a do valor do card,
+ *  senão a maior. Sem nenhuma do nosso portal, devolve a do Credimorar em `soCredimorar` pra quem chama avisar (o aceite dela não sai pelo nosso portal). */
+export async function propostaParaSeguir(leadId: string, cf: Record<string, any>): Promise<{ numero: string; doCredimorar: string | null; soCredimorar: boolean }> {
+  const direto = soDigitos(cf.num_proposta);
+  const nossas = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, status: true, approvedValue: true } });
+  if (direto.length < 6) return { numero: soDigitos(nossas[0]?.proposalNumber), doCredimorar: null, soCredimorar: false };
+  const doNossoPortal = nossas.some((n) => soDigitos(n.proposalNumber) === direto);
+  const credimorar = !doNossoPortal && !!(await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CREDIMORAR_FH', detail: { contains: direto } }, select: { id: true } }));
+  if (!credimorar) return { numero: direto, doCredimorar: null, soCredimorar: false };
+  const aprovadas = nossas.filter((n) => ['APPROVED', 'CONDITIONAL'].includes(n.status) && soDigitos(n.proposalNumber).length >= 6);
+  const pedido = Number(cf.valor_credito) || 0;
+  const escolhida = aprovadas.find((n) => pedido > 0 && Math.abs((n.approvedValue || 0) - pedido) < 1) || [...aprovadas].sort((a, b) => (b.approvedValue || 0) - (a.approvedValue || 0))[0];
+  if (escolhida) return { numero: soDigitos(escolhida.proposalNumber), doCredimorar: direto, soCredimorar: false };
+  return { numero: direto, doCredimorar: direto, soCredimorar: true };
+}
+
+const textoSoCredimorar = (n: string) => `a proposta ${n} do Inter foi feita pelo Credimorar: no portal do Inter ela não tem "Seguir com proposta" (abre sem valores). Rode o Inter pelo nosso portal ("Rodar financiamento") pra ter uma proposta que dá pra seguir`;
+
 async function propostaDoInter(leadId: string, cf: Record<string, any>): Promise<string> {
-  const direto = String(cf.num_proposta || '').replace(/\D/g, '');
-  if (direto.length >= 6) return direto;
-  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true } });
-  return String(r?.proposalNumber || '').replace(/\D/g, '');
+  return (await propostaParaSeguir(leadId, cf)).numero;
 }
 
 export async function seguirPreview(accountId: string, leadId: string) {
@@ -396,14 +416,17 @@ export async function requestSeguir(accountId: string, leadId: string, userId: s
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
-  const proposta = await propostaDoInter(leadId, cf);
+  const alvo = await propostaParaSeguir(leadId, cf);
+  const proposta = alvo.numero;
   if (!proposta) throw new Error('Este card não tem o número da proposta do Inter.');
+  if (alvo.soCredimorar) throw new Error(`${textoSoCredimorar(proposta).replace(/^a/, 'A')}.`);
   if (cf._seguirStatus === 'REQUESTED' || cf._seguirStatus === 'RUNNING') throw new Error('A proposta já está na fila da extensão.');
   const quem = (await prisma.user.findUnique({ where: { id: userId }, select: { name: true } }))?.name || 'a equipe';
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'REQUESTED', _seguirRequestedAt: new Date().toISOString(), _seguirConfirmar: confirmar, _seguirRequestedBy: quem, _seguirReadyAt: null, _seguirErro: null } } });
+  const trocou = alvo.doCredimorar ? ` (a do card, ${alvo.doCredimorar}, veio pelo Credimorar e não tem "Seguir com proposta" no nosso portal — vai a ${proposta}, do Inter rodado no nosso portal)` : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: confirmar
-    ? `🤝 ${quem} pediu pelo card: a extensão "Vistoria Inter" abre a proposta ${proposta} no portal do Inter, vai em Detalhes, clica em "Seguir com proposta" e CONFIRMA o aceite ("Aprovar" — não dá pra desfazer). Se algo estiver ambíguo na tela, ela para e avisa a equipe. Depois disso o Inter manda o e-mail de engajamento e a vistoria pode ser solicitada.`
-    : `🤝 Pedi à extensão "Vistoria Inter" que abra a proposta ${proposta} no portal do Inter, vá em Detalhes e clique em "Seguir com proposta". Ela PARA no aviso de confirmação ("Aprovar"): quem confirma é a equipe.` } }).catch(() => {});
+    ? `🤝 ${quem} pediu pelo card: a extensão "Vistoria Inter" abre a proposta ${proposta}${trocou} no portal do Inter, vai em Detalhes, clica em "Seguir com proposta" e CONFIRMA o aceite ("Aprovar" — não dá pra desfazer). Se algo estiver ambíguo na tela, ela para e avisa a equipe. Depois disso o Inter manda o e-mail de engajamento e a vistoria pode ser solicitada.`
+    : `🤝 Pedi à extensão "Vistoria Inter" que abra a proposta ${proposta}${trocou} no portal do Inter, vá em Detalhes e clique em "Seguir com proposta". Ela PARA no aviso de confirmação ("Aprovar"): quem confirma é a equipe.` } }).catch(() => {});
   return { ok: true, proposta };
 }
 
@@ -421,9 +444,16 @@ export async function claimSeguir(accountId: string): Promise<SeguirJob | null> 
       }
       continue;
     }
-    const proposta = await propostaDoInter(r.id, cf);
+    const alvo = await propostaParaSeguir(r.id, cf);
+    const proposta = alvo.numero;
     if (!proposta) { await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _seguirStatus: 'FAILED', _seguirErro: 'sem número da proposta' } } }); continue; }
-    await prisma.lead.update({ where: { id: r.id }, data: { customFields: { ...cf, _seguirStatus: 'RUNNING', _seguirClaimedAt: new Date().toISOString() } } });
+    if (alvo.soCredimorar) {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || jsonb_build_object('_seguirStatus', 'FAILED', '_seguirErro', ${textoSoCredimorar(proposta)}::text) WHERE id = ${r.id}`;
+      await prisma.note.create({ data: { leadId: r.id, type: 'COMMENT', content: `⚠️ Não mandei a extensão abrir a proposta: ${textoSoCredimorar(proposta)}.` } }).catch(() => {});
+      continue;
+    }
+    // _seguirProposta = o nº que a extensão vai seguir (pode não ser o do card — proposta do Credimorar): quando ela seguir, o card passa a usar esse nº.
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || jsonb_build_object('_seguirStatus', 'RUNNING', '_seguirClaimedAt', ${new Date().toISOString()}::text, '_seguirProposta', ${proposta}::text) WHERE id = ${r.id}`;
     return { leadId: r.id, leadName: r.name, proposta, confirmar: cf._seguirConfirmar === true };
   }
   return null;
@@ -438,7 +468,12 @@ export async function reportSeguir(accountId: string, leadId: string, d: { event
     const quando = new Date().toISOString();
     const is = { ...((cf._interSeguir || {}) as Record<string, any>), status: 'SEGUIDA', at: quando, por: `extensão (pedido de ${cf._seguirRequestedBy || 'equipe'})` };
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'DONE', _seguirDoneAt: quando, _seguirErro: null, _interSeguir: is } } });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ A extensão SEGUIU com a proposta do Inter e confirmou o aceite ("Aprovar") no portal, a pedido de ${cf._seguirRequestedBy || 'equipe'}. O Inter manda o e-mail de engajamento em 1–2 dias (o CRM liga ao card e avisa); aí a vistoria pode ser solicitada.` } }).catch(() => {});
+    // Seguiu outra proposta que não a do card (a do card era do Credimorar): o card passa a usar a seguida — é ela que vai no e-mail da vistoria e que o Inter cita no engajamento.
+    const seguida = soDigitos(cf._seguirProposta);
+    const antes = soDigitos(cf.num_proposta);
+    const troca = seguida.length >= 6 && seguida !== antes;
+    if (troca) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || jsonb_build_object('num_proposta', ${seguida}::text) WHERE id = ${leadId}`;
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ A extensão SEGUIU com a proposta do Inter${seguida ? ` ${seguida}` : ''} e confirmou o aceite ("Aprovar") no portal, a pedido de ${cf._seguirRequestedBy || 'equipe'}.${troca ? ` O nº da proposta no card passou de ${antes || '—'} pra ${seguida}.` : ''} O Inter manda o e-mail de engajamento em 1–2 dias (o CRM liga ao card e avisa); aí a vistoria pode ser solicitada.` } }).catch(() => {});
     push('✅ Inter: proposta seguida', `${lead.name}: aceite feito no portal — aguarde o e-mail de engajamento`);
   } else if (d.event === 'ready') {
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _seguirStatus: 'READY', _seguirReadyAt: new Date().toISOString(), _seguirErro: null } } });

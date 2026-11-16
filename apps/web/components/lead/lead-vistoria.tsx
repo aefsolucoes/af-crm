@@ -63,7 +63,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   const stTxt: Record<string, string> = { REQUESTED: 'Na fila da extensão…', RUNNING: 'A extensão está preenchendo…', FILLED: 'Preenchido — enviando ao Inter…', SENT: 'Laudo enviado ao Inter ✅', FAILED: 'A extensão não conseguiu preencher (veja a nota do card)' };
 
   async function pedirSeguir() {
-    if (!window.confirm('A extensão "Vistoria Inter" vai, SOZINHA, abrir a proposta no portal do Inter, ir em Detalhes, clicar em "Seguir com proposta" e CONFIRMAR o aceite ("Aprovar").\n\nIsso é o aceite do cliente no Inter e NÃO dá pra desfazer. Confirme que o cliente quer seguir com o Inter.\n\nSe algo estiver ambíguo na tela do portal, ela para e avisa a equipe. Pedir agora?')) return;
+    if (!window.confirm(`A extensão "Vistoria Inter" vai, SOZINHA, abrir a proposta${seguir?.proposta ? ` ${seguir.proposta}` : ''} no portal do Inter, ir em Detalhes, clicar em "Seguir com proposta" e CONFIRMAR o aceite ("Aprovar").\n\nIsso é o aceite do cliente no Inter e NÃO dá pra desfazer. Confirme que o cliente quer seguir com o Inter.\n\nSe algo estiver ambíguo na tela do portal, ela para e avisa a equipe. Pedir agora?`)) return;
     setSeguirBusy(true);
     try { await api.post('/api/vistorias/seguir/request', { leadId, confirm: true }); toast('Na fila: a extensão segue com a proposta em até 1 minuto (Chrome aberto e logado no Inter, 07h–22h)', 'success'); setGate(false); await carregarSeguir(); }
     catch (err: any) { toast(err?.response?.data?.error || 'Erro ao pedir a abertura da proposta', 'error'); }
