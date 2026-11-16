@@ -99,6 +99,19 @@ export function comComprovanteInformado(p: any, cf: Cf, n: number): any {
   return m ? { ...p, endereco: { ...(p?.endereco || {}), comprovanteMesAno: `${m[1]}/${m[2]}` } } : p;
 }
 
+/** Órgão emissor e UF do RG informados pela equipe (Fabio 16/11, Danniele: "SSP/DF" — a leitura do RG não trouxe) — `orgao_rg_N` / `uf_rg_N` mandam no da ficha
+ *  e continuam valendo quando ela é refeita; saem do "faltando". Só pra identidade RG. Pura. */
+export function comIdentidadeInformada(p: any, cf: Cf, n: number): any {
+  const orgao = String(cf[`orgao_rg_${n}`] || '').trim().toUpperCase();
+  const uf = String(cf[`uf_rg_${n}`] || '').trim().toUpperCase();
+  if ((!orgao && !uf) || /cnh/i.test(String(p?.identidade?.tipo || ''))) return p;
+  return {
+    ...p,
+    identidade: { ...(p?.identidade || {}), ...(orgao ? { orgao } : {}), ...(uf ? { uf } : {}) },
+    faltando: (Array.isArray(p?.faltando) ? p.faltando : []).filter((f: unknown) => !((orgao && /[oó]rg[aã]o/i.test(String(f))) || (uf && /\buf\b/i.test(String(f))))),
+  };
+}
+
 export const participantesDa = (cf: Cf): any[] => {
   // Sem ficha ainda (Fabio 01/11: "a consulta ocorre assim que o cliente indicar querer fazer com a CAIXA e a pergunta dos requisitos saírem", antes dos documentos):
   // nomes e CPFs da proposta (participante_N / cpf_N), só pra consulta.
@@ -109,7 +122,7 @@ export const participantesDa = (cf: Cf): any[] => {
     const n = Number(p.ordem) || i + 1;
     // Estado civil informado pela equipe (Fabio 09/11: divórcio recente, sem documento na pasta) manda no da ficha e continua valendo quando ela é refeita.
     const estadoCivil = String(cf[`estado_civil_${n}`] || '').trim();
-    return comComprovanteInformado(comRendaInformada({ ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) }, cf, n), cf, n);
+    return comIdentidadeInformada(comComprovanteInformado(comRendaInformada({ ...p, ordem: n, cpf: String(p.cpf || cf[`cpf_${n}`] || '').replace(/\D/g, ''), telefone: cf[`telefone_${n}`] || '', email: cf[`email_${n}`] || '', ...(estadoCivil ? { estadoCivil, faltando: (Array.isArray(p.faltando) ? p.faltando : []).filter((f: unknown) => !/estado civil/i.test(String(f))) } : {}) }, cf, n), cf, n), cf, n);
   });
   // CPF do cônjuge: a certidão de casamento não traz — se o cônjuge é o outro participante do card, usa o CPF dele (Jézer/Bianca 29/10).
   const primeiroNome = (s: string) => String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().split(/\s+/)[0];
@@ -298,6 +311,22 @@ export async function gravarConsulta(accountId: string, leadId: string, ordem: n
 }
 
 /** Estado civil informado pela equipe (Fabio 09/11): grava só esse campo do card, deixa anotado e passa a valer no lugar do da ficha (participantesDa). Erro em texto quando não dá. */
+/** Órgão emissor / UF do RG informados pela equipe (Fabio 16/11): grava `orgao_rg_N` / `uf_rg_N`, anota e o cadastro que esperava o dado segue sozinho. */
+export async function informarIdentidade(accountId: string, leadId: string, ordem: number, dados: { orgao?: string; uf?: string }, por: string): Promise<string | null> {
+  const orgao = String(dados.orgao || '').trim().toUpperCase();
+  const uf = String(dados.uf || '').trim().toUpperCase();
+  if (!orgao && !uf) return 'Informe o órgão emissor e/ou a UF do RG';
+  if (uf && !/^[A-Z]{2}$/.test(uf)) return 'UF inválida (2 letras)';
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === ordem);
+  if (!p) return 'Participante não encontrado';
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify({ ...(orgao ? { [`orgao_rg_${ordem}`]: orgao } : {}), ...(uf ? { [`uf_rg_${ordem}`]: uf } : {}) })}::jsonb WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📋 RG de ${p.nome || `${ordem}º participante`}: ${[orgao && `órgão emissor ${orgao}`, uf && `UF ${uf}`].filter(Boolean).join(', ')} — informado por ${por}. Vale no cadastro da CAIXA no lugar do que a ficha trouxer.` } }).catch(() => {});
+  await cadastroAutomatico(accountId, leadId).catch((e) => console.error('[CAIXA] cadastro automático:', e?.message));
+  return null;
+}
+
 export async function informarEstadoCivil(accountId: string, leadId: string, ordem: number, estadoCivil: string, por: string): Promise<string | null> {
   if (!/^(solteir|casad|divorciad|separad|vi[uú]v)/i.test(estadoCivil)) return 'Estado civil inválido';
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
