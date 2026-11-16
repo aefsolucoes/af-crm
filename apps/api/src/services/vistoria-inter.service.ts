@@ -160,6 +160,15 @@ export async function moverParaVistoria(accountId: string, leadId: string, motiv
   } catch (e: any) { console.warn('[Vistoria] não consegui mover o card:', e?.message); return false; }
 }
 
+/** Algum dos anexos marcados é a certidão de ônus/matrícula do CARTÓRIO (a emitida pelo ONR ou o arquivo da pasta IMOVEL com esse nome)? (Fabio 16/11) */
+export async function temCertidaoNosAnexos(accountId: string, leadId: string, cf: Record<string, any>, ids: string[]): Promise<boolean> {
+  if (!ids.length) return false;
+  const emitidas = new Set((await prisma.certidaoRequest.findMany({ where: { accountId, leadId, status: 'ISSUED', driveFileId: { not: null } }, select: { driveFileId: true } })).map((c) => c.driveFileId as string));
+  if (ids.some((id) => emitidas.has(id))) return true;
+  const arquivos = await arquivosDoImovel(accountId, cf);
+  return arquivos.some((f) => ids.includes(f.id) && /MATRICULA|ONUS/i.test(f.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && !/CADASTRO IMOBILIARIO/i.test(f.name));
+}
+
 export async function solicitarVistoria(p: { accountId: string; userId: string; leadId: string; to: string; cc?: string; subject: string; body: string; replyToId?: string | null; attachDriveFileIds?: string[]; io?: Io }) {
   const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { name: true, customFields: true, pipelineId: true, stageId: true, stage: { select: { name: true } } } });
   if (!lead) throw new Error('Card não encontrado');
@@ -167,6 +176,11 @@ export async function solicitarVistoria(p: { accountId: string; userId: string; 
   if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(to)) throw new Error('Informe o e-mail do consultor do Inter no campo "Para".');
   if (!INTER_FROM.test(to) && !String(process.env.VISTORIA_ALLOW_ANY_RECIPIENT || '')) throw new Error('O destinatário precisa ser um e-mail do Inter (@inter.co).');
   if (!(p.attachDriveFileIds || []).length) throw new Error('O pedido de vistoria vai sempre com anexo: marque ao menos a matrícula do imóvel.');
+  // A vistoria só se pede com a CERTIDÃO DE ÔNUS/MATRÍCULA do cartório (Fabio 16/11, Nalia: o Inter não aceitou o contrato de compra e venda — "precisamos da matrícula
+  // para conseguir solicitar a vistoria"). Pode ser antiga ou de consulta: a atualizada a gente pede na contratação. Escritura/contrato não servem.
+  if (!(await temCertidaoNosAnexos(p.accountId, p.leadId, (lead.customFields || {}) as Record<string, any>, p.attachDriveFileIds || []))) {
+    throw new Error('A vistoria só pode ser pedida com a certidão de ônus/matrícula do imóvel (pode ser antiga). Escritura ou contrato de compra e venda não servem: peça a certidão pelo ONR e marque-a nos anexos.');
+  }
   // Sem o contato da vistoria confirmado com o cliente o pedido NÃO sai (Fabio 14/11): o CRM pergunta a ele e o pedido fica armado — sai sozinho, com o contato, quando ele responder.
   {
     const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');

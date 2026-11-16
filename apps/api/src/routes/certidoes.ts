@@ -51,7 +51,7 @@ router.post('/from-docs', async (req: AuthRequest, res: Response) => {
   try {
     const { ensureCertidaoRequest } = require('../services/certidao-offer.service') as typeof import('../services/certidao-offer.service');
     const leadId = String(req.body?.leadId || '');
-    const out = await ensureCertidaoRequest(req.user!.accountId, leadId, { manual: true, userId: req.user!.id, sendPix: req.body?.sendPix !== false, porEndereco: req.body?.porEndereco === true });
+    const out = await ensureCertidaoRequest(req.user!.accountId, leadId, { manual: true, userId: req.user!.id, sendPix: req.body?.sendPix !== false, porEndereco: req.body?.porEndereco === true, clientIntro: typeof req.body?.clientIntro === 'string' ? String(req.body.clientIntro).slice(0, 300) : undefined });
     if (!out.created) return res.status(400).json({ error: out.why || 'Não consegui pedir a certidão' });
     io(req)?.to(`account_${req.user!.accountId}`).emit('certidao_updated', { leadId });
     res.json({ ok: true });

@@ -183,6 +183,14 @@ export async function solicitarVistoriaCreditas(p: { accountId: string; userId: 
   const permitidos = await arquivosPermitidos(p.accountId, p.leadId, (lead.customFields || {}) as Record<string, any>); // só documentos do imóvel deste cliente
   const { downloadDriveFile } = await import('./google.service');
   const attachments: { filename: string; contentType: string; content: Buffer }[] = [];
+  // A vistoria só se pede com a CERTIDÃO DE ÔNUS/MATRÍCULA do cartório, que pode ser antiga (Fabio 16/11): escritura/contrato não servem.
+  {
+    const sem = (x: string) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const ids = Array.from(new Set(p.attachDriveFileIds || []));
+    const emitidas = new Set((await prisma.certidaoRequest.findMany({ where: { accountId: p.accountId, leadId: p.leadId, status: 'ISSUED', driveFileId: { not: null } }, select: { driveFileId: true } })).map((c) => c.driveFileId as string));
+    const temOnus = ids.some((id) => emitidas.has(id) || permitidos.some((f) => f.id === id && /MATRICULA|ONUS/i.test(`${sem(f.name)} ${sem(f.tipo || '')}`) && !/CADASTRO IMOBILIARIO/i.test(sem(f.name))));
+    if (!temOnus) throw new Error('A vistoria só pode ser pedida com a certidão de ônus/matrícula do imóvel (pode ser antiga). Escritura ou contrato de compra e venda não servem: peça a certidão pelo ONR e marque-a nos anexos.');
+  }
   for (const id of Array.from(new Set(p.attachDriveFileIds || []))) {
     const f = permitidos.find((x) => x.id === id);
     if (!f) throw new Error('Um dos anexos não é documento do imóvel deste cliente.');
@@ -234,6 +242,15 @@ export async function pedirVistoriaCreditasSozinho(accountId: string, leadId: st
     }
   }
   const pv = await vistoriaCreditasPreview(accountId, leadId);
+  // Sem a certidão de ônus/matrícula a vistoria não sai (Fabio 16/11): espera a certidão e avisa a equipe uma vez.
+  if (pv.avisos.some((a) => /CERTIDÃO DE ÔNUS/.test(a))) {
+    if (!cf._vistoriaCreditasSemOnusAt) {
+      await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_vistoriaCreditasSemOnusAt}', to_jsonb(${new Date().toISOString()}::text), true) WHERE id = ${leadId}`;
+      await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏠 Vistoria da Creditas esperando a CERTIDÃO DE ÔNUS/matrícula (regra: a vistoria só se pede com ela, pode ser antiga). Peça a certidão pelo ONR; quando ela estiver na pasta IMOVEL, o pedido sai sozinho.' } }).catch(() => {});
+      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '🏠 Vistoria Creditas: falta a certidão de ônus', body: 'Peça a certidão pelo ONR; o pedido da vistoria sai sozinho depois.', leadId }).catch(() => {}); } catch { /* aviso */ }
+    }
+    return 'aguardando';
+  }
   await solicitarVistoriaCreditas({ accountId, userId: dono.id, leadId, to: pv.to, cc: pv.cc, subject: pv.subject, body: pv.body, replyToId: pv.replyToId, attachDriveFileIds: pv.anexos.filter((a) => a.checked).map((a) => a.id), io });
   if (pv.avisos.some((a) => /CERTIDÃO DE ÔNUS|CAPA DO IPTU/.test(a))) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Vistoria da Creditas pedida sozinha, mas: ${pv.avisos.filter((a) => /CERTIDÃO DE ÔNUS|CAPA DO IPTU/.test(a)).join(' ')}` } }).catch(() => {});

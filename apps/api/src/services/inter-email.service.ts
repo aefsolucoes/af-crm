@@ -255,7 +255,44 @@ export async function marcarVistoriaConcluida(accountId: string, leadId: string,
   await prisma.note.create({ data: { leadId, type: 'STAGE_CHANGE', content: `Estágio: "${lead.stage?.name || '—'}" → "${jur.name}" — vistoria concluída pelo Inter (crédito e imóvel aprovados)` } }).catch(() => {});
   const pede = /question[aá]rio|vencimento|assinatura|zeev/i.test(fresh) ? '\nO Inter pede as informações da contratação (questionário: vencimento, assinatura, registro, despesas de registro, dados dos proponentes, responsável na Zeev) — ver o e-mail na conversa.' : '';
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Vistoria CONCLUÍDA pelo Inter: crédito e imóvel aprovados. Card levado para "${jur.name}".${pede}` } }).catch(() => {});
+  // Contratação: a certidão de ônus tem que estar ATUALIZADA (Fabio 16/11: "caso ela não esteja atualizada, a gente solicita ela atualizada na contratação").
+  await pedirCertidaoAtualizadaNaContratacao(accountId, leadId).catch((e: any) => console.warn('[Inter] certidão atualizada:', e?.message));
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: '✅ Vistoria concluída pelo Inter', body: `${lead.name}: card foi pra ${jur.name}`, leadId }).catch(() => {}); } catch { /* aviso */ }
   io?.to(`account_${accountId}`).emit('new_conversation', { leadId });
   return jur.name;
+}
+
+/** Certidão de ônus da pasta está desatualizada pra contratação? (a vistoria aceita antiga; a contratação, não — Fabio 16/11). Atualizada = emitida pelo ONR ou pelo
+ *  cliente há até 30 dias, sem a marca de consulta. Pura nos dados do card + pedidos do ONR. */
+export async function certidaoDesatualizada(accountId: string, leadId: string, cf: Record<string, any>): Promise<boolean> {
+  const recente = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: 'ISSUED', finishedAt: { gte: new Date(Date.now() - 30 * 86_400_000) } }, select: { id: true } });
+  if (recente) return false;
+  const emAndamento = await prisma.certidaoRequest.findFirst({ where: { accountId, leadId, status: { in: ['REQUESTED', 'RUNNING', 'FIND_WEB', 'AWAITING_PAYMENT'] } }, select: { id: true } });
+  if (emAndamento) return false;
+  const revs = Object.values((cf._docReview || {}) as Record<string, any>).filter((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(r?.tipo || '').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')) && r?.resultado !== 'PROBLEMA');
+  return !revs.some((r) => !r.ressalva && /^\d{4}-\d{2}-\d{2}$/.test(String(r.emissao || '')) && Date.now() - Date.parse(String(r.emissao)) <= 30 * 86_400_000);
+}
+
+/** Card chegou na contratação (vistoria concluída) com certidão antiga/consulta: IA ligada → pede a atualizada pelo ONR (PIX ao cliente, com a explicação); IA desligada → push. */
+export async function pedirCertidaoAtualizadaNaContratacao(accountId: string, leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  if (!lead || cf._autoPaused || cf._certidaoContratacaoAt || !(await certidaoDesatualizada(accountId, leadId, cf))) return;
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_certidaoContratacaoAt}', to_jsonb(${new Date().toISOString()}::text), true) WHERE id = ${leadId}`;
+  const push = (t: string, b: string) => { try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: t, body: b, leadId }).catch(() => {}); } catch { /* aviso */ } };
+  if (!lead.aiAutoReplyActive) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏛️ Contratação: a certidão de ônus que temos está desatualizada (antiga ou de consulta). Peça a certidão ATUALIZADA pelo ONR (botão do card). A IA deste card está desligada, então nada foi ao cliente.' } }).catch(() => {});
+    push(`🏛️ ${lead.name}: pedir certidão atualizada`, 'Contratação: a certidão de ônus está desatualizada. IA desligada — peça pelo card.');
+    return;
+  }
+  const dono = await prisma.user.findFirst({ where: { accountId, role: 'ADMIN' }, orderBy: { createdAt: 'asc' }, select: { id: true } });
+  const { ensureCertidaoRequest } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+  const out = await ensureCertidaoRequest(accountId, leadId, { manual: true, userId: dono?.id, sendPix: true, clientIntro: 'pra contratação o banco precisa da certidão de ônus ATUALIZADA do imóvel, então já pedi ao cartório — segue o PIX dela' });
+  if (out.created) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '🏛️ Contratação: a certidão de ônus estava desatualizada — pedi a atualizada pelo ONR; o PIX vai à cliente com a explicação.' } }).catch(() => {});
+    push(`🏛️ ${lead.name}: certidão atualizada pedida`, 'Contratação: o PIX vai à cliente.');
+  } else {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Contratação: a certidão de ônus está desatualizada, mas não consegui pedir a atualizada (${out.why || 'erro'}). Peça pelo card.` } }).catch(() => {});
+    push(`⚠️ ${lead.name}: certidão atualizada não pedida`, String(out.why || '').slice(0, 100));
+  }
 }

@@ -350,13 +350,26 @@ export async function claimCertidao(db: Db, p: { accountId: string }): Promise<C
   return null;
 }
 
-async function sendPixToClient(db: Db, r: { id: string; accountId: string; leadId: string; pixCode: string | null; valorCents: number | null; pixExpiresAt: Date | null; clientIntro: string | null; requestedById: string | null; source: string }, io?: Io): Promise<{ ok: boolean; error?: string }> {
+async function sendPixToClient(db: Db, r: { id: string; accountId: string; leadId: string; pixCode: string | null; valorCents: number | null; pixExpiresAt: Date | null; clientIntro: string | null; requestedById: string | null; source: string }, io?: Io): Promise<{ ok: boolean; error?: string; guardado?: boolean }> {
   if (!r.pixCode) return { ok: false, error: 'sem código' };
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   const valor = r.valorCents ? ` (${brl(r.valorCents)})` : '';
   const validade = r.pixExpiresAt ? (sameBrDay(r.pixExpiresAt, new Date()) ? `válido até hoje (${brDate(r.pixExpiresAt)})` : `válido até ${brDate(r.pixExpiresAt)}`) : 'válido por pouco tempo';
   const intro = r.clientIntro || 'segue o PIX da certidão da matrícula';
   const texto = `${firstName(lead?.name)}, ${intro}${valor}, ${validade}. O código está na mensagem logo abaixo, é só copiar e colar no app do seu banco (opção "Pix Copia e Cola").\n\nQuando o pagamento cair, o cartório emite a certidão em até 4 horas úteis e a gente segue com a sua análise. Me avisa por aqui assim que pagar, tá?`;
+  // Conversa de 24 h FECHADA (Fabio 16/11, Nalia: o PIX falhava e ia só como nota pra equipe): template de atualização agora; o texto e o código saem quando o cliente responder.
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(r.leadId))) {
+    const nome = firstName(lead?.name);
+    const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
+    const { sendOutboundWhatsAppTemplate } = require('./message.service') as typeof import('./message.service');
+    const t = await sendOutboundWhatsAppTemplate({ accountId: r.accountId, leadId: r.leadId, ...(await templateAtualizacaoDoLead(r.leadId, nome || 'cliente')), userId: r.requestedById || undefined, io });
+    if (!t.success) return { ok: false, error: `conversa fechada e o template de atualização falhou (${t.error})` };
+    const { queueOnReply } = require('./reply-pending.service') as typeof import('./reply-pending.service');
+    await queueOnReply(db as any, { leadId: r.leadId, label: `certidão PIX ${r.id} (texto)`, text: texto, noteText: '💸 Conversa fechada: mandei o template de atualização; o PIX da certidão sai quando o cliente responder.' });
+    await queueOnReply(db as any, { leadId: r.leadId, label: `certidão PIX ${r.id} (código)`, text: r.pixCode, noteText: '⏳ Código do PIX guardado pra logo depois do texto.' });
+    return { ok: true, guardado: true };
+  }
   const a = await sendOutboundWhatsApp({ accountId: r.accountId, leadId: r.leadId, content: texto, userId: r.requestedById || undefined, io });
   if (!a.success) return { ok: false, error: a.error };
   const b = await sendOutboundWhatsApp({ accountId: r.accountId, leadId: r.leadId, content: r.pixCode, userId: r.requestedById || undefined, io });
@@ -419,8 +432,8 @@ export async function reportCertidao(db: Db, p: { accountId: string; id: string;
     if (out.sendPix && !out.pixSentAt) {
       const s = await sendPixToClient(db, out, p.io);
       if (s.ok) {
-        out = await db.certidaoRequest.update({ where: { id: r.id }, data: { pixSentAt: new Date(), detail: 'PIX enviado ao cliente; aguardando o pagamento e a emissão.' } });
-        await note(db, r.leadId, `💸 PIX da certidão (${brl(out.valorCents)}) enviado ao cliente — protocolo ${out.protocolo}.`, r.requestedById);
+        out = await db.certidaoRequest.update({ where: { id: r.id }, data: { pixSentAt: new Date(), detail: s.guardado ? 'PIX guardado: sai quando o cliente responder ao template; aguardando o pagamento e a emissão.' : 'PIX enviado ao cliente; aguardando o pagamento e a emissão.' } });
+        await note(db, r.leadId, s.guardado ? `💸 PIX da certidão (${brl(out.valorCents)}, protocolo ${out.protocolo}) gerado; a conversa estava fechada, então ele sai quando o cliente responder ao template. Código:\n${code}` : `💸 PIX da certidão (${brl(out.valorCents)}) enviado ao cliente — protocolo ${out.protocolo}.`, r.requestedById);
       } else {
         out = await db.certidaoRequest.update({ where: { id: r.id }, data: { detail: `PIX capturado, mas NÃO consegui mandar ao cliente: ${s.error}` } });
         await note(db, r.leadId, `⚠️ O PIX da certidão (${brl(out.valorCents)}, protocolo ${out.protocolo}) foi gerado, mas o envio ao cliente falhou: ${s.error}. Código para mandar à mão:\n${code}`, r.requestedById);

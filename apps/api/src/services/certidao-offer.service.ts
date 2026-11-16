@@ -274,7 +274,7 @@ async function jaTemCertidaoValida(leadId: string, cf: Record<string, any>): Pro
 }
 
 /** Cria o pedido no ONR (a extensão pega na fila): chamado quando o cliente aceitou. Uma vez por matrícula. */
-export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean; porEndereco?: boolean } = {}): Promise<{ created: boolean; why?: string; agendado?: boolean }> {
+export async function ensureCertidaoRequest(accountId: string, leadId: string, opts: { manual?: boolean; userId?: string; sendPix?: boolean; porEndereco?: boolean; clientIntro?: string } = {}): Promise<{ created: boolean; why?: string; agendado?: boolean }> {
   const lead = await carrega(leadId);
   if (!lead || lead.accountId !== accountId) return { created: false, why: 'lead não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -299,7 +299,7 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
       return { created: false, why: 'IA do card desligada' };
     }
     try {
-      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix });
+      const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: e.uf, cidade: e.cidade, cartorio: 'AUTO', pedidoPor: 'ENDERECO', endereco: e.endereco, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix, clientIntro: opts.clientIntro });
       return { created: !out.duplicate, agendado: !out.duplicate && !!out.agendado };
     } catch (err: any) {
       await note(leadId, `⚠️ Não consegui criar o pedido da certidão pelo endereço: ${err?.message || err}. Peça pelo card.`);
@@ -311,10 +311,11 @@ export async function ensureCertidaoRequest(accountId: string, leadId: string, o
       note: `🏛️ A emissão da certidão (matrícula ${d.matricula}, ${d.cidade}/${d.uf}) está autorizada, mas o pedido NÃO foi feito sozinho: passo manual (IA do card desligada). Use o botão "Pedir certidão pelo ONR" na aba Financiamento do card — a extensão pede no RI Digital e o PIX vai ao cliente.` });
     return { created: false, why: 'IA do card desligada' };
   }
-  const existente = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } });
+  // Certidão EMITIDA há mais de 30 dias não impede pedir a atualizada (contratação — Fabio 16/11).
+  const existente = await prisma.certidaoRequest.findFirst({ where: { leadId, matricula: d.matricula, status: { notIn: ['CANCELLED', 'FAILED'] }, NOT: { AND: [{ status: 'ISSUED' }, { finishedAt: { lt: new Date(Date.now() - 30 * 86_400_000) } }] } }, select: { id: true } });
   if (existente) return { created: false, why: 'já existe pedido pra esta matrícula' };
   try {
-    const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: d.uf, cidade: d.cidade, cartorio: d.cartorio, matricula: d.matricula, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix });
+    const out = await createCertidaoRequest(prisma, { accountId, leadId, uf: d.uf, cidade: d.cidade, cartorio: d.cartorio, matricula: d.matricula, source: opts.manual ? 'USER' : 'AI', userId: opts.manual ? opts.userId : undefined, sendPix: opts.sendPix, clientIntro: opts.clientIntro });
     return { created: !out.duplicate, agendado: !out.duplicate && !!out.agendado };
   } catch (e: any) {
     await note(leadId, `⚠️ O cliente autorizou a emissão da certidão, mas não consegui criar o pedido no ONR: ${e?.message || e}. Peça pelo botão da certidão no card.`);
