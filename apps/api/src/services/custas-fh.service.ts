@@ -69,14 +69,14 @@ async function cidadeDoImovel(leadId: string, cf: Cf): Promise<{ cidade: string;
   return null;
 }
 
-export async function pesquisar(cidade: string, uf: string, valorImovel: number, financiado: number, flags: { imovelNovo?: boolean; primeiraAquisicao?: boolean } = {}): Promise<any | null> {
+/** Uma pesquisa com web_search que devolve JSON (o raciocínio do sonnet-5 conta no max_tokens: limite alto + volta pedindo só o JSON). */
+async function pesquisaJson(sistema: string, pergunta: string, rotulo: string): Promise<any | null> {
   const key = process.env.ANTHROPIC_API_KEY;
   if (!key) return null;
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), 150_000);
+  const timer = setTimeout(() => ctrl.abort(), 170_000);
   try {
-    const sistema = 'Você estima as custas de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais: lei/decreto/site da prefeitura (ITBI: alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo) e a tabela de emolumentos do Registro de Imóveis do estado vigente (Tribunal de Justiça/Corregedoria, ANOREG, Colégio Registral). Calcule o registro do contrato: registro da compra e venda (pelo valor do imóvel) + registro da alienação fiduciária/hipoteca (pelo valor financiado), com as taxas/fundos/ISS que a tabela do estado já soma ao emolumento; se o estado der desconto do SFH no registro, aplique e diga. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição (vale pro registro e pra escritura). Calcule também a ESCRITURA PÚBLICA de compra e venda no Tabelionato de Notas pelo valor do imóvel, pela tabela de emolumentos do tabelionato de notas do estado vigente (com as taxas/fundos/ISS que a tabela soma). NÃO inclua certidões nem a avaliação do banco. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"registro":{"compraVenda":<R$>,"alienacao":<R$>,"total":<R$>,"obs":"texto curto","fonte":"url oficial"},"escritura":{"valor":<R$>,"obs":"texto curto","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
-    const messages: any[] = [{ role: 'user', content: `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador financiada pelo SFH (aplique o desconto de 50% do registro).' : 'Não é (ou não se sabe se é) a 1ª aquisição pelo SFH: calcule o registro SEM o desconto.'} Estime o ITBI, o registro do contrato no Registro de Imóveis e a escritura pública no Tabelionato de Notas.` }];
+    const messages: any[] = [{ role: 'user', content: pergunta }];
     let texto = '';
     let ultimo: any = null;
     const chama = async (maxTokens: number) => {
@@ -85,7 +85,7 @@ export async function pesquisar(cidade: string, uf: string, valorImovel: number,
         headers: { 'Content-Type': 'application/json', 'x-api-key': key, 'anthropic-version': '2023-06-01' },
         body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: maxTokens, tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 8 }], system: sistema, messages }),
       });
-      if (!res.ok) { console.warn('[Custas FH] API', res.status, (await res.text().catch(() => '')).slice(0, 300)); return null; }
+      if (!res.ok) { console.warn(`[Custas FH ${rotulo}] API`, res.status, (await res.text().catch(() => '')).slice(0, 300)); return null; }
       return res.json();
     };
     // O raciocínio do sonnet-5 conta no max_tokens (memória sonnet5-max-tokens-thinking): limite alto e, se acabar sem o JSON, mais uma volta pedindo só o JSON.
@@ -105,10 +105,22 @@ export async function pesquisar(cidade: string, uf: string, valorImovel: number,
       if (j) texto += (j.content || []).filter((b: any) => b.type === 'text').map((b: any) => b.text).join('\n');
     }
     const ini = texto.indexOf('{'); const fim = texto.lastIndexOf('}');
-    if (ini < 0 || fim <= ini) { console.warn('[Custas FH] sem JSON:', ultimo?.stop_reason, JSON.stringify(ultimo?.usage || {}), texto.replace(/\s+/g, ' ').slice(-300)); return null; }
+    if (ini < 0 || fim <= ini) { console.warn(`[Custas FH ${rotulo}] sem JSON:`, ultimo?.stop_reason, JSON.stringify(ultimo?.usage || {}), texto.replace(/\s+/g, ' ').slice(-300)); return null; }
     return JSON.parse(texto.slice(ini, fim + 1));
-  } catch (e: any) { console.warn('[Custas FH]', e?.name === 'AbortError' ? 'demorou demais' : e?.message); return null; }
+  } catch (e: any) { console.warn(`[Custas FH ${rotulo}]`, e?.name === 'AbortError' ? 'demorou demais' : e?.message); return null; }
   finally { clearTimeout(timer); }
+}
+
+/** ITBI + registro (prefeitura + Registro de Imóveis) e, em PARALELO, a escritura (Tabelionato de Notas) — juntas passavam do tempo (Fabio 16/11 pediu a escritura). */
+export async function pesquisar(cidade: string, uf: string, valorImovel: number, financiado: number, flags: { imovelNovo?: boolean; primeiraAquisicao?: boolean } = {}): Promise<any | null> {
+  const sistema = 'Você estima as custas de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais: lei/decreto/site da prefeitura (ITBI: alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo) e a tabela de emolumentos do Registro de Imóveis do estado vigente (Tribunal de Justiça/Corregedoria, ANOREG, Colégio Registral). Calcule o registro do contrato: registro da compra e venda (pelo valor do imóvel) + registro da alienação fiduciária/hipoteca (pelo valor financiado), com as taxas/fundos/ISS que a tabela do estado já soma ao emolumento; se o estado der desconto do SFH no registro, aplique e diga. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição. NÃO inclua escritura, certidões nem avaliação do banco. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"registro":{"compraVenda":<R$>,"alienacao":<R$>,"total":<R$>,"obs":"texto curto","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
+  const pergunta = `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador financiada pelo SFH (aplique o desconto de 50% do registro).' : 'Não é (ou não se sabe se é) a 1ª aquisição pelo SFH: calcule o registro SEM o desconto.'} Estime o ITBI e o registro do contrato no Registro de Imóveis.`;
+  const sistemaEsc = 'Você estima o custo da ESCRITURA PÚBLICA de compra e venda de um imóvel residencial no Tabelionato de Notas, no Brasil. Pesquise a tabela de emolumentos do TABELIONATO DE NOTAS do estado vigente em fontes OFICIAIS (Tribunal de Justiça/Corregedoria, Colégio Notarial, ANOREG) e calcule pelo valor do imóvel, com as taxas/fundos/ISS que a tabela soma ao emolumento. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição. Responda SÓ um JSON, sem texto fora dele: {"escritura":{"valor":<R$>,"obs":"texto curto","fonte":"url oficial"}}';
+  const perguntaEsc = `Imóvel em ${cidade}/${uf}, valor ${brl(valorImovel)}. ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador pelo SFH (aplique o desconto de 50%).' : 'Sem o desconto da 1ª aquisição.'} Estime a escritura pública de compra e venda.`;
+  const [r, e] = await Promise.all([pesquisaJson(sistema, pergunta, 'ITBI/registro'), pesquisaJson(sistemaEsc, perguntaEsc, 'escritura')]);
+  if (!r) return null;
+  if (e?.escritura) r.escritura = e.escritura;
+  return r;
 }
 
 /** Mensagem pro cliente no formato do modelo "Taxas Financiamento Habitacional" (pura). */
