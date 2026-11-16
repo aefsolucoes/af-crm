@@ -368,7 +368,8 @@ export async function uploadFile(accountId: string, params: {
 }): Promise<{ id: string; name: string; webViewLink: string | null }> {
   const drive = await getDrive(accountId);
   const res = await drive.files.create({
-    requestBody: { name: params.name, parents: [params.parentId] },
+    // appProperties.afcrm: arquivo gerado/subido pelo CRM — o vigia de "arquivos incluídos por fora" (drive-de-fora.service) não relê o que é nosso (16/11).
+    requestBody: { name: params.name, parents: [params.parentId], appProperties: { afcrm: '1' } },
     media: { mimeType: params.mimeType, body: Readable.from(params.data) },
     fields: 'id, name, webViewLink',
     supportsAllDrives: true,

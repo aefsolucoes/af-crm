@@ -996,6 +996,20 @@ router.post('/:id/extract-zips', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Arquivos incluídos na pasta do Drive POR FORA da conversa (Fabio 16/11): procura agora e manda pra leitura. { todos: true } = também os de antes da marca do CRM
+// (só pra card antigo — pode pegar PDF gerado pelo CRM antes de 16/11). O vigia faz o mesmo a cada 15 min.
+router.post('/:id/drive-de-fora', async (req: AuthRequest, res: Response) => {
+  try {
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) { res.status(404).json({ error: 'Lead não encontrado' }); return; }
+    const { importarArquivosDeFora } = require('../services/drive-de-fora.service') as typeof import('../services/drive-de-fora.service');
+    res.json(await importarArquivosDeFora(req.user!.accountId, lead.id, req.app.get('io'), { todos: req.body?.todos === true }));
+  } catch (err: any) {
+    console.error('[Drive de fora]', err);
+    res.status(500).json({ error: err?.message || 'Erro ao ler a pasta do Drive' });
+  }
+});
+
 // PATCH /api/leads/:id/custom-fields
 router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
   try {

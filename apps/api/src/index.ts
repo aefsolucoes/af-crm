@@ -432,6 +432,13 @@ httpServer.listen(PORT, () => {
     }, 60 * 1000);
   }, 75 * 1000);
 
+  // Arquivos incluídos na pasta do Drive por FORA da conversa (Fabio 16/11): viram anexo e entram na leitura de documentos — drive-de-fora.service.
+  setTimeout(() => {
+    const { vigiarPastasDeFora } = require('./services/drive-de-fora.service') as typeof import('./services/drive-de-fora.service');
+    vigiarPastasDeFora(io).catch((err) => console.error('[Drive de fora] Poll (boot):', err?.message));
+    setInterval(() => { vigiarPastasDeFora(io).catch((err) => console.error('[Drive de fora] Poll:', err?.message)); }, 15 * 60 * 1000);
+  }, 4 * 60 * 1000);
+
   // Card que entrou em "Documentação Recebida": organiza a pasta do cliente
   // no Drive (LEADS ATIVOS do setor) e grava o link no card.
   setTimeout(() => {
