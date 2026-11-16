@@ -41,4 +41,16 @@ router.post('/', validate(contactSchema), async (req: AuthRequest, res: Response
   }
 });
 
+// Troca/apaga o e-mail do contato (admin). Fabio 16/11: o contato do Alexandro era o e-mail da Luana (Inter) — não havia como tirar pela tela.
+router.patch('/:id/email', validate(z.object({ email: z.string().email().nullable() })), async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só o administrador muda o e-mail do contato' });
+  try {
+    const r = await prisma.contact.updateMany({ where: { id: req.params.id, accountId: req.user!.accountId }, data: { email: req.body.email } });
+    if (!r.count) return res.status(404).json({ error: 'Contato não encontrado' });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: 'Erro ao mudar o e-mail do contato' });
+  }
+});
+
 export default router;

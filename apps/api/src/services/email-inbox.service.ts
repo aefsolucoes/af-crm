@@ -926,6 +926,24 @@ export async function sendEmailFrom(params: {
 // ─── Vincular a um card ───────────────────────────────────────────────────────
 
 /** Busca de card pra vincular um e-mail (nome, e-mail ou telefone do contato). */
+/**
+ * E-mail na conversa do card ERRADO, corrigido pela própria conversa (Fabio 16/11: Ailon no Alexandro, Maria Rosa na Maria do Carmo) — sem precisar enxergar
+ * a caixa de quem recebeu (a da Andreia é pessoal). Leva o vínculo do e-mail (EmailMessage) junto, pras próximas respostas do fio irem pro card certo.
+ * toLeadId null = só tira da conversa. Se o card certo já tem o mesmo e-mail, a cópia errada é apagada.
+ */
+export async function moveConversationEmail(accountId: string, messageId: string, toLeadId: string | null, io: Io) {
+  const m = await prisma.message.findFirst({ where: { id: messageId, channel: 'EMAIL', lead: { accountId } }, select: { id: true, leadId: true, externalId: true } });
+  if (!m) throw new Error('Mensagem de e-mail não encontrada');
+  if (toLeadId && !(await prisma.lead.findFirst({ where: { id: toLeadId, accountId }, select: { id: true } }))) throw new Error('Card não encontrado');
+  if (toLeadId === m.leadId) return { moved: false, removed: false };
+  if (m.externalId) await prisma.emailMessage.updateMany({ where: { messageId: m.externalId, leadId: m.leadId, emailAccount: { accountId } }, data: { leadId: toLeadId } });
+  const jaTem = toLeadId && m.externalId ? await prisma.message.findFirst({ where: { leadId: toLeadId, channel: 'EMAIL', externalId: m.externalId }, select: { id: true } }) : null;
+  if (!toLeadId || jaTem) await prisma.message.deleteMany({ where: { id: m.id } });
+  else await prisma.message.update({ where: { id: m.id }, data: { leadId: toLeadId } });
+  for (const id of [m.leadId, toLeadId]) if (id) io?.to(`account_${accountId}`).emit('new_notification', { leadId: id }); // Inbox recarrega as conversas
+  return { moved: !!toLeadId && !jaTem, removed: !toLeadId || !!jaTem };
+}
+
 export async function searchLeadsForEmail(accountId: string, scopeDepartmentIds: string[], q: string) {
   const term = q.trim();
   if (term.length < 2) return [];

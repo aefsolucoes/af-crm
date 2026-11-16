@@ -4,7 +4,7 @@ import { requirePermission } from '../middleware/permission';
 import {
   listVisibleEmailAccounts, getVisibleEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
-  updateMailboxSignature, searchLeadsForEmail, linkEmailToLead,
+  updateMailboxSignature, searchLeadsForEmail, linkEmailToLead, moveConversationEmail,
   moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder, conversationEmailAttachment,
 } from '../services/email-inbox.service';
 import { getScopeDepartmentIds } from '../services/department.service';
@@ -92,6 +92,16 @@ router.post('/accounts/:id/messages/:msgId/link', async (req: AuthRequest, res: 
     res.json(await linkEmailToLead(acc, req.params.msgId, req.body?.leadId || null, io(req)));
   } catch (err) {
     fail(res, err, 'Não consegui vincular');
+  }
+});
+
+// E-mail na conversa do card errado: o admin passa pro card certo ({ toLeadId }) ou tira da conversa ({ toLeadId: null }) — moveConversationEmail.
+router.post('/conversation-message/:messageId/move', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só o administrador move e-mail entre cards' });
+  try {
+    res.json(await moveConversationEmail(req.user!.accountId, req.params.messageId, req.body?.toLeadId || null, io(req)));
+  } catch (err) {
+    fail(res, err, 'Não consegui mover o e-mail');
   }
 });
 
