@@ -10,7 +10,8 @@ import { useComposerDraft } from '@/store/composer-draft.store';
 
 /* Bloco "Custas do financiamento" da aba Financiamento (Fabio 16/11 — antes era um botão ao lado do campo de mensagem: "ficou muito estranho perto da msg").
  * Abre a janela de confirmação (cidade e UF em lista, valores, banco, imóvel novo, 1ª aquisição), pesquisa ITBI + escritura + registro no servidor e
- * põe a mensagem (formato do modelo "Taxas Financiamento Habitacional") no campo da conversa pra revisar — nada é enviado sozinho. */
+ * põe a mensagem (formato do modelo "Taxas Financiamento Habitacional") no campo da conversa pra revisar — nada é enviado sozinho.
+ * Escritura e registro: tabela oficial da UF quando o CRM tem (Fabio 16/11 "para todos"); sem tabela, pesquisa na internet — o bloco avisa "conferir". */
 
 const UFS = ['AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'];
 const BANCOS = ['CAIXA', 'BRB', 'Inter', 'Santander', 'Itaú', 'Bradesco'];
@@ -26,10 +27,13 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
   const [busy, setBusy] = useState(false);
   const [form, setForm] = useState<Form | null>(null);
   const [mensagem, setMensagem] = useState<string | null>(null);
+  // De onde vieram escritura e registro no último cálculo, e as UFs com tabela oficial no CRM (vêm com os dados do card).
+  const [origem, setOrigem] = useState<{ cartorios?: 'tabela' | 'pesquisa'; fonte?: string } | null>(null);
+  const [ufsComTabela, setUfsComTabela] = useState<string[] | null>(null);
   // Filtro digitado da lista de cidades (Fabio 16/11: "coloca pra digitar um filtro, caso precise pesquisar cidade").
   const [filtro, setFiltro] = useState('');
   const setDraft = useComposerDraft((s) => s.setDraft);
-  useEffect(() => { setMensagem(null); setForm(null); }, [leadId]);
+  useEffect(() => { setMensagem(null); setOrigem(null); setForm(null); }, [leadId]);
 
   const uf = form?.uf || '';
   const { data: municipios, isError: municipiosErro, isLoading: municipiosCarregando } = useQuery<string[]>({
@@ -52,6 +56,7 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
     setBusy(true);
     try {
       const { data } = await api.get(`/api/custas/fh/${leadId}`);
+      setUfsComTabela(Array.isArray(data.ufsComTabela) ? data.ufsComTabela : null);
       setForm({
         cidade: data.cidade || '', uf: UFS.includes(data.uf) ? data.uf : '', origemCidade: data.origemCidade || '',
         valorImovel: valorParaEdicao(data.valorImovel || ''), financiado: valorParaEdicao(data.financiado || ''),
@@ -83,6 +88,7 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
       if (!data) throw new Error('A pesquisa demorou demais — tente de novo');
       if (data.status === 'ERRO') throw new Error(data.erro || 'Não consegui calcular as custas agora');
       setMensagem(data.mensagem);
+      setOrigem({ cartorios: data.cartorios, fonte: data.cartoriosFonte });
       setForm(null);
       usarNaConversa(data.mensagem);
     } catch (e: any) {
@@ -114,6 +120,8 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
 
       {mensagem && (
         <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-2">
+          {origem?.cartorios === 'pesquisa' && <p className="mb-2 rounded bg-amber-50 px-2 py-1 text-xs font-medium text-amber-800">⚠️ Escritura e registro: pesquisa na internet — conferir (o CRM ainda não tem a tabela oficial deste estado).</p>}
+          {origem?.cartorios === 'tabela' && origem.fonte && <p className="mb-2 text-[11px] text-slate-500">Escritura e registro pela {origem.fonte}.</p>}
           <div className="max-h-56 overflow-y-auto whitespace-pre-wrap text-xs text-slate-700">{mensagem}</div>
           <div className="mt-2 flex flex-wrap gap-2">
             <button onClick={() => usarNaConversa(mensagem)} className="inline-flex items-center gap-1 rounded border border-emerald-300 px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50">
@@ -129,7 +137,7 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
       <Modal open={!!form} onClose={() => { if (!busy) setForm(null); }} title="Custas do financiamento" size="sm">
         {form && (
           <div className="space-y-3 text-sm text-slate-600">
-            <p className="text-xs">Confira os valores do cálculo. A estimativa pesquisa a alíquota do ITBI da prefeitura e as tabelas dos cartórios do estado (escritura e registro) em fontes oficiais. A mensagem vai pro campo pra você revisar — nada é enviado sozinho.</p>
+            <p className="text-xs">Confira os valores do cálculo. O ITBI vem da pesquisa da alíquota da prefeitura; escritura e registro, da tabela oficial do estado. A mensagem vai pro campo pra você revisar — nada é enviado sozinho.</p>
             <div className="grid grid-cols-[1fr_5rem] gap-2">
               <label className="text-xs">Cidade{form.origemCidade ? <span className="text-slate-400"> · pela {form.origemCidade}</span> : null}
                 {listaCidades ? (
@@ -168,6 +176,9 @@ export function LeadCustasFh({ leadId }: { leadId: string }) {
                 </select>
               </label>
             </div>
+            {ufsComTabela && UFS.includes(form.uf) && (ufsComTabela.includes(form.uf)
+              ? <p className="text-xs text-slate-500">Escritura e registro pela tabela oficial de {form.uf} (2026).</p>
+              : <p className="text-xs text-amber-700">⚠️ O CRM não tem a tabela oficial de {form.uf}: escritura e registro vêm de pesquisa na internet — conferir.</p>)}
             {/caixa|brb/i.test(form.banco) && <p className="text-xs text-amber-700">CAIXA/BRB: a mensagem avisa do pacote comercial e do seguro da taxa bonificada, apresentados no final do processo.</p>}
             <label className="flex items-start gap-2 text-xs cursor-pointer">
               <input type="checkbox" checked={form.imovelNovo} onChange={(e) => mudar({ imovelNovo: e.target.checked })} className="mt-0.5" />

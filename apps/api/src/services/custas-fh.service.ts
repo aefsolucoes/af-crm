@@ -1,12 +1,15 @@
 import { prisma } from '../lib/prisma';
+import { cartoriosUf, tabelaDaUf, ufsComTabela } from './emolumentos';
+
+export { ufsComTabela };
 
 /**
  * ESTIMATIVA DE CUSTAS DO FINANCIAMENTO HABITACIONAL (Fabio 16/11: "tem como calcular as taxas de FH para determinada região? Escritura, registro e ITBI?" +
  * "um botão ao lado da msg para calcular essas taxas com uma msg e os valores" + "pode puxar pela certidão de ônus do imóvel a cidade").
  *
  * - Cidade/UF: 1º a certidão de ônus/matrícula lida (endereço ou cartório), depois o card (cidade_imovel, endereço "Cidade/UF", proposta), por fim o CEP (só a UF).
- * - Alíquota do ITBI da prefeitura (com a redução da parte financiada pelo SFH, onde existir) e a tabela de emolumentos do Registro de Imóveis do estado: pesquisa na web
- *   (fontes oficiais), no servidor. O ITBI é calculado aqui (a conta não fica com o modelo); o registro vem da tabela.
+ * - Alíquota do ITBI da prefeitura (com a redução da parte financiada pelo SFH, onde existir): pesquisa na web (fontes oficiais), no servidor. O ITBI é calculado aqui.
+ * - Escritura e registro: tabela OFICIAL 2026 da UF (src/data/emolumentos-2026.json, Fabio 16/11 "para todos"); UF sem tabela no arquivo → pesquisa, marcada "conferir".
  * - Escritura: Fabio 16/11 ("não colocar isso para o cliente, pode calcular os custos da escritura também") — calcula a escritura pública de compra e venda no tabelionato de notas
  *   pela tabela do estado (antes a mensagem dizia que o contrato do banco tem força de escritura e não tinha custo).
  * - Banco CAIXA ou BRB (Fabio 16/11): a mensagem avisa do pacote comercial e do seguro da taxa bonificada, apresentados no final do processo.
@@ -20,6 +23,8 @@ export type CustasFh = {
   registro: { total: number; compraVenda: number | null; alienacao: number | null; obs: string; fonte: string };
   escritura: { valor: number; compraVenda?: number | null; financiamento?: number | null; obs: string; fonte: string } | null;
   total: number; confianca: string; origemCidade: string; imovelNovo?: boolean; primeiraAquisicao?: boolean; banco?: string;
+  /** De onde vieram escritura e registro: tabela oficial da UF ou pesquisa na internet (conferir). */
+  cartorios: 'tabela' | 'pesquisa'; cartoriosFonte: string;
 };
 
 const cache = new Map<string, { em: number; v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao' | 'banco'> }>();
@@ -35,29 +40,9 @@ const num = (v: unknown): number => {
 const brl = (n: number) => n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const pct = (n: number) => `${n.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%`;
 
-/* Distrito Federal pela TABELA OFICIAL (Fabio 16/11: "no DF o valor é cobrado uma vez para o financiamento e outra para o de compra e venda"):
- * TJDFT Resolução 2 de 19/12/2025 (vigência 2026) — totais com CCRCPN — + ISSQN 5% (tabela completa da ANOREG-DF).
- * - Escritura (Tabela I, item 1.1): dois atos com financiamento — compra e venda pelo valor do imóvel + financiamento/alienação pelo valor financiado.
- * - Registro (Tabela III, item 1): compra e venda + garantia, AMBOS pelo valor do imóvel (nota 1: "o registro de direitos reais de garantia será cobrado
- *   de acordo com o item 1 da Tabela III, utilizado como base de cálculo o valor do imóvel"). A pesquisa na web errava isso (usava o valor financiado).
- * - 1ª aquisição residencial pelo SFH: 50% (Lei 6.015/73, art. 290) nos dois. */
-const DF_NOTAS: [number, number][] = [[9524.89, 439.29], [15272.67, 667.73], [28738.89, 1370.6], [57477.78, 1845.05], [85888.21, 1932.9], [200351.09, 2020.76], [343224.42, 2196.48], [858882.16, 2372.2], [1313777.69, 2547.92], [1806444.32, 2723.63], [Infinity, 2899.35]];
-const DF_REGISTRO: [number, number][] = [[32844.44, 667.73], [82111.11, 843.44], [164222.21, 1019.16], [262755.54, 1142.17], [574777.74, 1317.88], [870377.72, 1493.61], [1149555.47, 1669.33], [1477999.89, 1845.05], [1970666.52, 2020.76], [Infinity, 2196.48]];
-const FONTE_DF = 'https://www.tjdft.jus.br/informacoes/extrajudicial/tabela-de-custas';
-const faixaDf = (tabela: [number, number][], valor: number) => (tabela.find(([ate]) => valor <= ate) || tabela[tabela.length - 1])[1];
-const comIss = (n: number) => Math.round(n * 1.05 * 100) / 100;
-export function cartoriosDf(valorImovel: number, financiado: number, primeiraAquisicao: boolean) {
-  const fator = primeiraAquisicao ? 0.5 : 1;
-  const r2 = (n: number) => Math.round(n * fator * 100) / 100;
-  const escCv = r2(comIss(faixaDf(DF_NOTAS, valorImovel)));
-  const escFin = financiado > 0 ? r2(comIss(faixaDf(DF_NOTAS, financiado))) : 0;
-  const regCv = r2(comIss(faixaDf(DF_REGISTRO, valorImovel)));
-  const regGar = financiado > 0 ? regCv : 0;
-  return {
-    escritura: { compraVenda: escCv, financiamento: escFin || null, valor: Math.round((escCv + escFin) * 100) / 100 },
-    registro: { compraVenda: regCv, alienacao: regGar || null, total: Math.round((regCv + regGar) * 100) / 100 },
-  };
-}
+/* Escritura e registro pela TABELA OFICIAL da UF (Fabio 16/11: "tem que conferir pela tabela oficial de cada estado, para todos") — dados em src/data/emolumentos-2026.json,
+ * cálculo em emolumentos.ts (no DF: escritura de 2 atos e garantia pelo valor do imóvel, nota 1 da Tabela III do TJDFT). UF sem tabela: pesquisa, marcada "conferir". */
+const AVISO_PESQUISA = 'pesquisa na internet — conferir';
 
 /** UF pela faixa do CEP (Correios). Pura. */
 export function ufDoCep(cep: unknown): string | null {
@@ -135,13 +120,19 @@ async function pesquisaJson(sistema: string, pergunta: string, rotulo: string): 
   finally { clearTimeout(timer); }
 }
 
-/** ITBI + registro (prefeitura + Registro de Imóveis) e, em PARALELO, a escritura (Tabelionato de Notas) — juntas passavam do tempo (Fabio 16/11 pediu a escritura). */
+/** ITBI + registro (prefeitura + Registro de Imóveis) e, em PARALELO, a escritura (Tabelionato de Notas) — juntas passavam do tempo (Fabio 16/11 pediu a escritura).
+ *  UF com tabela oficial no arquivo: só o ITBI (escritura e registro saem da tabela). */
 export async function pesquisar(cidade: string, uf: string, valorImovel: number, financiado: number, flags: { imovelNovo?: boolean; primeiraAquisicao?: boolean } = {}): Promise<any | null> {
+  if (tabelaDaUf(uf)) {
+    const sistemaItbi = 'Você estima o ITBI de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais (lei/decreto/site da prefeitura): alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo. NÃO calcule escritura nem registro. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
+    const perguntaItbi = `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} Qual a alíquota do ITBI?`;
+    return pesquisaJson(sistemaItbi, perguntaItbi, 'ITBI');
+  }
   const sistema = 'Você estima as custas de quem compra um imóvel residencial com FINANCIAMENTO BANCÁRIO no Brasil (SFH/SFI). Pesquise em fontes OFICIAIS e atuais: lei/decreto/site da prefeitura (ITBI: alíquota geral, alíquota reduzida para a parte financiada pelo SFH quando a lei municipal prevê, base de cálculo) e a tabela de emolumentos do Registro de Imóveis do estado vigente (Tribunal de Justiça/Corregedoria, ANOREG, Colégio Registral). Calcule o registro do contrato: registro da compra e venda (pelo valor do imóvel) + registro da alienação fiduciária/hipoteca (pela base que a tabela/notas do estado mandam pra direitos reais de garantia — em alguns estados é o valor do imóvel, em outros o valor financiado; diga qual usou), com as taxas/fundos/ISS que a tabela do estado já soma ao emolumento; se o estado der desconto do SFH no registro, aplique e diga. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição. NÃO inclua escritura, certidões nem avaliação do banco. Responda SÓ um JSON, sem texto fora dele: {"cidade":"","uf":"","itbi":{"aliquotaGeral":<número em %>,"aliquotaFinanciado":<número em % ou null>,"base":"texto curto da base de cálculo","regra":"texto curto da regra (ex.: 3% sobre o valor; 0,5% sobre a parte financiada pelo SFH até X)","fonte":"url oficial"},"registro":{"compraVenda":<R$>,"alienacao":<R$>,"total":<R$>,"obs":"texto curto","fonte":"url oficial"},"confianca":"alta|media|baixa"}';
   const pergunta = `Imóvel em ${cidade}/${uf}. Valor do imóvel (compra): ${brl(valorImovel)}. Valor financiado pelo banco: ${brl(financiado)}. ${flags.imovelNovo ? 'Imóvel NOVO (1ª transmissão, comprado da construtora).' : 'Imóvel usado.'} ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador financiada pelo SFH (aplique o desconto de 50% do registro).' : 'Não é (ou não se sabe se é) a 1ª aquisição pelo SFH: calcule o registro SEM o desconto.'} Estime o ITBI e o registro do contrato no Registro de Imóveis.`;
   const sistemaEsc = 'Você estima o custo da ESCRITURA PÚBLICA de compra e venda de um imóvel residencial no Tabelionato de Notas, no Brasil. Pesquise a tabela de emolumentos do TABELIONATO DE NOTAS do estado vigente em fontes OFICIAIS (Tribunal de Justiça/Corregedoria, Colégio Notarial, ANOREG). Com financiamento são DOIS atos: a compra e venda (pelo valor do imóvel) e o financiamento/alienação fiduciária (pelo valor financiado, salvo regra diferente na tabela do estado) — some os dois, com as taxas/fundos/ISS que a tabela soma ao emolumento. Desconto de 50% da 1ª aquisição residencial pelo SFH (Lei 6.015/73, art. 290): aplique SÓ se o pedido disser que é a 1ª aquisição. Responda SÓ um JSON, sem texto fora dele: {"escritura":{"compraVenda":<R$>,"financiamento":<R$ ou null>,"valor":<R$ total dos dois>,"obs":"texto curto","fonte":"url oficial"}}';
   const perguntaEsc = `Imóvel em ${cidade}/${uf}, valor ${brl(valorImovel)}, financiado ${brl(financiado)}. ${flags.primeiraAquisicao ? 'É a 1ª aquisição residencial do comprador pelo SFH (aplique o desconto de 50%).' : 'Sem o desconto da 1ª aquisição.'} Estime a escritura pública (compra e venda + financiamento).`;
-  const [r, e] = await Promise.all([pesquisaJson(sistema, pergunta, 'ITBI/registro'), uf === 'DF' ? Promise.resolve(null) : pesquisaJson(sistemaEsc, perguntaEsc, 'escritura')]);
+  const [r, e] = await Promise.all([pesquisaJson(sistema, pergunta, 'ITBI/registro'), pesquisaJson(sistemaEsc, perguntaEsc, 'escritura')]);
   if (!r) return null;
   if (e?.escritura) r.escritura = e.escritura;
   return r;
@@ -197,30 +188,34 @@ export async function estimarCustasFh(accountId: string, leadId: string, por?: s
   if (!loc) return { ok: false, erro: 'Não achei a cidade/UF do imóvel (certidão de ônus, card ou CEP)' };
   const flags = { imovelNovo: conf?.imovelNovo === true, primeiraAquisicao: conf?.primeiraAquisicao === true };
   const banco = conf?.banco !== undefined && conf.banco !== null ? String(conf.banco).trim() : bancoDoCard(cf);
-  const chave = `v3|${loc.uf}|${loc.cidade.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()}|${Math.round(valorImovel)}|${Math.round(financiado)}|${flags.imovelNovo ? 'N' : 'U'}|${flags.primeiraAquisicao ? '1' : '0'}`;
+  const chave = `v4|${loc.uf}|${loc.cidade.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()}|${Math.round(valorImovel)}|${Math.round(financiado)}|${flags.imovelNovo ? 'N' : 'U'}|${flags.primeiraAquisicao ? '1' : '0'}`;
   let base = cache.get(chave);
   if (!base || Date.now() - base.em > CACHE_MS) {
+    // Escritura e registro pela tabela oficial da UF (quando o arquivo tem); a pesquisa fica só pro ITBI.
+    const tab = cartoriosUf(loc.uf, valorImovel, financiado, flags.primeiraAquisicao, loc.cidade);
     const r = await pesquisar(loc.cidade, loc.uf, valorImovel, financiado, flags);
     const aliqG = num(r?.itbi?.aliquotaGeral);
-    const df = loc.uf === 'DF' ? cartoriosDf(valorImovel, financiado, flags.primeiraAquisicao) : null;
-    const regTotal = df ? df.registro.total : (num(r?.registro?.total) || (num(r?.registro?.compraVenda) + num(r?.registro?.alienacao)));
-    if (!r || !aliqG || !regTotal) return { ok: false, erro: 'A pesquisa das alíquotas e da tabela do cartório não fechou agora — tente de novo em alguns minutos' };
+    const regTotal = tab ? tab.registro.total : (num(r?.registro?.total) || (num(r?.registro?.compraVenda) + num(r?.registro?.alienacao)));
+    if (!r || !aliqG || !regTotal) return { ok: false, erro: tab ? 'A pesquisa da alíquota do ITBI não fechou agora — tente de novo em alguns minutos' : 'A pesquisa das alíquotas e da tabela do cartório não fechou agora — tente de novo em alguns minutos' };
     const aliqF = r.itbi?.aliquotaFinanciado === null || r.itbi?.aliquotaFinanciado === undefined ? null : num(r.itbi.aliquotaFinanciado);
     // ITBI calculado AQUI: parte financiada pelo SFH com a alíquota reduzida (quando a lei prevê), o resto com a geral.
     const itbi = aliqF !== null && aliqF < aliqG && financiado > 0
       ? (Math.max(0, valorImovel - financiado) * aliqG + Math.min(financiado, valorImovel) * aliqF) / 100
       : (valorImovel * aliqG) / 100;
-    const escrituraValor = df ? df.escritura.valor : (num(r?.escritura?.valor) || (num(r?.escritura?.compraVenda) + num(r?.escritura?.financiamento)));
+    const escrituraValor = tab ? tab.escritura.valor : (num(r?.escritura?.valor) || (num(r?.escritura?.compraVenda) + num(r?.escritura?.financiamento)));
+    const t = tabelaDaUf(loc.uf);
+    const marca = (obs: unknown) => `${AVISO_PESQUISA.toUpperCase()}: ${String(obs || '').slice(0, 280)}`;
     const v: Omit<CustasFh, 'origemCidade' | 'imovelNovo' | 'primeiraAquisicao' | 'banco'> = {
-      cidade: String(r.cidade || loc.cidade), uf: String(r.uf || loc.uf).toUpperCase(), valorImovel, financiado,
+      cidade: String(r.cidade || loc.cidade), uf: loc.uf, valorImovel, financiado,
       itbi: { valor: Math.round(itbi * 100) / 100, aliquotaGeral: aliqG, aliquotaFinanciado: aliqF !== null && aliqF < aliqG ? aliqF : null, regra: String(r.itbi?.regra || '').slice(0, 300), fonte: String(r.itbi?.fonte || '').slice(0, 300) },
-      registro: df
-        ? { total: df.registro.total, compraVenda: df.registro.compraVenda, alienacao: df.registro.alienacao, obs: `Tabela oficial do TJDFT 2026 (Tabela III, item 1 + nota 1: garantia pelo valor do imóvel), com ISS 5%${flags.primeiraAquisicao ? ' e 50% da 1ª aquisição SFH' : ''}`, fonte: FONTE_DF }
-        : { total: Math.round(regTotal * 100) / 100, compraVenda: num(r.registro?.compraVenda) || null, alienacao: num(r.registro?.alienacao) || null, obs: String(r.registro?.obs || '').slice(0, 300), fonte: String(r.registro?.fonte || '').slice(0, 300) },
-      escritura: df
-        ? { valor: df.escritura.valor, compraVenda: df.escritura.compraVenda, financiamento: df.escritura.financiamento, obs: `Tabela oficial do TJDFT 2026 (Tabela I, item 1.1): compra e venda + financiamento, com ISS 5%${flags.primeiraAquisicao ? ' e 50% da 1ª aquisição SFH' : ''}`, fonte: FONTE_DF }
-        : escrituraValor ? { valor: Math.round(escrituraValor * 100) / 100, compraVenda: num(r.escritura?.compraVenda) || null, financiamento: num(r.escritura?.financiamento) || null, obs: String(r.escritura?.obs || '').slice(0, 300), fonte: String(r.escritura?.fonte || '').slice(0, 300) } : null,
+      registro: tab
+        ? { total: tab.registro.total, compraVenda: tab.registro.compraVenda, alienacao: tab.registro.alienacao, obs: tab.registro.obs, fonte: tab.registro.fonte }
+        : { total: Math.round(regTotal * 100) / 100, compraVenda: num(r.registro?.compraVenda) || null, alienacao: num(r.registro?.alienacao) || null, obs: marca(r.registro?.obs), fonte: String(r.registro?.fonte || '').slice(0, 300) },
+      escritura: tab
+        ? { valor: tab.escritura.valor, compraVenda: tab.escritura.compraVenda, financiamento: tab.escritura.financiamento, obs: tab.escritura.obs, fonte: tab.escritura.fonte }
+        : escrituraValor ? { valor: Math.round(escrituraValor * 100) / 100, compraVenda: num(r.escritura?.compraVenda) || null, financiamento: num(r.escritura?.financiamento) || null, obs: marca(r.escritura?.obs), fonte: String(r.escritura?.fonte || '').slice(0, 300) } : null,
       total: 0, confianca: String(r.confianca || '').toLowerCase(),
+      cartorios: tab ? 'tabela' : 'pesquisa', cartoriosFonte: tab && t ? `tabela oficial ${t.nome} — ${t.vigencia}` : AVISO_PESQUISA,
     };
     v.total = Math.round((v.itbi.valor + v.registro.total + (v.escritura?.valor || 0)) * 100) / 100;
     base = { em: Date.now(), v };
@@ -233,6 +228,9 @@ export async function estimarCustasFh(accountId: string, leadId: string, por?: s
     ? `${pct(c.itbi.aliquotaGeral)} sobre a parte paga com recursos próprios e ${pct(c.itbi.aliquotaFinanciado)} sobre a parte financiada`
     : `${pct(c.itbi.aliquotaGeral)} sobre ${brl(c.valorImovel)}`;
   const mensagem = montarMensagemCustas(c, nome);
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🧮 Estimativa de custas do FH${por ? ` (pedida por ${por})` : ''} — ${c.cidade}/${c.uf} (cidade pela ${c.origemCidade}); imóvel ${brl(c.valorImovel)}${flags.imovelNovo ? ' (novo)' : ''}, financiado ${brl(c.financiado)}${flags.primeiraAquisicao ? ', 1ª aquisição SFH' : ''}.\n• ITBI ${brl(c.itbi.valor)} — ${c.itbi.regra || itbiTxt}${c.itbi.fonte ? ` (fonte: ${c.itbi.fonte})` : ''}\n• Registro ${brl(c.registro.total)}${c.registro.compraVenda ? ` (compra e venda ${brl(c.registro.compraVenda)}` : ''}${c.registro.alienacao ? ` + alienação ${brl(c.registro.alienacao)})` : c.registro.compraVenda ? ')' : ''}${c.registro.obs ? ` — ${c.registro.obs}` : ''}${c.registro.fonte ? ` (fonte: ${c.registro.fonte})` : ''}\n• Escritura ${c.escritura ? `${brl(c.escritura.valor)}${c.escritura.obs ? ` — ${c.escritura.obs}` : ''}${c.escritura.fonte ? ` (fonte: ${c.escritura.fonte})` : ''}` : 'não achada na pesquisa'}${banco ? `\n• Banco: ${banco}` : ''}\n• Total ${brl(c.total)} · confiança da pesquisa: ${c.confianca || '—'}. Estimativa: conferir antes de afirmar ao cliente.` } }).catch(() => {});
+  const origemCartorios = c.cartorios === 'tabela'
+    ? `• Escritura e registro pela ${c.cartoriosFonte}.`
+    : `• ⚠️ Escritura e registro: ${AVISO_PESQUISA} (o CRM ainda não tem a tabela oficial de ${c.uf}).`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🧮 Estimativa de custas do FH${por ? ` (pedida por ${por})` : ''} — ${c.cidade}/${c.uf} (cidade pela ${c.origemCidade}); imóvel ${brl(c.valorImovel)}${flags.imovelNovo ? ' (novo)' : ''}, financiado ${brl(c.financiado)}${flags.primeiraAquisicao ? ', 1ª aquisição SFH' : ''}.\n${origemCartorios}\n• ITBI ${brl(c.itbi.valor)} — ${c.itbi.regra || itbiTxt}${c.itbi.fonte ? ` (fonte: ${c.itbi.fonte})` : ''}\n• Registro ${brl(c.registro.total)}${c.registro.compraVenda ? ` (compra e venda ${brl(c.registro.compraVenda)}` : ''}${c.registro.alienacao ? ` + garantia ${brl(c.registro.alienacao)})` : c.registro.compraVenda ? ')' : ''}${c.registro.obs ? ` — ${c.registro.obs}` : ''}${c.registro.fonte ? ` (fonte: ${c.registro.fonte})` : ''}\n• Escritura ${c.escritura ? `${brl(c.escritura.valor)}${c.escritura.compraVenda && c.escritura.financiamento ? ` (compra e venda ${brl(c.escritura.compraVenda)} + financiamento ${brl(c.escritura.financiamento)})` : ''}${c.escritura.obs ? ` — ${c.escritura.obs}` : ''}${c.escritura.fonte ? ` (fonte: ${c.escritura.fonte})` : ''}` : 'não achada na pesquisa'}${banco ? `\n• Banco: ${banco}` : ''}\n• Total ${brl(c.total)} · confiança da pesquisa do ITBI${c.cartorios === 'pesquisa' ? ' e dos cartórios' : ''}: ${c.confianca || '—'}. Estimativa: conferir antes de afirmar ao cliente.` } }).catch(() => {});
   return { ok: true, mensagem, custas: c };
 }
