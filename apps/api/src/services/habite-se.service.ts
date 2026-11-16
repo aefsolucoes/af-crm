@@ -224,7 +224,8 @@ const RESPOSTA_SYSTEM = `Você lê a resposta de um cliente de crédito com gara
 - TEM: disse que tem habite-se (ou a carta/certidão de habite-se, ou que a construção já foi averbada/regularizada com habite-se).
 - NAO_TEM: disse que não tem, que nunca tirou, que a casa não é regularizada/averbada, ou que ainda vai tirar / está em andamento (ainda não tem).
 - NAO_SABE: não sabe, acha que sim/não sem certeza, vai verificar ou perguntar a alguém.
-- SEM_RESPOSTA: não falou do habite-se (outro assunto, cumprimento, só arquivo).`;
+- SEM_RESPOSTA: não falou do habite-se (outro assunto, cumprimento, só arquivo).
+A conversa pode vir com as falas dos dois lados (NÓS = a gente, CLIENTE = ele). Só vale o que o CLIENTE disse sobre o habite-se / a construção / o documento da casa. "Sim", "ok", "certo", "isso" que respondem a OUTRA pergunta NOSSA feita depois da do habite-se (contato da vistoria, horário, documento, valor…) NÃO são resposta do habite-se: SEM_RESPOSTA (Fabio 16/11, Francisco: o "Sim" do contato da vistoria virou "tem habite-se").`;
 
 /** Lê o que o cliente disse sobre o habite-se nas mensagens dadas. null = erro (tenta de novo depois). */
 async function lerResposta(pergunta: string, falas: string[]): Promise<{ resposta: 'TEM' | 'NAO_TEM' | 'NAO_SABE' | 'SEM_RESPOSTA'; trecho: string } | null> {
@@ -235,7 +236,7 @@ async function lerResposta(pergunta: string, falas: string[]): Promise<{ respost
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5', max_tokens: 300, system: RESPOSTA_SYSTEM,
-      messages: [{ role: 'user', content: `PERGUNTA NOSSA: ${pergunta}\n\nO QUE O CLIENTE ESCREVEU DEPOIS:\n${falas.map((f) => `- ${f}`).join('\n')}` }],
+      messages: [{ role: 'user', content: `PERGUNTA NOSSA: ${pergunta}\n\nO QUE VEIO DEPOIS (em ordem):\n${falas.map((f) => `- ${f}`).join('\n')}` }],
     }),
     signal: AbortSignal.timeout(30_000),
   }).catch(() => null);
@@ -253,6 +254,19 @@ async function falasDoCliente(leadId: string, desde: Date, so?: RegExp): Promise
   });
   const ok = msgs.filter((m) => !ehProposta(m.content || '') && (!so || so.test(m.content || '')));
   return { textos: ok.map((m) => String(m.content).replace(/\s+/g, ' ').slice(0, 400)), ultima: msgs.length ? msgs[msgs.length - 1].createdAt : null };
+}
+
+/** A conversa (nós e o cliente) depois de `desde`, pra ler a resposta do habite-se no contexto: sem as nossas perguntas, um "Sim" dado a OUTRA pergunta
+ *  (Francisco 16/11: "o engenheiro pode combinar com você nesse número?" → "Sim") era lido como "tem habite-se". `textos` vazio = o cliente não escreveu nada. */
+async function conversaDesde(leadId: string, desde: Date): Promise<{ textos: string[]; ultima: Date | null }> {
+  const msgs = await prisma.message.findMany({
+    where: { leadId, createdAt: { gt: desde }, content: { not: '' } },
+    orderBy: { createdAt: 'asc' }, take: 40, select: { content: true, createdAt: true, direction: true },
+  });
+  const cliente = msgs.filter((m) => m.direction === 'INBOUND');
+  if (!cliente.some((m) => !ehProposta(m.content || ''))) return { textos: [], ultima: cliente.length ? cliente[cliente.length - 1].createdAt : null };
+  const linhas = msgs.filter((m) => !ehProposta(m.content || '')).map((m) => `${m.direction === 'INBOUND' ? 'CLIENTE' : 'NÓS'}: ${String(m.content).replace(/\s+/g, ' ').slice(0, 400)}`);
+  return { textos: linhas, ultima: cliente.length ? cliente[cliente.length - 1].createdAt : null };
 }
 
 /** Santander/Creditas que ainda vão rodar sozinhos viram "NÃO RODEI"; aprovação deles que já saiu → nota (1x). */
@@ -300,7 +314,7 @@ async function lerRespostaUmaVez(accountId: string, leadId: string): Promise<Sta
   const idade = (iso: string | undefined) => (iso ? Date.now() - new Date(iso).getTime() : 0) / 86_400_000;
   if (idade(h.askedAt) > 30 || (h.status === 'NAO_SABE' && idade(h.respondidoAt) > 10)) return h.status;
   const desde = new Date(Math.max(new Date(h.askedAt).getTime(), h.lidoAte ? new Date(h.lidoAte).getTime() : 0));
-  const { textos, ultima } = await falasDoCliente(leadId, desde);
+  const { textos, ultima } = await conversaDesde(leadId, desde);
   if (!textos.length) return h.status;
   const r = await lerResposta(h.pergunta || 'A casa tem habite-se?', textos);
   if (!r) return h.status;
