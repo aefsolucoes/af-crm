@@ -144,7 +144,10 @@ export async function corrigirLeituraDocumento(params: { accountId: string; lead
 
   // Classificação rápida (_docInfo) coerente com a correção: a conferência ("chegou tudo?") e o organizador da pasta leem o tipo/titular dali.
   const tipoLimpo = limpo(novo.tipo, 40);
-  const infoNovo = novo.resultado === 'NAO_DOCUMENTO' ? 'IGNORAR' : `${tipoLimpo}|${ehDocDoImovel(novo.tipo) ? '' : limpo(String(novo.titular || '').split(';')[0], 60)}`;
+  // Mudou só a situação (OK ↔ problema) e o tipo/titular ficaram: a classificação fica como estava (16/11, Francisco: "MATRICULA DO IMOVEL|…|MAT 10371 FICHA 1" virou
+  // "MATRICULA|" — a folha se perdia e o Santander, que procura "MATRICULA DO IMOVEL" na pasta, deixaria de achar a certidão).
+  const soSituacao = !!infoAntes && infoAntes !== 'IGNORAR' && novo.resultado !== 'NAO_DOCUMENTO' && (base.tipo || '') === novo.tipo && (base.titular || '') === (novo.titular || '');
+  const infoNovo = soSituacao ? infoAntes! : novo.resultado === 'NAO_DOCUMENTO' ? 'IGNORAR' : `${tipoLimpo}|${ehDocDoImovel(novo.tipo) ? '' : limpo(String(novo.titular || '').split(';')[0], 60)}`;
   const mexeInfo = infoNovo !== infoAntes;
 
   // Só as chaves deste arquivo, num UPDATE só (corrida no customFields, 29/10): a leitura, a classificação, e sai da lista de "protegido por senha"/"falhou a leitura" (a equipe já viu o arquivo).
