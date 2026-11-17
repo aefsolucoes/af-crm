@@ -616,6 +616,7 @@ const BUILTIN_LEAD_FIELDS: { key: string; label: string }[] = [
   { key: 'nome_completo_confirmado', label: 'Preencha "Sim" SÓ no bloco NOME INCOMPLETO NA PROPOSTA, quando o cliente AFIRMAR que no documento o nome é exatamente o que veio na proposta' },
   { key: 'cadastro_confirmado', label: 'Cliente CONFIRMOU que nome, CPF e data de nascimento da proposta estão corretos — preencha "Sim" SÓ quando ele disser isso (resposta à pergunta de confirmação do cadastro)' },
   { key: 'ocorrencias_cliente', label: 'Resposta do cliente à orientação Serasa/SCPC/protesto (bloco RESTRIÇÃO NO NOME): "sem" quando ele disser que conferiu e NÃO há ocorrência; "com" quando confirmar ocorrência — só com esse bloco' },
+  { key: 'motivo_reprovacao', label: 'Preencha "perguntou" SÓ com o bloco MOTIVO DA REPROVAÇÃO — FINANCIAMENTO HABITACIONAL mandando, quando o cliente perguntar por que não foi aprovado (o CRM consulta o cadastro dele na CAIXA e responde)' },
   { key: 'renda_composicao', label: 'Resposta do cliente à pergunta de quem compõe a renda do casal (bloco RENDA DO CASAL): "so_um" quando só quem mandou a renda compõe; "os_dois" quando o outro também vai compor — só com esse bloco' },
   { key: 'falando_com_relacao', label: 'Relação de quem está falando com o titular (Esposa, Marido, Filho(a), Pai/Mãe, Sócio(a), Contador(a), Outro)' },
   { key: 'participante_1', label: 'Nome do participante 1' },
@@ -925,6 +926,11 @@ export async function applyAiExtractedActions(
           delete patch.contato_vistoria;
           vc.pedirNomeTelefoneContato(accountId, lead.id, quem, io as any).catch((e: any) => console.error('[Contato vistoria] pedir nome/telefone:', e?.message));
         }
+      }
+      // Motivo da reprovação no FH (Fabio 17/11): o cliente perguntou por que não aprovou → consulta do nome na CAIXA e resposta pelo CRM. Não vira campo do card.
+      if (patch.motivo_reprovacao !== undefined) {
+        if (/perguntou/i.test(patch.motivo_reprovacao)) (require('./motivo-reprovacao.service') as typeof import('./motivo-reprovacao.service')).motivoPerguntado(accountId, lead.id, io as any).catch((e: any) => console.error('[Motivo da reprovação]', e?.message));
+        delete patch.motivo_reprovacao;
       }
       if (Object.keys(patch).length) {
         // Lido de novo: as ações acima (Perdido, etapa, Venda Futura) também gravam no customFields — a cópia do início apagaria o que elas gravaram.

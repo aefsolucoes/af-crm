@@ -9,7 +9,7 @@ import { templateAtualizacaoDoLead } from './template-atualizacao';
  * sem | com). Estado em _ocorrencias; uma vez por consulta (consultadoEm). */
 
 type Cf = Record<string, any>;
-type Oc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SEM' | 'COM' | 'EQUIPE'; consultadoEm?: string; nomes?: string[]; avisados?: string[]; titular?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
+type Oc = { status: 'PENDING' | 'TEMPLATE' | 'ASKED' | 'SEM' | 'COM' | 'EQUIPE' | 'ENCERRADO'; consultadoEm?: string; nomes?: string[]; avisados?: string[]; titular?: boolean; at?: string; templateAt?: string; askedAt?: string; respondidoAt?: string };
 const WAIT_MAX_MS = 48 * 3600_000;
 const OCORRENCIA_RE = /constam ocorr[eê]ncias/i;
 
@@ -54,8 +54,10 @@ Consultar o próprio CPF é gratuito. Depois me conta o que apareceu. 🙂`;
 
 /** Depois de cada consulta de Oportunidades de Negócios (rota POST /caixa-cadastro/:id/consulta): todos consultados e alguém com ocorrência → orienta o cliente. */
 export async function verificarOcorrencias(accountId: string, leadId: string, io?: any): Promise<void> {
-  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { status: true, customFields: true } });
   if (!l) return;
+  // Card fechado (reprovado que perguntou o motivo — Fabio 17/11): a consulta só responde o motivo; nada de orientação nem documentação da CAIXA.
+  if (l.status !== 'OPEN') { await (require('./motivo-reprovacao.service') as typeof import('./motivo-reprovacao.service')).consultaTerminou(accountId, leadId, io); return; }
   const cf = (l.customFields || {}) as Cf;
   const consultadoEm = cf._caixaCadastro?.consultadoEm as string | undefined;
   if (!consultadoEm || Date.now() - Date.parse(consultadoEm) > 3600_000) return; // só a consulta que acabou de fechar (todos os participantes)
@@ -83,10 +85,18 @@ export async function verificarOcorrencias(accountId: string, leadId: string, io
 
 /** Manda a orientação ao cliente (07h–21h). Conversa fechada: template de atualização; quando ele responder, a orientação sai no próximo minuto. */
 export async function enviarOrientacao(accountId: string, leadId: string, io?: any): Promise<void> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, aiAutoReplyActive: true, customFields: true } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, status: true, aiAutoReplyActive: true, customFields: true } });
   const cf = (lead?.customFields || {}) as Cf;
   const oc = cf._ocorrencias as Oc | undefined;
   if (!lead || !oc || (oc.status !== 'PENDING' && oc.status !== 'TEMPLATE') || cf._autoPaused || cf._caixaTeste) return; // _caixaTeste: modo teste (Fabio 11/11)
+  // Card reprovado/fechado (Fabio 17/11, Carlos Guilherme: o template de atualização saiu junto da reprovação e, quando ele respondeu "Pq?", a IA disse "já te explico"
+  // e nada veio): a orientação pra seguir não vai mais — se ele perguntar o motivo, a IA fala da restrição (motivo-reprovacao).
+  if (lead.status !== 'OPEN') {
+    await salva(leadId, { status: 'ENCERRADO', at: new Date().toISOString() });
+    await note(leadId, '🔕 Ocorrência no nome (CAIXA): o card foi fechado, então a orientação Serasa/SCPC/protesto não vai ao cliente. Se ele perguntar o motivo da reprovação, a IA diz que consta restrição no nome e que isso pode ter pesado na aprovação.');
+    return;
+  }
+  if (cf._noticeKind === 'REJECTED' && cf._noticeAt) return; // o aviso de "não aprovado" está agendado: espera (se ele sair, o card fecha e a orientação não vai)
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const saudacao = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || '';
   const texto = textoOrientacao(saudacao, { nomes: oc.nomes || [], titular: !!oc.titular }, !String(cf.falando_com || '').trim());
@@ -131,6 +141,13 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
       AND "customFields"->'_ocorrencias'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
   for (const { id } of ids) await enviarOrientacao(accountId, id, io).catch((e) => console.error('[Ocorrências]', e?.message));
+  // Orientação de card que fechou depois (reprovado): encerra, pra IA não dizer "já te explico" esperando uma mensagem que não vai sair (Fabio 17/11).
+  const fechados = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status <> 'OPEN'
+      AND "customFields"->'_ocorrencias'->>'status' IN ('PENDING', 'TEMPLATE') LIMIT 20`;
+  for (const { id } of fechados) await enviarOrientacao(accountId, id, io).catch((e) => console.error('[Ocorrências]', e?.message));
+  // Cliente reprovado do FH que perguntou o motivo (Fabio 17/11) — mesmo minuto.
+  await (require('./motivo-reprovacao.service') as typeof import('./motivo-reprovacao.service')).processMotivos(accountId, io).catch((e) => console.error('[Motivo da reprovação]', e?.message));
   // Resultado SEM restrição de um pedido da CAIXA que ficou pra depois (fora do horário) — mesmo minuto (Fabio 11/11).
   await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).processAvisosLimpos(accountId, io).catch((e) => console.error('[CAIXA limpo]', e?.message));
   // Aviso ao cliente da 2ª autorização do PV (caixa-resultado) roda no mesmo minuto.
@@ -141,12 +158,15 @@ export async function processOcorrencias(accountId: string, io?: any): Promise<v
 
 /** Blocos da CAIXA pro prompt da IA da conversa: restrição no nome (abaixo), cadastro bloqueado pela 2ª autorização do PV e avaliação condicionada. '' se não houver. */
 export async function aiOcorrenciasContext(leadId: string): Promise<string> {
-  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { status: true, rejectedAt: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   const cf = (l?.customFields || {}) as Cf;
+  // FH reprovado (Fabio 17/11): só o bloco do motivo da reprovação — a orientação e o pedido da CAIXA não valem mais pra card fechado.
+  const mot = require('./motivo-reprovacao.service') as typeof import('./motivo-reprovacao.service');
+  if (mot.ehFhReprovado(l)) return mot.aiMotivoReprovacaoBloco(cf);
   const res = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
   const pv = [res.aiPvContext(cf), res.aiCondicionadaContext(cf), res.aiProjetoPrefeituraContext(cf)].filter(Boolean).join('\n\n'); // + construção: projeto na prefeitura (Fabio 14/11)
   const casal = (require('./renda-casal.service') as typeof import('./renda-casal.service')).aiRendaCasalContext(cf);
-  const oc = blocoOcorrencias(cf);
+  const oc = l?.status === 'OPEN' ? blocoOcorrencias(cf) : ''; // card fechado: a orientação não vai mais (enviarOrientacao encerra)
   // Pedido da CAIXA: consulta em andamento ou sem restrição (Fabio 11/11 — a documentação só depois do resultado).
   const pedido = await (require('./caixa-screening.service') as typeof import('./caixa-screening.service')).aiConsultaCaixaBloco(leadId, cf).catch(() => '');
   return [pedido, oc, pv, casal].filter(Boolean).join('\n\n');

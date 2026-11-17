@@ -150,7 +150,8 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
   // Consulta que já falhou ou foi largada vai pro fim da fila (Fabio 09/11: um card repetiu por horas e prendeu quem estava atrás); a que está em andamento fica na frente pra valer o "um por vez".
   const prazo = new Date(Date.now() - LEASE_MS).toISOString();
   const ids = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false
+      AND (status = 'OPEN' OR "customFields"->'_motivoReprovacao'->>'status' = 'CONSULTANDO') -- reprovado do FH que perguntou o motivo (Fabio 17/11): só a consulta do nome
       AND "customFields"->'_caixaCadastro'->>'status' = 'FILA'
     ORDER BY CASE
         WHEN "customFields"->'_caixaCadastro'->'atual'->>'desde' >= ${prazo} THEN 0
@@ -479,8 +480,8 @@ export function faltaParaCadastro(p: any, agora = new Date()): string[] {
  *  fila da extensão (que preenche pela ficha e o CRM confere tela a tela). Faltando dado → anotação + push uma vez por participante; a ficha é refeita quando
  *  chega documento novo e o cadastro sai na rodada seguinte. Consulta com proposta/avaliação em andamento só vira anotação: o cadastro segue (Fabio 06/11). */
 export async function cadastroAutomatico(accountId: string, leadId: string): Promise<void> {
-  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
-  if (!l) return;
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, customFields: true } });
+  if (!l || l.status !== 'OPEN') return; // card fechado (ex.: reprovado que perguntou o motivo, Fabio 17/11): a consulta não vira cadastro
   const cf = (l.customFields || {}) as Cf;
   const c = (cf._caixaCadastro || {}) as Cf;
   if (!temFicha(cf)) return; // consultado antes dos documentos (Fabio 01/11): o cadastro espera a ficha
