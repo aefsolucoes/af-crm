@@ -38,6 +38,22 @@ export const FH_INTER_BANK = 'INTER_FH';
 export const FH_ITAU_BANK = 'ITAU_FH';
 /** Bancos do Financiamento Habitacional rodados pelas extensões (Credimorar: Bradesco/Santander; nosso portal do Inter; portal Itaú Imóveis). */
 export const FH_RUN_BANKS = [FH_BANK, FH_INTER_BANK, FH_ITAU_BANK];
+/** Bancos que a fila do Credimorar (FH_BANK) roda no Financiamento. Fabio 17/11: dá pra rodar só um dos dois ("Bradesco ou Santander, não os dois"). */
+export const FH_CREDIMORAR_BANCOS = ['Bradesco', 'Santander'];
+/** Escolha de UM banco do Credimorar (["Bradesco"] ou ["Santander"]); os dois, nenhum ou lixo = rodada normal (null). Pura. */
+export function soBancosCredimorar(lista: unknown): string[] | null {
+  const pedidos = Array.isArray(lista) ? lista.map((x) => String(x).trim().toLowerCase()) : [];
+  const so = FH_CREDIMORAR_BANCOS.filter((b) => pedidos.includes(b.toLowerCase()));
+  return so.length === 1 ? so : null;
+}
+/** O banco do Credimorar que ficou FORA da rodada não vem na leitura da simulação: o trecho dele no resumo do Financiamento continua o de antes (vai pro fim; ordem estável). Pura. */
+export function manterBancoForaDaRodada(resumo: string, antes: string | null | undefined, banco: string): string {
+  const rx = new RegExp(`^${banco}\\s*:`, 'i');
+  const partes = String(resumo || '').split('|').map((x) => x.trim()).filter(Boolean);
+  if (partes.some((x) => rx.test(x))) return partes.join(' | ');
+  const velho = String(antes || '').split('|').map((x) => x.trim()).find((x) => rx.test(x));
+  return (velho ? [...partes, velho] : partes).join(' | ');
+}
 /** O que uma extensão pode pegar/relatar na fila: Home Equity + Financiamento Habitacional. */
 export const EXT_BANK_KEYS = [...BANK_KEYS, ...FH_RUN_BANKS];
 
@@ -428,7 +444,8 @@ export async function imovelTerreno(db: Db, leadId: string, cf: Record<string, a
   return /terreno|\blote\b/i.test(String(daProposta || cf.tipo_imovel || cf.tipo_do_imovel || ''));
 }
 
-export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean }) {
+/** `fhCredimorarBancos` (Fabio 17/11): a rodada do Credimorar no Financiamento vai só pro banco escolhido (["Bradesco"] ou ["Santander"]); sem isso, os dois. */
+export async function createRequests(db: Db, p: { accountId: string; userId?: string; leadIds: string[]; banks: string[]; dryRun: boolean; kind?: 'RUN' | 'CHECK'; force?: boolean; source?: string; alignApproval?: boolean; queueIfBusy?: boolean; fhCredimorarBancos?: string[] }) {
   const wantedKind = p.kind === 'CHECK' ? 'CHECK' : 'RUN';
   const banks = p.banks.filter((b) => EXT_BANK_KEYS.includes(b) && (wantedKind === 'RUN' || CHECK_BANKS.includes(b)));
   const leads = await db.lead.findMany({ where: { id: { in: p.leadIds }, accountId: p.accountId }, select: { id: true, name: true } });
@@ -547,6 +564,13 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
       const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true } }) : null;
       const doCard = kind === 'CHECK' && !prev?.proposalNumber ? propostaDoCard(cfPedido) : null; // sem análise com número: usa a proposta anotada no card
       const prevNumber = prev?.proposalNumber || (doCard && doCard.bank === bank ? doCard.numero : null);
+      // Só Bradesco ou só Santander (Fabio 17/11): a escolha fica no card (`_fhBancosCredimorar`) — a extensão marca só esse banco no portal e lê só ele, também nas
+      // conferências dessa simulação. Rodada com os dois (inclusive as automáticas) apaga a escolha.
+      if (bank === FH_BANK && kind === 'RUN') {
+        const so = soBancosCredimorar(p.fhCredimorarBancos);
+        if (so) await db.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || $1::jsonb WHERE id = $2`, JSON.stringify({ _fhBancosCredimorar: so }), l.id);
+        else await db.$executeRawUnsafe(`UPDATE "Lead" SET "customFields" = "customFields" - '_fhBancosCredimorar' WHERE id = $1 AND ("customFields" -> '_fhBancosCredimorar') IS NOT NULL`, l.id);
+      }
       await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'REQUESTED', kind, requestedValue: kind === 'CHECK' ? (prev?.requestedValue ?? null) : pedidoNaRodada, proposalNumber: prevNumber, holderCpf: prev?.holderCpf || null, holderName: prev?.holderName || null, dryRun: kind === 'CHECK' ? false : p.dryRun, source: p.source || 'EXTENSION', requestedById: p.userId || null } });
       created++;
     }
@@ -1533,6 +1557,8 @@ async function notaFinanciamento(db: Db, accountId: string, row: AnalysisRow): P
   // Itaú (Fabio 03/11): idem, mas só nos cards que têm análise do Itaú no nosso portal (ITAU_FH). Card antigo, sem nenhuma, segue lendo o Itaú do Credimorar normalmente.
   const itauNosso = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: FH_ITAU_BANK, dryRun: false }, select: { id: true } });
   if (itauNosso) resumo = juntarBancoNoResumo(resumo, 'Itaú', trechoDoBancoNoResumo(cf._fhResumo, 'Itaú') || null);
+  // Rodada só no Bradesco ou só no Santander (Fabio 17/11): o outro não vem na leitura e continua com a situação de antes.
+  if (soBancosCredimorar(cf._fhBancosCredimorar)) for (const b of FH_CREDIMORAR_BANCOS) resumo = manterBancoForaDaRodada(resumo, cf._fhResumo, b);
   if (cf._fhResumo === resumo) return;
   cf._fhResumo = resumo;
   await db.lead.update({ where: { id: row.leadId }, data: { customFields: cf as any } });

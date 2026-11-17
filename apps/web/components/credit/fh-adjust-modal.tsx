@@ -11,11 +11,22 @@ import type { OverrideData } from '@/components/credit/shared';
  * No FH os VALORES vêm do card (regra de 05/11): o ajuste grava valor do imóvel, financiamento (a entrada é a diferença), renda e prazo no card
  * (PUT /credit-analysis/fh-valores). QUEM ENTRA na análise vira ajuste das três filas (PUT /credit-analysis/overrides). Dá pra salvar e já rodar nos bancos marcados. */
 
-const FILAS_FH = [
-  { key: 'CREDIMORAR_FH', label: 'Credimorar (Bradesco, Santander)' },
-  { key: 'INTER_FH', label: 'Inter' },
-  { key: 'ITAU_FH', label: 'Itaú' },
+const FILAS_FH = ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'];
+
+/** Caixinhas "Rodar nos bancos" do Financiamento (Fabio 17/11: "Credimorar deveria marcar Santander ou Bradesco, não os dois… tira o nome Credimorar"):
+ *  Bradesco e Santander separados — os dois rodam na fila CREDIMORAR_FH; com só um marcado, a extensão marca só ele no portal. Inter e Itaú nas filas deles. */
+export const BANCOS_RODAR_FH = [
+  { key: 'BRADESCO', label: 'Bradesco', curto: 'Bradesco', fila: 'CREDIMORAR_FH' },
+  { key: 'SANTANDER', label: 'Santander', curto: 'Santander', fila: 'CREDIMORAR_FH' },
+  { key: 'INTER_FH', label: 'Inter (nosso portal)', curto: 'Inter', fila: 'INTER_FH' },
+  { key: 'ITAU_FH', label: 'Itaú (portal Itaú Imóveis)', curto: 'Itaú', fila: 'ITAU_FH' },
 ] as const;
+export const TODOS_BANCOS_RODAR_FH: string[] = BANCOS_RODAR_FH.map((b) => b.key);
+/** Caixinhas marcadas → corpo do POST /credit-analysis/fh-request: as filas e, na do Credimorar, quais bancos. */
+export function pedidoRodarFh(marcados: string[]): { banks: string[]; credimorarBancos: string[] } {
+  const sel = BANCOS_RODAR_FH.filter((b) => marcados.includes(b.key));
+  return { banks: Array.from(new Set(sel.map((b) => b.fila))), credimorarBancos: sel.filter((b) => b.fila === 'CREDIMORAR_FH').map((b) => b.curto) };
+}
 type Quem = 'AUTO' | 'AMBOS_1' | 'AMBOS_2' | 'SO_1' | 'SO_2';
 const inputCls = 'w-full text-sm border border-af-border rounded-lg px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-af-accent bg-white text-slate-800';
 const brl = (n: number | null | undefined) => (n ? n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '');
@@ -89,10 +100,10 @@ export function FhAdjustModal({ lead, onClose, onSaved }: { lead: FhAjusteLead; 
     setBusy(true);
     try {
       if (Object.keys(valores).length) await api.put('/api/credit-analysis/fh-valores', { leadId: lead.id, valores });
-      if (quemMexeu) await api.put('/api/credit-analysis/overrides', { leadId: lead.id, banks: FILAS_FH.map((f) => f.key), data: opcoes.find((o) => o.key === quem)?.data || {}, merge: true });
+      if (quemMexeu) await api.put('/api/credit-analysis/overrides', { leadId: lead.id, banks: FILAS_FH, data: opcoes.find((o) => o.key === quem)?.data || {}, merge: true });
       if (rodar.length) {
-        const r = (await api.post('/api/credit-analysis/fh-request', { leadId: lead.id, kind: 'RUN', banks: rodar })).data;
-        toast(r?.created ? `Ajustado e na fila: ${rodar.map((k) => FILAS_FH.find((f) => f.key === k)?.label).join(', ')}` : 'Ajustado (já estava na fila)', 'success');
+        const r = (await api.post('/api/credit-analysis/fh-request', { leadId: lead.id, kind: 'RUN', ...pedidoRodarFh(rodar) })).data;
+        toast(r?.created ? `Ajustado e na fila: ${BANCOS_RODAR_FH.filter((b) => rodar.includes(b.key)).map((b) => b.curto).join(', ')}` : 'Ajustado (já estava na fila)', 'success');
       } else toast(Object.keys(valores).length || quemMexeu ? 'Ajuste salvo — vale na próxima rodada' : 'Nada mudou', 'success');
       onSaved();
       onClose();
@@ -128,9 +139,9 @@ export function FhAdjustModal({ lead, onClose, onSaved }: { lead: FhAjusteLead; 
         <div>
           <div className="text-xs font-medium text-slate-600 mb-1">Salvar e rodar de novo em</div>
           <div className="flex flex-wrap gap-3">
-            {FILAS_FH.map((f) => (
+            {BANCOS_RODAR_FH.map((f) => (
               <label key={f.key} className="flex items-center gap-1.5 text-xs text-slate-700">
-                <input type="checkbox" checked={rodar.includes(f.key)} onChange={() => setRodar((p) => p.includes(f.key) ? p.filter((x) => x !== f.key) : [...p, f.key])} /> {f.label}
+                <input type="checkbox" checked={rodar.includes(f.key)} onChange={() => setRodar((p) => p.includes(f.key) ? p.filter((x) => x !== f.key) : [...p, f.key])} /> {f.curto}
               </label>
             ))}
           </div>

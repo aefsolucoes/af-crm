@@ -28,7 +28,7 @@ interface MetricsRow {
 interface ListItem { leadId: string; name: string; detail: string; at: string }
 
 const BANKS: { key: string; label: string }[] = [
-  { key: 'CREDIMORAR', label: 'Santander (Credimorar)' },
+  { key: 'CREDIMORAR', label: 'Santander' },
   { key: 'CREDITAS', label: 'Creditas' },
   { key: 'INTER', label: 'Banco Inter' },
 ];

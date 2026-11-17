@@ -83,7 +83,7 @@ router.post('/fh-request', async (req: AuthRequest, res: Response) => {
       const cf = (l?.customFields || {}) as Record<string, any>;
       if (l && ehConstrucaoFh(prop?.content || '', cf)) return res.status(400).json({ error: textoConstrucao(financiadoFh(prop?.content || '', cf)).replace(/^🏗️ /, '') });
     }
-    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? FH_RUN_BANKS.filter((b) => req.body.banks.includes(b)) : FH_RUN_BANKS, dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN' }); // Credimorar (Bradesco/Santander) + Inter no nosso portal + Itaú no portal Itaú Imóveis (03/11)
+    const out = await createRequests(prisma, { accountId: req.user!.accountId, userId: req.user!.id, leadIds: [leadId], banks: Array.isArray(req.body?.banks) && req.body.banks.length ? FH_RUN_BANKS.filter((b) => req.body.banks.includes(b)) : FH_RUN_BANKS, dryRun: req.body?.dryRun === true, kind, force: kind === 'RUN', queueIfBusy: kind === 'RUN', fhCredimorarBancos: kind === 'RUN' && Array.isArray(req.body?.credimorarBancos) ? req.body.credimorarBancos : undefined }); // Credimorar (Bradesco/Santander) + Inter no nosso portal + Itaú no portal Itaú Imóveis (03/11)
     emit(req, { leadId });
     res.json(out);
   } catch (err) { fail(res, err, 'Erro ao pedir a análise do Financiamento'); }

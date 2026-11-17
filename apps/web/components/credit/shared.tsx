@@ -9,7 +9,7 @@ import { formatCurrency } from '@/lib/utils';
 
 export type Bank = 'CREDIMORAR' | 'CREDITAS' | 'INTER';
 export const BANKS: { key: Bank; label: string; short: string }[] = [
-  { key: 'CREDIMORAR', label: 'Santander (Credimorar)', short: 'Santander' },
+  { key: 'CREDIMORAR', label: 'Santander', short: 'Santander' }, // sem "Credimorar" na tela (Fabio 17/11)
   { key: 'CREDITAS', label: 'Creditas', short: 'Creditas' },
   { key: 'INTER', label: 'Banco Inter', short: 'Inter' },
 ];

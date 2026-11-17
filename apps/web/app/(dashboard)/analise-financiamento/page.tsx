@@ -10,7 +10,7 @@ import { toast } from '@/components/ui/toast';
 import { getSocket } from '@/lib/socket';
 import { formatCurrency } from '@/lib/utils';
 import { STATUS, ago, fmtCpf, type Bank } from '@/components/credit/shared';
-import { FhAdjustModal } from '@/components/credit/fh-adjust-modal';
+import { FhAdjustModal, BANCOS_RODAR_FH, TODOS_BANCOS_RODAR_FH, pedidoRodarFh } from '@/components/credit/fh-adjust-modal';
 import { EscritorioBancos } from '@/components/credit/escritorio-bancos';
 import { ProdutoSwitch } from '@/components/credit/produto-switch';
 import { pingExtensions } from '@/lib/credit-extensions';
@@ -18,7 +18,7 @@ import { ChevronDown, ChevronRight, MessageSquare, Play, RefreshCw, AlertTriangl
 import api from '@/lib/api';
 
 /* Análise de Crédito — Financiamento Imobiliário (Fabio 27/10; tela igual à do Home Equity em 29/10).
- * Bradesco e Santander rodam juntos numa simulação do Credimorar (extensão do Credimorar, fila CREDIMORAR_FH);
+ * Bradesco e Santander rodam numa simulação do Credimorar (extensão do Credimorar, fila CREDIMORAR_FH) — os dois ou só um deles (Fabio 17/11);
  * o Inter roda no NOSSO portal do Inter (extensão do Inter, fila INTER_FH); o Itaú roda no portal "Plataforma Itaú Imóveis" (extensão própria do Itaú, fila ITAU_FH — Fabio 03/11,
  * saiu do Credimorar); CAIXA (Caixa Aqui) e BRB (PCN) rodam só com a documentação completa.
  * Ver fhBoard em apps/api/src/services/credit-analysis.service.ts. */
@@ -27,14 +27,15 @@ const BANCOS = ['Bradesco', 'Itaú', 'Santander', 'Inter', 'CAIXA', 'BRB'] as co
 const SO_COM_DOCUMENTACAO = new Set<string>(['CAIXA', 'BRB']);
 // Banco → tipo do PDF de simulação que o CRM manda ao cliente
 const PDF: Record<string, string> = { Bradesco: 'FH_BRADESCO', 'Itaú': 'FH_ITAU', Santander: 'FH_SANTANDER', Inter: 'FH_INTER', CAIXA: 'FH_CAIXA' }; // CAIXA: simulador da CAIXA pela extensão SIOPI (12/11)
-// Fila de cada extensão (checkbox "Rodar nos bancos"). `ext` = de onde vem o sinal da extensão; o Itaú tem extensão PRÓPRIA (chave ITAU_FH).
+// Fila de cada extensão (as caixinhas "Rodar nos bancos" são por banco: BANCOS_RODAR_FH). `ext` = de onde vem o sinal da extensão; o Itaú tem extensão PRÓPRIA (chave ITAU_FH).
+// Fabio 17/11: sem o nome "Credimorar" na tela — a fila CREDIMORAR_FH aparece como Bradesco/Santander.
 type ExtFila = Bank | 'ITAU_FH';
 const FILAS: { key: string; label: string; short: string; ext: ExtFila }[] = [
-  { key: 'CREDIMORAR_FH', label: 'Credimorar (Bradesco, Santander)', short: 'Credimorar', ext: 'CREDIMORAR' },
+  { key: 'CREDIMORAR_FH', label: 'Bradesco e Santander', short: 'Bradesco/Santander', ext: 'CREDIMORAR' },
   { key: 'INTER_FH', label: 'Inter (nosso portal)', short: 'Inter', ext: 'INTER' },
   { key: 'ITAU_FH', label: 'Itaú (portal Itaú Imóveis)', short: 'Itaú', ext: 'ITAU_FH' },
 ];
-const ROTULO_FILA: Record<string, string> = { CREDIMORAR_FH: 'Credimorar', INTER_FH: 'Inter', ITAU_FH: 'Itaú', CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
+const ROTULO_FILA: Record<string, string> = { CREDIMORAR_FH: 'Bradesco/Santander', INTER_FH: 'Inter', ITAU_FH: 'Itaú', CAIXA_FH: 'CAIXA', BRB_FH: 'BRB' };
 // Banco da coluna → fila que roda ele (Bradesco e Santander saem juntos da simulação do Credimorar).
 const FILA_DO_BANCO: Record<string, string> = { Bradesco: 'CREDIMORAR_FH', Santander: 'CREDIMORAR_FH', Inter: 'INTER_FH', 'Itaú': 'ITAU_FH', CAIXA: 'CAIXA_FH', BRB: 'BRB_FH' };
 
@@ -144,7 +145,9 @@ export default function AnaliseFinanciamentoPage() {
     refetchIntervalInBackground: true, // aba em segundo plano (o Fabio fica no portal do banco) também atualiza
   });
   const [selected, setSelected] = useState<string[]>([]);
-  const [filas, setFilas] = useState<string[]>(['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH']);
+  const [marcados, setMarcados] = useState<string[]>(TODOS_BANCOS_RODAR_FH); // caixinhas "Rodar nos bancos" (Bradesco e Santander separados — Fabio 17/11)
+  const pedidoRodar = useMemo(() => pedidoRodarFh(marcados), [marcados]);
+  const filas = pedidoRodar.banks;
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
@@ -224,7 +227,7 @@ export default function AnaliseFinanciamentoPage() {
       let criados = 0, jaNaFila = 0, erros = 0;
       for (const id of selected) {
         try {
-          const r = (await api.post('/api/credit-analysis/fh-request', { leadId: id, kind: 'RUN', banks: filas })).data;
+          const r = (await api.post('/api/credit-analysis/fh-request', { leadId: id, kind: 'RUN', ...pedidoRodar })).data;
           if (r.created) criados++; else jaNaFila++;
         } catch { erros++; }
       }
@@ -244,7 +247,7 @@ export default function AnaliseFinanciamentoPage() {
     if (kind === 'RUN' && jaRodou(l) && !window.confirm(`${l.name} já tem ${l.simulacao ? `a simulação nº ${l.simulacao}` : 'resultado'} no Financiamento.\n\nRodar de novo cria uma proposta NOVA e envia de novo aos bancos marcados. Para só ler a situação, use "Conferir".\n\nRodar de novo?`)) return;
     setPedindo(l.id + kind);
     try {
-      const r = (await api.post('/api/credit-analysis/fh-request', kind === 'RUN' ? { leadId: l.id, kind, banks: filas } : { leadId: l.id, kind })).data;
+      const r = (await api.post('/api/credit-analysis/fh-request', kind === 'RUN' ? { leadId: l.id, kind, ...pedidoRodar } : { leadId: l.id, kind })).data;
       toast(r.created ? (kind === 'RUN' ? 'Pedido na fila: a extensão roda os bancos marcados' : 'Conferência na fila') : 'Já tem um pedido desse cliente na fila', r.created ? 'success' : 'warning');
       avisarExtensoes(kind === 'RUN' ? filas : FILAS.map((f) => f.key));
       refresh();
@@ -293,7 +296,7 @@ export default function AnaliseFinanciamentoPage() {
 
   return (
     <div className="flex flex-col h-full">
-      <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco e Santander pelo Credimorar · Inter pelo nosso portal · Itaú pelo portal Itaú Imóveis · CAIXA e BRB com a documentação completa" />
+      <Topbar title="Análise de Crédito — Financiamento Imobiliário" subtitle="Bradesco e Santander · Inter pelo nosso portal · Itaú pelo portal Itaú Imóveis · CAIXA e BRB com a documentação completa" />
       <div className="flex-1 overflow-auto px-4 md:px-6 py-4 space-y-4 scrollbar-thin">
         <ProdutoSwitch atual="fh" />
         {/* Extensões: o escritório dos bancos (Fabio 10/11), igual ao do Home Equity; "Ver em caixinhas" volta ao painel antigo */}
@@ -309,9 +312,9 @@ export default function AnaliseFinanciamentoPage() {
         <div className="bg-white rounded-xl border border-af-border p-4">
           <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
             <span className="text-sm font-medium text-slate-700">Rodar nos bancos:</span>
-            {FILAS.map((f) => (
+            {BANCOS_RODAR_FH.map((f) => (
               <label key={f.key} className="flex items-center gap-1.5 text-sm text-slate-600 cursor-pointer">
-                <input type="checkbox" checked={filas.includes(f.key)} onChange={() => setFilas((p) => p.includes(f.key) ? p.filter((x) => x !== f.key) : [...p, f.key])} />
+                <input type="checkbox" checked={marcados.includes(f.key)} onChange={() => setMarcados((p) => p.includes(f.key) ? p.filter((x) => x !== f.key) : [...p, f.key])} />
                 {f.label}
               </label>
             ))}
@@ -379,7 +382,7 @@ export default function AnaliseFinanciamentoPage() {
                               {l.valores.imovel ? ` · imóvel ${formatCurrency(l.valores.imovel)}` : ''}{l.valores.financia ? ` · pediu financiar ${formatCurrency(l.valores.financia)}` : ''}{l.valores.renda ? ` · renda ${formatCurrency(l.valores.renda)}` : ''}
                             </div>
                             {l.caixaEtapa && <div className="text-[11px] text-sky-700" title="Andamento na CAIXA: consulta do nome, cadastro e análise de crédito">🏦 CAIXA: {l.caixaEtapa}</div>}
-                            {l.simulacao && <div className="text-[11px] text-slate-400">Simulação Credimorar nº {l.simulacao}{l.leituraEm ? ` · lida ${ago(l.leituraEm)}` : ''}</div>}
+                            {l.simulacao && <div className="text-[11px] text-slate-400">Simulação Bradesco/Santander nº {l.simulacao}{l.leituraEm ? ` · lida ${ago(l.leituraEm)}` : ''}</div>}
                             {(l.card?.name2 || l.participante2) && (
                               <div className="text-[11px] text-slate-500 mt-0.5">
                                 2º participante: <span className="font-medium text-slate-600">{l.card?.name2 || l.participante2}</span>{l.card?.cpf2 && <span className="text-slate-400"> · CPF {fmtCpf(l.card.cpf2)}</span>}
@@ -519,7 +522,7 @@ export default function AnaliseFinanciamentoPage() {
       {confirm && (
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
-            <p>As extensões vão <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {FILAS.filter((f) => filas.includes(f.key)).map((f) => f.label).join(' e ')}.</p>
+            <p>As extensões vão <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {BANCOS_RODAR_FH.filter((f) => marcados.includes(f.key)).map((f) => f.curto).join(', ')}.</p>
             {dups.length > 0 && (
               <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-xs text-amber-700">
                 <p className="font-medium mb-1">Já têm simulação/resultado — rodar de novo cria proposta NOVA nos bancos:</p>

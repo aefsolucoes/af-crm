@@ -53,7 +53,7 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
   const recarregar = () => qc.invalidateQueries({ queryKey: ['fh-lead', leadId] });
 
   async function pedir(kind: 'RUN' | 'CHECK') {
-    if (kind === 'RUN' && !window.confirm('Rodar o Financiamento de novo? Cria proposta NOVA no Credimorar (Bradesco, Santander), no nosso portal do Inter e no portal Itaú Imóveis (Itaú), com os valores do card.')) return;
+    if (kind === 'RUN' && !window.confirm('Rodar o Financiamento de novo? Cria proposta NOVA no Bradesco e no Santander, no nosso portal do Inter e no portal Itaú Imóveis (Itaú), com os valores do card.')) return;
     setBusy(kind);
     try {
       await api.post('/api/credit-analysis/fh-request', { leadId, kind });
@@ -150,7 +150,7 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
       </div>
       {!l ? <p className="text-xs text-slate-400">Carregando…</p> : (
         <>
-          {l.simulacao && <p className="mb-1.5 text-[11px] text-slate-500">Simulação Credimorar nº {l.simulacao}{l.leituraEm ? ` · lida ${new Date(l.leituraEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>}
+          {l.simulacao && <p className="mb-1.5 text-[11px] text-slate-500">Simulação Bradesco/Santander nº {l.simulacao}{l.leituraEm ? ` · lida ${new Date(l.leituraEm).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}</p>}
           {!bancos.length ? (
             <p className="text-xs text-slate-400">Nenhum banco rodou ainda.{l.active ? ' Rodando agora…' : ''}</p>
           ) : (
