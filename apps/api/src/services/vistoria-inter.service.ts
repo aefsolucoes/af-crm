@@ -389,14 +389,16 @@ const soDigitos = (s: unknown) => String(s || '').replace(/\D/g, '');
  *  senão a maior. Sem nenhuma do nosso portal, devolve a do Credimorar em `soCredimorar` pra quem chama avisar (o aceite dela não sai pelo nosso portal). */
 export async function propostaParaSeguir(leadId: string, cf: Record<string, any>): Promise<{ numero: string; doCredimorar: string | null; soCredimorar: boolean }> {
   const direto = soDigitos(cf.num_proposta);
-  const nossas = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, status: true, approvedValue: true } });
-  if (direto.length < 6) return { numero: soDigitos(nossas[0]?.proposalNumber), doCredimorar: null, soCredimorar: false };
+  const nossas = await prisma.creditAnalysis.findMany({ where: { leadId, bank: { in: ['INTER', 'INTER_FH'] }, dryRun: false, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, status: true, approvedValue: true, chosen: true } });
+  const aprovadas = nossas.filter((n) => ['APPROVED', 'CONDITIONAL'].includes(n.status) && soDigitos(n.proposalNumber).length >= 6);
+  const pedido = Number(cf.valor_credito) || 0;
+  // A da ⭐ (uma por card); senão a do valor do card; senão a maior aprovada.
+  const escolhida = aprovadas.find((n) => n.chosen) || aprovadas.find((n) => pedido > 0 && Math.abs((n.approvedValue || 0) - pedido) < 1) || [...aprovadas].sort((a, b) => (b.approvedValue || 0) - (a.approvedValue || 0))[0];
+  // Card sem nº da proposta (Fabio 17/11, Jaime: escolheu o Inter antes de a proposta existir no nosso portal): a escolhida/aprovada, não a última linha (podia ser uma conferência que falhou).
+  if (direto.length < 6) return { numero: soDigitos(escolhida?.proposalNumber || nossas[0]?.proposalNumber), doCredimorar: null, soCredimorar: false };
   const doNossoPortal = nossas.some((n) => soDigitos(n.proposalNumber) === direto);
   const credimorar = !doNossoPortal && !!(await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CREDIMORAR_FH', detail: { contains: direto } }, select: { id: true } }));
   if (!credimorar) return { numero: direto, doCredimorar: null, soCredimorar: false };
-  const aprovadas = nossas.filter((n) => ['APPROVED', 'CONDITIONAL'].includes(n.status) && soDigitos(n.proposalNumber).length >= 6);
-  const pedido = Number(cf.valor_credito) || 0;
-  const escolhida = aprovadas.find((n) => pedido > 0 && Math.abs((n.approvedValue || 0) - pedido) < 1) || [...aprovadas].sort((a, b) => (b.approvedValue || 0) - (a.approvedValue || 0))[0];
   if (escolhida) return { numero: soDigitos(escolhida.proposalNumber), doCredimorar: direto, soCredimorar: false };
   return { numero: direto, doCredimorar: direto, soCredimorar: true };
 }

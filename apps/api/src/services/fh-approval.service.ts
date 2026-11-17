@@ -604,6 +604,8 @@ export async function preencherEscolhaFh(accountId: string, leadId: string, banc
     const row = linhaId ? { id: linhaId } : await prisma.creditAnalysis.findFirst({ where: { leadId, bank: PORTAL_PROPRIO[banco], dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] }, approvedValue: { not: null } }, orderBy: [{ approvedValue: 'desc' }, { createdAt: 'desc' }], select: { id: true } });
     if (row) { await chooseAnalysis(prisma as any, { accountId, id: row.id, userName: linhaId ? 'Equipe — "Escolher esta proposta" no Financiamento' : 'Cliente — "Seguir com esta" no Financiamento' }); return; }
   }
+  // Uma escolhida só por card (Fabio 17/11): o banco novo não tem linha no nosso portal (Bradesco/Santander pelo Credimorar) → a ⭐ antiga de outra proposta sai.
+  await prisma.creditAnalysis.updateMany({ where: { leadId, chosen: true }, data: { chosen: false } });
   if (!o) return;
   const num = (t: string) => Number(String(t || '').replace(/[^\d,]/g, '').replace(',', '.')) || 0;
   const valor = num(o.valor);

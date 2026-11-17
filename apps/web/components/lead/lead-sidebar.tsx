@@ -561,7 +561,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
           {expanded && activeTab === 'Financiamento' && <LeadCertidoesProcesso leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadItbi leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && /habitacional/i.test(lead.pipeline?.department?.name || '') && <LeadCustasFh leadId={lead.id} />}
-          {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
+          {expanded && activeTab === 'Financiamento' && <LeadVistoria leadId={lead.id} proposta={customValues.num_proposta} instituicao={customValues.instituicao} bancoEscolhido={(lead as any).customFields?._optouCaixa?.banco || (lead as any).customFields?._fhChosen?.bank} solicitadaEm={(lead as any).customFields?._vistoriaRequestedAt} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaSantander leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaCreditas leadId={lead.id} />}
           {expanded && activeTab === 'Financiamento' && <LeadVistoriaItau leadId={lead.id} />}

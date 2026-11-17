@@ -195,12 +195,18 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
             // Todas as propostas aprovadas (uma por proposta): só aparece quando há mais propostas que bancos aprovados na lista acima (ex.: duas do Inter).
             const todas = (l.aprovadas || []).filter((a) => !/^(CAIXA|BRB)$/.test(a.banco));
             if (todas.length <= aprovadas.length) return null;
+            // UMA escolhida só (Fabio 17/11, Jaime: o cliente escolheu o BANCO antes de a proposta existir no nosso portal → as 3 do Inter apareciam "Escolhida"): a do número
+            // escolhido; sem número, só quando o banco tem uma proposta na lista — com mais de uma, a equipe escolhe qual.
+            const doBanco = todas.filter((a) => a.banco === l.escolhido);
+            const alvo = l.escolhidoProposta && doBanco.some((a) => soNum(a.proposta))
+              ? doBanco.find((a) => soNum(a.proposta) === soNum(l.escolhidoProposta))
+              : doBanco.length === 1 ? doBanco[0] : undefined;
             return (
               <div className="mt-2 rounded-md border border-slate-200 bg-white p-2">
                 <p className="mb-1 text-[11px] font-semibold text-slate-600">Todas as propostas aprovadas ({todas.length})</p>
                 <div className="space-y-1">
                   {todas.map((a) => {
-                    const escolhida = l.escolhido === a.banco && (!l.escolhidoProposta || !a.proposta || soNum(l.escolhidoProposta) === soNum(a.proposta));
+                    const escolhida = a === alvo;
                     const porProposta = a.banco === 'Inter' || a.banco === 'Itaú'; // as do nosso portal têm a linha da proposta; Bradesco/Santander saem da simulação do Credimorar
                     return (
                       <div key={`${a.banco}-${a.proposta || a.createdAt}`} className={cn('flex flex-wrap items-center justify-between gap-1.5 rounded border px-2 py-1', escolhida ? 'border-amber-300 bg-amber-50/40' : 'border-slate-100')}>

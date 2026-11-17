@@ -15,7 +15,7 @@ type Preview = {
   engajamentoRecebido: boolean; consultor: string | null; jaSolicitadaEm: string | null; avisos: string[];
 };
 
-export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { leadId: string; proposta?: unknown; instituicao?: unknown; solicitadaEm?: unknown }) {
+export function LeadVistoria({ leadId, proposta, instituicao, bancoEscolhido, solicitadaEm }: { leadId: string; proposta?: unknown; instituicao?: unknown; bancoEscolhido?: unknown; solicitadaEm?: unknown }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [sending, setSending] = useState(false);
@@ -30,7 +30,10 @@ export function LeadVistoria({ leadId, proposta, instituicao, solicitadaEm }: { 
   type Laudo = { job: unknown | null; faltando: string[]; status: string; requestedAt: string | null; filledAt: string | null; link: string | null };
   const [laudo, setLaudo] = useState<Laudo | null>(null);
   const [laudoBusy, setLaudoBusy] = useState(false);
-  const ehInter = /inter/i.test(String(instituicao || '')) || !!String(proposta || '').trim();
+  // Vale o banco da proposta ESCOLHIDA (Fabio 17/11, Jaime: o cliente escolheu o Inter no Financiamento antes de a proposta existir no nosso portal → o card ficou sem
+  // instituição e sem nº da proposta, e o bloco sumia). Banco escolhido (`_optouCaixa`/`_fhChosen`) ou a instituição do card; sem banco nenhum, o nº da proposta basta (como antes).
+  const banco = String(bancoEscolhido || instituicao || '').trim();
+  const ehInter = banco ? /inter/i.test(banco) : !!String(proposta || '').trim();
   // "Seguir com proposta" no portal do Inter (Fabio 22/10): a extensão abre a proposta, vai em Detalhes e clica em "Seguir com proposta"; PARA no aviso de confirmação (o último clique é da equipe).
   type Seguir = { proposta: string | null; status: string; requestedAt: string | null; readyAt: string | null; erro: string | null };
   const [seguir, setSeguir] = useState<Seguir | null>(null);
