@@ -37,10 +37,79 @@ export const SIM_INSTITUTIONS: Record<string, { label: string; extBank: 'CREDIMO
 const REQUESTED_TTL_MIN = 15; // ninguém pegou o pedido (extensão fechada/desatualizada)
 const RUNNING_TTL_MIN = 10; // pegou e não devolveu (aba fechou, SW reiniciou)
 
-async function noteFailure(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null }) {
+// NOVA TENTATIVA SOZINHA (Fabio 17/11, Gilvano: o PDF do Bradesco falhou uma vez — portal do Credimorar deslogado — e ninguém tentou de novo; "SE FALHAR UMA VEZ O CRM PRECISA
+// AJUSTAR O TEMPO PARA IR TENTANDO NOVAMENTE"): pedido automático (IA, escolha do banco, aviso) que falhou volta pra fila com espera crescente. Portal deslogado não gasta tentativa:
+// espera alguém entrar no portal. Falha que não muda sozinha (modelo do PDF, Creditas, valor diferente do aprovado) não refaz — vai pra equipe como antes.
+const RETRY_MIN = [3, 10, 20, 30, 60]; // espera depois da 1ª, 2ª… falha (6 tentativas em ~2 h)
+const FALHA_PERMANENTE = /Creditas desativado|modelo conhecido|n[aã]o achei o n[ºo°] da simula|aceite a proposta no Inter|mas o aprovado [eé]|n[aã]o fecha|vieram incompletos|Card n[aã]o encontrado/i;
+export const FALHA_LOGIN = /n[aã]o est[aá] logad|deslogad|tela de login/i;
+const hhmm = (d: Date) => d.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+/** Banco cujo estado "deslogado" vale pra este PDF: o Credimorar do Financiamento é a MESMA sessão do Home Equity (a fila do HE é que manda login=ok). */
+export function bancoDoLogin(institution: string): string | null {
+  const ext = SIM_INSTITUTIONS[institution]?.extBank;
+  return !ext ? null : ext.startsWith('CREDIMORAR') ? 'CREDIMORAR' : ext;
+}
+/** Mesma simulação com outro nome: o pedido do Inter do FH vira FH_INTER_CM quando a proposta maior é a do Credimorar (requestSimulationDocs). */
+const pedidoBase = (inst: string) => (inst === 'FH_INTER_CM' ? 'FH_INTER' : inst);
+const mesmaSimulacao = (inst: string) => (pedidoBase(inst) === 'FH_INTER' ? ['FH_INTER', 'FH_INTER_CM'] : [inst]);
+
+/** Quando refazer o pedido automático que falhou: { quando: null } = não refaz (pessoa pediu, falha permanente ou acabaram as tentativas). Pura no que decide; lê só a cadeia de falhas. */
+async function planoDeNovaTentativa(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }): Promise<{ quando: Date | null; login: boolean; falhas: number }> {
+  const fim = (r.finishedAt || new Date()).getTime();
+  // CAIXA fica fora: o aviso da CAIXA tem o próprio plano B (texto do simulador do site depois de 20 min — caixa-resultado), e um PDF atrasado repetiria a informação.
+  if (r.source !== 'AI' || r.institution === 'FH_CAIXA' || FALHA_PERMANENTE.test(r.detail || '')) return { quando: null, login: false, falhas: 0 };
+  // A equipe assumiu (IA desligada) ou o card fechou: o CRM não manda nada sozinho — vai pra equipe.
+  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { status: true, aiAutoReplyActive: true } });
+  if (!lead || lead.status !== 'OPEN' || !lead.aiAutoReplyActive) return { quando: null, login: false, falhas: 0 };
+  const desde = new Date(Date.now() - 12 * 3_600_000);
+  const insts = mesmaSimulacao(r.institution);
+  const ok = await db.simulationDocRequest.findFirst({ where: { leadId: r.leadId, institution: { in: insts }, status: { in: ['DONE', 'READY'] }, createdAt: { gt: desde } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+  const cadeia = await db.simulationDocRequest.findMany({ where: { leadId: r.leadId, institution: { in: insts }, source: 'AI', status: 'FAILED', createdAt: { gt: ok?.createdAt || desde, lte: r.createdAt } }, select: { detail: true } });
+  const falhas = cadeia.filter((x) => !FALHA_LOGIN.test(x.detail || '')).length;
+  if (cadeia.length > 12) return { quando: null, login: false, falhas }; // trava de segurança
+  if (FALHA_LOGIN.test(r.detail || '')) return { quando: new Date(fim + 2 * 60_000), login: true, falhas };
+  if (falhas > RETRY_MIN.length) return { quando: null, login: false, falhas };
+  return { quando: new Date(fim + RETRY_MIN[Math.max(0, falhas - 1)] * 60_000), login: false, falhas };
+}
+
+async function noteFailure(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }) {
   if (r.source !== 'AI') return; // pedido de pessoa: ela vê o motivo na própria tela
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
-  await db.note.create({ data: { leadId: r.leadId, type: 'COMMENT', content: `⚠️ O PDF da simulação do ${label} pedido pela IA NÃO saiu: ${r.detail || 'sem detalhe'}. Mande à mão pela Inbox (a logo A&F só entra sozinha em PDF do Credimorar; nos outros, peça ao suporte).` } }).catch(() => {});
+  const plano = await planoDeNovaTentativa(db, r).catch(() => ({ quando: null, login: false, falhas: 0 }));
+  const content = plano.login
+    ? `🔐 O PDF da simulação do ${label} pedido pela IA ainda não saiu: o portal do Credimorar está deslogado. Entre no portal (CAPTCHA + código por e-mail) — o CRM tenta de novo sozinho assim que a sessão voltar.`
+    : plano.quando
+      ? `⏳ O PDF da simulação do ${label} pedido pela IA não saiu (${r.detail || 'sem detalhe'}). O CRM tenta de novo sozinho por volta das ${hhmm(plano.quando)} (tentativa ${plano.falhas + 1} de ${RETRY_MIN.length + 1}).`
+      : `⚠️ O PDF da simulação do ${label} pedido pela IA NÃO saiu${plano.falhas > 1 ? ` depois de ${plano.falhas} tentativas` : ''}: ${r.detail || 'sem detalhe'}. Mande à mão pela Inbox (a logo A&F só entra sozinha em PDF do Credimorar; nos outros, peça ao suporte).`;
+  await db.note.create({ data: { leadId: r.leadId, type: 'COMMENT', content } }).catch(() => {});
+}
+
+/** Refaz os pedidos automáticos que falharam, na hora marcada (planoDeNovaTentativa). Roda a cada consulta das extensões (expireStuck). */
+let refazendo = false;
+async function refazerFalhas(db: Db, accountId: string) {
+  if (refazendo) return;
+  refazendo = true;
+  try {
+    const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    if (ca.foraDoHorario() && !(await ca.liberadoAte(db as any, accountId))) return; // fora do horário das extensões ninguém pega: não gasta tentativa
+    const rows = await db.simulationDocRequest.findMany({ where: { accountId, source: 'AI', status: 'FAILED', finishedAt: { gt: new Date(Date.now() - 8 * 3_600_000) } }, orderBy: { createdAt: 'desc' }, take: 40 });
+    const vistos = new Set<string>();
+    for (const r of rows) {
+      const chave = `${r.leadId}:${pedidoBase(r.institution)}`;
+      if (vistos.has(chave)) continue; // só a falha mais recente de cada simulação
+      vistos.add(chave);
+      // Já tem pedido mais novo (outra tentativa, ou a equipe mandou à mão): não refaz.
+      if (await db.simulationDocRequest.findFirst({ where: { leadId: r.leadId, institution: { in: mesmaSimulacao(r.institution) }, createdAt: { gt: r.createdAt } }, select: { id: true } })) continue;
+      const plano = await planoDeNovaTentativa(db, r);
+      if (!plano.quando || plano.quando.getTime() > Date.now()) continue;
+      const banco = bancoDoLogin(r.institution);
+      if (plano.login && banco && ca.loginNeededFor(accountId, banco)) continue; // ainda deslogado
+      // A equipe já mandou um PDF à mão pela Inbox depois da falha: não manda outro.
+      if (await db.message.findFirst({ where: { leadId: r.leadId, direction: 'OUTBOUND', createdAt: { gt: r.finishedAt || r.createdAt }, attachments: { some: { mimeType: 'application/pdf' } } }, select: { id: true } })) continue;
+      const out = await requestSimulationDocs(db, { accountId, leadId: r.leadId, institutions: [pedidoBase(r.institution)], source: 'AI', caption: r.caption || undefined, skipIfSentWithinHours: 3 }).catch((e: any) => { console.error('[Simulação] nova tentativa:', e?.message); return null; });
+      if (out?.created.length) console.log(`[Simulação] nova tentativa do PDF ${r.institution} (lead ${r.leadId}) depois da falha: ${String(r.detail || '').slice(0, 120)}`);
+    }
+  } catch (e: any) { console.error('[Simulação] refazer falhas:', e?.message); } finally { refazendo = false; }
 }
 
 async function expireStuck(db: Db, accountId: string) {
@@ -59,6 +128,7 @@ async function expireStuck(db: Db, accountId: string) {
   const esquecidos = await db.simulationDocRequest.findMany({ where: { accountId, status: 'READY', updatedAt: { lt: new Date(now - 8 * 60_000) } }, select: { id: true } });
   for (const x of esquecidos) await releaseHeld(db, x.id).catch(() => {});
   await expire({ status: 'RUNNING', startedAt: { lt: new Date(now - RUNNING_TTL_MIN * 60_000) } }, 'A extensão pegou o pedido mas não devolveu os dados (janela fechada ou extensão reiniciada).');
+  await refazerFalhas(db, accountId);
 }
 
 export function parseInstitutions(raw: unknown): string[] {

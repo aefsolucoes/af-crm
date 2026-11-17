@@ -9,7 +9,7 @@ import { setLeadAutoPause, expediteCheck } from '../services/credit-analysis.ser
 import { getAutoSetting, setAutoSetting, setPaused, setPauseInterEmails } from '../services/credit-auto.service';
 import { pedirBuscaPortal, claimBuscas, resultadoBusca, escolherDoPortal } from '../services/busca-portal.service';
 import { claimEnviosPortal, pedirEnvioPortal, resultadoEnvioPortal, estadoSantanderManual } from '../services/santander-manual.service';
-import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions } from '../services/simulation-doc.service';
+import { requestSimulationDocs, claimSimulationDocs, finishSimulationDoc, finishInterDoc, finishCreditasDoc, finishItauDoc, failSimulationDoc, listSimulationDocs, parseInstitutions, FALHA_LOGIN, bancoDoLogin } from '../services/simulation-doc.service';
 import {
   BANK_KEYS, EXT_BANK_KEYS, FH_BANK, FH_RUN_BANKS, FH_ITAU_BANK, fhBoard, EXTENSION_STATUS, foraDoHorario, liberadoAte, setLoginNeeded, alertLoginNeeded, holdRunForLogin, extensionsLive, board, createRequests, claimQueue, reportAnalysis, updateAnalysis,
   registerManual, chooseAnalysis, trocarOpcaoCreditas, touchExtension, extensionStatus, leadAnalyses, getOverride, setOverrides, creditMetrics, acquireLock, releaseLock, renewLock, releaseOrphans,
@@ -508,7 +508,13 @@ router.post('/simulation-docs/:id/itau', async (req: AuthRequest, res: Response)
 });
 router.post('/simulation-docs/:id/fail', async (req: AuthRequest, res: Response) => {
   try {
-    await failSimulationDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, reason: String(req.body?.reason || 'a extensão não conseguiu baixar o PDF') });
+    // `login: true` (Credimorar ≥ 2026.11.17.1): o portal pediu login. O pedido fica "deslogado" (não gasta tentativa), a tela mostra e o dono das extensões recebe push;
+    // assim que alguém entra no portal o CRM pede o PDF de novo sozinho (simulation-doc.service, refazerFalhas).
+    const login = req.body?.login === true;
+    const motivo = String(req.body?.reason || 'a extensão não conseguiu baixar o PDF');
+    const r = await failSimulationDoc(prisma, { accountId: req.user!.accountId, id: req.params.id, reason: login && !FALHA_LOGIN.test(motivo) ? `sessão do portal não está logada — ${motivo}` : motivo });
+    const banco = login && r ? bancoDoLogin(r.institution) : null;
+    if (banco) { setLoginNeeded(req.user!.accountId, banco, true); alertLoginNeeded(req.user!.accountId, banco); }
     emit(req);
     res.json({ ok: true });
   } catch (err) { fail(res, err, 'Erro ao registrar a falha', 400); }

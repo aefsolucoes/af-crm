@@ -1092,9 +1092,12 @@ export async function applyAiExtractedActions(
     if (action.sendSimulation && action.sendSimulation.length && !action.sendApproval) { // com sendApproval o PDF já vai junto do aviso padrão
       try {
         const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
-        const r = await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: action.sendSimulation.slice(0, 1), source: 'AI', skipIfSentWithinHours: 0.25 });
+        // Financiamento Habitacional (Gilvano 17/11): os PDFs são outros (FH_BRADESCO, FH_ITAU, FH_SANTANDER, FH_INTER) e vai o do banco escolhido. Home Equity: Santander/Inter.
+        const fh = await (require('./fh-approval.service') as typeof import('./fh-approval.service')).pdfDoFinanciamento(leadId, action.sendSimulation);
+        const insts = fh === null ? action.sendSimulation.filter((b) => b === 'SANTANDER' || b === 'INTER').slice(0, 1) : fh ? [fh] : [];
+        const r = insts.length ? await requestSimulationDocs(prisma as any, { accountId, leadId, institutions: insts, source: 'AI', skipIfSentWithinHours: 0.25 }) : { created: [], skipped: [] as string[] };
         const quais = r.created.map((c: any) => c.institution).join(', ');
-        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.created.length ? `🤖 A IA pediu o PDF da simulação (${quais}) a pedido do cliente; sai com a logo A&F assim que a extensão baixar do portal.` : `🤖 A IA quis mandar o PDF da simulação, mas já havia um pedido em andamento (${r.skipped.join(', ') || 'nenhum banco válido'}).` } }).catch(() => {});
+        await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: r.created.length ? `🤖 A IA pediu o PDF da simulação (${quais}) a pedido do cliente; sai com a logo A&F assim que a extensão baixar do portal.` : !insts.length ? `🤖 A IA quis mandar o PDF da simulação (${action.sendSimulation.join(', ')}), mas não há banco aprovado com PDF ${fh === null ? 'no Home Equity' : 'no Financiamento (escolhido ou aprovado)'} — nada foi pedido. Confira e mande à mão se for o caso.` : `🤖 A IA quis mandar o PDF da simulação, mas já havia um pedido em andamento ou o PDF acabou de ir (${r.skipped.join(', ')}).` } }).catch(() => {});
         if (r.created.length) logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId: lead.id, leadName: lead.name, summary: `pediu o PDF da simulação (${quais})` });
       } catch (e: any) { console.error('[IA] pedir PDF da simulação falhou:', e?.message); }
     }

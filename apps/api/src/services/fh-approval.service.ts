@@ -534,6 +534,24 @@ export async function proximosPassosFh(accountId: string, leadId: string, io?: a
   await sendOutboundWhatsApp({ accountId, leadId, io, content: passos });
 }
 
+/** "sendSimulation" da IA num card do Financiamento (Gilvano 17/11): o PDF é SEMPRE o do banco escolhido ("Seguir com esta"); sem escolha, o banco que a IA pediu, se aprovado.
+ *  null = o card não é do Financiamento (vale o Home Equity); '' = Financiamento sem banco aprovado com PDF. */
+export async function pdfDoFinanciamento(leadId: string, pedidos: string[]): Promise<string | null> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
+  if (!lead || !/habitacional/i.test(lead.pipeline?.department?.name || '')) return null;
+  const cf = (lead.customFields || {}) as Cf;
+  const escolhido = String(cf._fhChosen?.bank || '');
+  if (PDF_INST[escolhido]) return PDF_INST[escolhido];
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const resumo = parseBancosFinanciamento(cf._fhResumo);
+  const NOME: Record<string, string> = { BRADESCO: 'Bradesco', ITAU: 'Itaú', SANTANDER: 'Santander', INTER: 'Inter' };
+  for (const k of pedidos) {
+    const st = String(resumo[NOME[k]]?.status || '');
+    if (PDF_INST[NOME[k]] && /aprovad/i.test(st) && !/n[aã]o aprovad|reprov/i.test(st)) return PDF_INST[NOME[k]];
+  }
+  return '';
+}
+
 /** O cliente disse ESCREVENDO com qual banco do Financiamento vai seguir (a IA marcou "chooseBank") — mesmo efeito do botão "Seguir com esta". */
 export async function chooseFhBankByAi(accountId: string, leadId: string, bankKey: string, io?: any): Promise<boolean> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, aiAutoReplyActive: true, pipeline: { select: { department: { select: { name: true } } } } } });
@@ -668,7 +686,7 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   const r = await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: pergunta, buttons: [CAIXA_SIM, CAIXA_NAO] });
   if (!r.success) await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `${pergunta}\n\nÉ só me responder *sim* ou *não*.` });
   await saveCf(lead.id, { _fhCaixaAsk: { at: new Date().toISOString(), banco } });
-  await note(lead.id, `🏠 Financiamento (${banco}): mandei a simulação em PDF, a lista de documentos (RG/CNH + comprovante de residência${comRenda ? ' + RENDA' : ''} + imóvel + vendedor)${passos ? ', os próximos passos' : ''}${taxas ? ' e as taxas' : ''}, e perguntei se ele quer aprovar também no BRB.${movido ? ` Card movido pra "${movido}".` : ''}`);
+  await note(lead.id, `🏠 Financiamento (${banco}): ${inst ? 'pedi a simulação em PDF (sai sozinha quando a extensão baixar do portal; se falhar, o CRM tenta de novo), ' : ''}mandei a lista de documentos (RG/CNH + comprovante de residência${comRenda ? ' + RENDA' : ''} + imóvel + vendedor)${passos ? ', os próximos passos' : ''}${taxas ? ' e as taxas' : ''}, e perguntei se ele quer aprovar também no BRB.${movido ? ` Card movido pra "${movido}".` : ''}`);
   return true;
 }
 

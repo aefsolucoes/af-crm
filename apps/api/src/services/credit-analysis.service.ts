@@ -2370,6 +2370,20 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
     const fh = parseBancosFinanciamento(cf._fhResumo);
     for (const [banco, b] of Object.entries(fh)) linhas.push(`- ${banco} (Financiamento Habitacional): ${b.texto.slice(0, 260)}`);
     linhas.push(`- NOVA PROPOSTA NO FINANCIAMENTO: se o cliente pedir OUTRO prazo (60 a 420 meses) ou OUTRO valor financiado, use "simulate" ({"prazo": N} e/ou {"valor": N}) — o CRM roda uma simulação nova no Credimorar, no Inter e no Itaú e o aviso com o resultado sai sozinho. Nunca invente parcela.${cf._fhPrazo ? ` Última simulação pedida com ${cf._fhPrazo} meses.` : ''}`);
+    // PDF da simulação no Financiamento (Gilvano 17/11: "quero ver a simulação" → a IA disse "já vem na sequência" sem pedir nada; o PDF da escolha tinha falhado com o portal deslogado).
+    const CHAVE_FH: Record<string, string> = { Bradesco: 'BRADESCO', 'Itaú': 'ITAU', Santander: 'SANTANDER', Inter: 'INTER' };
+    const escolhido = String(cf._fhChosen?.bank || '');
+    if (CHAVE_FH[escolhido]) {
+      const ult = await db.simulationDocRequest.findFirst({ where: { leadId, institution: { startsWith: `FH_${CHAVE_FH[escolhido]}` }, source: { in: ['AI', 'USER'] } }, orderBy: { createdAt: 'desc' }, select: { status: true, createdAt: true, finishedAt: true } });
+      const quando = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      const estado = !ult ? 'nenhum PDF pedido ainda'
+        : ult.status === 'DONE' ? `o PDF JÁ FOI ENVIADO ao cliente (${quando(ult.finishedAt || ult.createdAt)}) — não marque de novo, a menos que ele diga que não recebeu ou não abriu`
+          : ult.status === 'FAILED' ? `o último pedido do PDF NÃO saiu (${quando(ult.finishedAt || ult.createdAt)}; o CRM tenta de novo sozinho) — se ele pedir a simulação, marque de novo`
+            : 'o PDF está sendo gerado agora — diga que já vem, sem marcar de novo';
+      linhas.push(`- SIMULAÇÃO EM PDF NO FINANCIAMENTO: o cliente escolheu o ${escolhido}. Se ele pedir a simulação, o PDF ou as parcelas, marque "sendSimulation": ["${CHAVE_FH[escolhido]}"] — o CRM baixa no portal e manda sozinho. NUNCA diga que a simulação "já vem" ou "está sendo providenciada" sem marcar (ou sem o PDF estar sendo gerado). Situação agora: ${estado}.`);
+    } else if (cf._fhNotice) {
+      linhas.push('- SIMULAÇÃO EM PDF NO FINANCIAMENTO: vai a do banco que o cliente escolher. Se ele pedir a simulação antes de escolher, peça pra tocar em "Seguir com esta" na proposta que quer (ou dizer qual banco) — a simulação em PDF sai logo em seguida.');
+    }
   }
   linhas.push(...(await caixaBrbContext(db, leadId, cf)));
   if (!linhas.length) return '';
