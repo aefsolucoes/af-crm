@@ -110,6 +110,23 @@ export function semCobrancaRude(reply: string): string {
   return partes.filter((x) => !RUDE.test(x)).join('').replace(/\s+/g, ' ').trim();
 }
 const jaDisseAguardo = (t?: string | null) => /aguardo d[aeo]s? documenta/i.test(String(t || ''));
+// Fabio 17/11, Gilvano: a gente disse que a simulação "já vem na sequência", ela não veio e, 2 h depois, ele escreveu "No aguardo" → o atalho do "ok" respondeu
+// "Fico no aguardo da documentação." (devolveu a frase dele, coisa de robô). Quem escreve "aguardo/aguardando" está esperando a GENTE: isso nunca vira o fecho do
+// "fico no aguardo"; se a nossa última mensagem prometeu algo e já faz um tempo, a IA lê a conversa e responde (regra CLIENTE ESPERANDO ALGO NOSSO).
+const CLIENTE_AGUARDA_RX = /\baguard/i;
+const PROMETEMOS_RX = /(j[aá] (te )?(mando|envio|encaminho|retorno|aviso)|vem na sequ[eê]ncia|providenciando|te (mando|envio|encaminho|retorno|aviso)|assim que (sair|ficar pronto|tiver|receber)|em (breve|seguida))/i;
+const PROMESSA_ATRASADA_MS = 20 * 60_000;
+/** O cliente escreveu que está aguardando algo que a nossa última mensagem prometeu mandar? Pura (testável). */
+export function clienteEsperaPromessa(textoCliente: string, nossaUltima?: string | null): boolean {
+  return CLIENTE_AGUARDA_RX.test(textoCliente || '') && PROMETEMOS_RX.test(String(nossaUltima || ''));
+}
+/** Tira "Fico no aguardo…" da resposta quando já dissemos isso nas últimas 24 h (Fabio 17/11, amostra de conversas: o mesmo cliente recebeu a frase em mensagens seguidas,
+ *  13:09 e 13:11 — o prompt pede uma vez só e o modelo repetia). Pura (testável). */
+export function semAguardoRepetido(reply: string, jaDisse: boolean): string {
+  if (!jaDisse) return reply;
+  const partes = reply.match(/[^.?!\n]+[.?!]*\s*/g) || [reply];
+  return partes.filter((x) => !/\bfico no aguardo\b/i.test(x)).join('').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+}
 
 /** Texto de fechamento se a mensagem for despedida/agradecimento; senão null. */
 export function farewellReply(text: string): string | null {
@@ -176,7 +193,7 @@ const HANDOFF_RULES = `
 ESTE É UM WHATSAPP ÚNICO: quem atende o cliente é a Andreia (você fala como ela). Não existe outro atendente, setor ou pessoa pra quem "passar" o cliente — NUNCA diga que vai transferir, passar pra um atendente, pra outra pessoa ou pra equipe.
 LIGAÇÕES: quem liga pro cliente é SEMPRE a Andreia — fale em primeira pessoa ("eu te ligo", "na nossa ligação"). Nunca diga que outra pessoa (Fabio, o responsável do card ou qualquer nome da equipe) vai ligar ou explicar algo numa ligação, mesmo que apareça outro nome no histórico ou nos dados do card.
 Depois que uma ligação já foi combinada na conversa, NÃO fique reafirmando nem citando a ligação nas mensagens seguintes (nada de "antes da nossa ligação", "fica marcada pra amanhã", "te explico na ligação") — responda o que o cliente perguntou e só fale da ligação se ELE perguntar dela.
-ENTENDER ANTES DE RESPONDER (Fabio 15/10, Pedro Paiva): releia as últimas mensagens — a frase do cliente quase sempre CONTINUA o assunto anterior (se estavam falando de antecipar parcelas, "devo receber o valor em 1 ano" não é sobre a liberação do crédito). Se a frase puder ter mais de um sentido, NÃO afirme nem corrija: faça UMA pergunta curta pra confirmar o que ele quis dizer ("Você quis dizer que pretende usar esse valor pra antecipar as parcelas do Inter?"). Nunca corrija o cliente com "Não é bem assim"/"Na verdade…" sem ter certeza, e NUNCA desmereça o que ele disse ("isso é uma coisa à parte", "não tem relação com o crédito", "isso não importa") — se não tem a ver com o crédito, apenas acolha e pergunte.
+ENTENDER ANTES DE RESPONDER (Fabio 15/10, Pedro Paiva): releia as últimas mensagens — a frase do cliente quase sempre CONTINUA o assunto anterior (se estavam falando de antecipar parcelas, "devo receber o valor em 1 ano" não é sobre a liberação do crédito). Se a frase puder ter mais de um sentido, primeiro use o contexto — o assunto anterior e o que já aconteceu no card (proposta preenchida, aprovação enviada, documento pedido) — e responda no sentido mais provável, sem perguntar (Fabio 17/11, Gilvano: "Já enviei os dados" depois da aprovação = os dados da proposta). Só se o contexto não resolver, NÃO afirme nem corrija: faça UMA pergunta curta, de sim ou não, sobre o sentido mais provável (nunca "isso ou aquilo" nem lista entre parênteses), pra confirmar o que ele quis dizer ("Você quis dizer que pretende usar esse valor pra antecipar as parcelas do Inter?"). Nunca corrija o cliente com "Não é bem assim"/"Na verdade…" sem ter certeza, e NUNCA desmereça o que ele disse ("isso é uma coisa à parte", "não tem relação com o crédito", "isso não importa") — se não tem a ver com o crédito, apenas acolha e pergunte.
 NUNCA invente passo a passo, botão ou opção de sites/apps de terceiros (gov.br, banco, cartório…): só explique o que está na Base de Conhecimento; se não souber, diga que vai confirmar com a equipe.
 NÃO cumprimente de novo no meio da conversa: se já trocaram mensagens hoje, não comece com "Oi, Fulano"/"Olá" — vá direto ao assunto (saudação só quando for a primeira mensagem do dia/da conversa).
 NÃO se apresente ("aqui é a Andreia", "Andreia da A&F") — o cliente já sabe com quem está falando; só diga seu nome quando for necessário (ex.: ele perguntar quem é). Vale a qualquer hora, inclusive à noite: o atendimento é o mesmo.
@@ -256,6 +273,7 @@ const APARTMENT_APPRAISAL_RULES = `AVALIAÇÃO DIGITAL DE APARTAMENTO (Fabio 20/
 - CASA: não faça essas perguntas (a avaliação de casa é com visita do engenheiro; a equipe combina o contato depois).`;
 
 const OUTRO_CANAL_RULES = `OUTRO CANAL (Fabio 29/10): depois de todo aviso de aprovação o CRM pergunta "Você já enviou seus dados ou tentou aprovar esse mesmo crédito por outro meio (outro banco, site, aplicativo ou correspondente)?" e avisa (⚠️) que seguir com outra operação ou tentar aprovar em outro lugar pode inviabilizar o processo aqui e lá e deixar o cliente bloqueado. Ao responder isso:
+- PRIMEIRO, VEJA SE É RESPOSTA A ESSE AVISO (Fabio 17/11, Gilvano: horas depois do aviso ele escreveu "Já enviei os dados" e a IA perguntou se ele tinha mandado os documentos ou enviado os dados em outro banco/site — ele achou que era robô): só é resposta ao aviso quando o cliente responde logo depois dele ou cita outro banco, site, app ou correspondente. "Já enviei os dados", "já mandei meus dados", "já passei tudo", sem citar outro lugar, de quem já preencheu a proposta com a gente, é sobre a PROPOSTA: diga de forma natural que os dados da proposta já estão com a gente (foi com eles que saiu a aprovação) e que, pra contratar, o banco precisa da documentação — e cite só o que falta (se a lista já foi enviada, diga que está na mensagem que você mandou). Nunca pergunte "isso ou aquilo" pra descobrir.
 - Cliente diz que SIM (já mandou dados/fez proposta em outro banco, site, app ou correspondente): agradeça por avisar; se ele não disse ONDE, pergunte em qual banco/correspondente e há quanto tempo; reforce o aviso: não seguir com a outra operação nem tentar aprovar em outro lugar, porque isso pode inviabilizar o processo aqui e lá e ele pode ficar bloqueado nos bancos. A equipe já é avisada sozinha: NÃO use askTeam nem handoff só por isso. Nunca fale mal do outro correspondente. Se o banco que ele citou está REPROVADO no bloco da análise de crédito, siga também a regra CLIENTE CITA UM BANCO QUE REPROVOU (diga primeiro que lá não foi aprovado e qual é a aprovação que saiu).
 - Cliente diz que NÃO: siga a conversa normalmente (sem "ok", sem agradecer à toa); se não houver nada a dizer, noReply.`;
 
@@ -657,8 +675,8 @@ export async function generateAiAutoReply(
       // Nossa última mensagem fez uma pergunta de verdade: o "ok, obrigado"
       // pode ser a resposta — segue o fluxo normal. Já fechamos: não repete.
       if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
-        // Card esperando documento: o fecho leva "Fico no aguardo da documentação." (uma vez só)
-        const espera = (await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content);
+        // Card esperando documento: o fecho leva "Fico no aguardo da documentação." (uma vez só; nunca quando quem escreveu "aguardo" foi o cliente — Gilvano 17/11)
+        const espera = (await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content) && !CLIENTE_AGUARDA_RX.test(incomingText);
         if (lastOut && /disponha/i.test(lastOut.content)) return espera ? { reply: FICO_NO_AGUARDO, handoff: false } : { reply: '', handoff: false, noReply: true };
         console.log(`[AI Auto-reply] cliente encerrou ("${incomingText.trim().slice(0, 40)}") — fechando com "${closing}"`);
         return { reply: espera ? `${closing} ${FICO_NO_AGUARDO}` : closing, handoff: false };
@@ -668,11 +686,14 @@ export async function generateAiAutoReply(
       const lastOut = await prisma.message.findFirst({
         where: { leadId, direction: 'OUTBOUND', callWaCallId: null, deleted: false },
         orderBy: { createdAt: 'desc' },
-        select: { content: true },
+        select: { content: true, createdAt: true },
       });
-      if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
-        // "Entendi"/"Ok" com o card esperando documento: fecha com "Fico no aguardo da documentação." (uma vez só)
-        if ((await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content)) { console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — fico no aguardo da documentação`); return { reply: FICO_NO_AGUARDO, handoff: false }; }
+      // "No aguardo" depois de a gente prometer algo que não chegou (Gilvano 17/11): o cliente está cobrando — a IA lê a conversa e responde (não é só um "ok").
+      const cobrando = !!lastOut && clienteEsperaPromessa(incomingText, lastOut.content) && Date.now() - lastOut.createdAt.getTime() >= PROMESSA_ATRASADA_MS;
+      if (cobrando) console.log(`[AI Auto-reply] cliente esperando o que a gente prometeu ("${incomingText.trim().slice(0, 40)}") — a IA responde`);
+      else if ((!lastOut || !hasRealQuestion(lastOut.content)) && !NOT_VIABLE_RE.test(lastOut?.content || '')) {
+        // "Entendi"/"Ok" com o card esperando documento: fecha com "Fico no aguardo da documentação." (uma vez só). "Aguardo/aguardando" do cliente nunca: seria devolver a frase dele.
+        if (!CLIENTE_AGUARDA_RX.test(incomingText) && (await aguardaDocumentacao(leadId)) && !jaDisseAguardo(lastOut?.content)) { console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — fico no aguardo da documentação`); return { reply: FICO_NO_AGUARDO, handoff: false }; }
         console.log(`[AI Auto-reply] cliente só confirmou ("${incomingText.trim().slice(0, 40)}") — sem resposta`);
         return { reply: '', handoff: false, noReply: true };
       }
@@ -889,6 +910,12 @@ ${conversasPorTelefone}` : ''}`;
       const limpo = semCobrancaRude(result.reply);
       if (limpo !== result.reply) result.reply = limpo || FICO_NO_AGUARDO;
     }
+    // "Fico no aguardo…" uma vez só (Fabio 17/11, amostra de conversas): já dito nas últimas 24 h → a frase sai; se só sobrava ela, não responde.
+    if (result.reply && /\bfico no aguardo\b/i.test(result.reply)) {
+      const jaDisse = !!(await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: 'no aguardo', mode: 'insensitive' }, createdAt: { gte: new Date(Date.now() - 86_400_000) } }, select: { id: true } }).catch(() => null));
+      const sem = semAguardoRepetido(result.reply, jaDisse);
+      if (sem !== result.reply) { result.reply = sem; if (!sem) result.noReply = true; }
+    }
     // Quando manda a dúvida pra equipe, a IA não fala nada pro cliente
     // (Fabio 30/09) — mas às vezes ela escreve "deixa eu confirmar com a
     // equipe, já te retorno" junto (Marcelo 08/10). Trava fixa: descarta.
@@ -931,7 +958,7 @@ const DOCS_PROMISE_SEND_RX = /(mand|envi|encaminh|pass(o|ar)|trag|junt|separ|ent
 const DOCS_PROMISE_LATER_RX = /(\bvou\b|\bvamos\b|\birei\b|\bte (mand|envi|encaminh|pass)|\bj[aá] (te )?(mand|envi|encaminh)|\bem breve\b|\blogo\b|\bmais tarde\b|\bquando\b|amanh[ãa]|\bdepois\b|\b[àa] noite\b|\bhoje\b|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|semana que vem)/i;
 const DOCS_PROMISE_PAST_RX = /\b(mandei|enviei|encaminhei|passei|j[aá] (mandou|enviou)|enviado|mandado)\b/i;
 const DOCS_PROMISE_NEG_RX = /(n[ãa]o (tenho|quero|vou) (mais )?(interesse|seguir|continuar)|desist|cancel)/i;
-const DOUBT_Q = 'Ficou com alguma dúvida?';
+const DOUBT_Q = 'Se ficou alguma dúvida, é só me falar.'; // oferta, não pergunta (Fabio 17/11: uma pergunta por mensagem)
 const PRAZO_Q = 'Até quando você consegue me mandar?';
 // Data/prazo no texto do cliente (aí não precisa perguntar): dia da semana, amanhã, "dia 5", "05/11", "semana que vem", "fim do mês"…
 const DOCS_PRAZO_RX = /(amanh[ãa]|hoje|\bdia \d{1,2}\b|\b\d{1,2}\/\d{1,2}\b|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|semana que vem|pr[óo]xima semana|fim d[oa] m[êe]s|final d[oa] m[êe]s|fim de semana|mais tarde|[àa] noite|daqui)/i;
@@ -1005,13 +1032,18 @@ async function addDocsDoubtQuestions(leadId: string, incomingText: string, etapa
     if (!promisesDocsSoon(incomingText)) return;
     // Prometeu mandar sem dizer quando (ex.: botão "Vou enviar" do lembrete): pergunta o prazo (Fabio 28/10) — a data que ele der segura o loop de lembretes.
     const prazoPerguntado = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: PRAZO_Q }, createdAt: { gte: new Date(Date.now() - 2 * 86_400_000) } }, select: { id: true } });
+    // UMA pergunta por mensagem (Fabio 17/11, amostra de conversas: saía "Fico no aguardo. / Até quando você consegue me mandar? / Ficou com alguma dúvida? A parcela
+    // coube no seu orçamento?" — três perguntas coladas, cara de robô). O prazo vem primeiro; a do orçamento fica pra próxima vez que ele disser que vai mandar.
     if (!prazoPerguntado && !DOCS_PRAZO_RX.test(incomingText) && !/at[ée] quando|qual (o )?prazo|quando (voc[êe] )?consegue/i.test(result.reply || '')) {
       if ((result.reply || '').trim()) result.reply = `${(result.reply || '').trim()}\n\n${PRAZO_Q}`;
       else if (result.noReply) { result.reply = PRAZO_Q; result.noReply = false; }
+      return;
     }
     const jaPerguntou = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: 'coube no seu orçamento', mode: 'insensitive' } }, select: { id: true } });
     if (jaPerguntou) return;
     const reply = (result.reply || '').trim();
+    if (reply.includes('?')) return; // a resposta já faz uma pergunta: não empilha outra
+    // Dúvida vira oferta (sem "?") e a única pergunta é a do orçamento.
     const falta = [!/d[uú]vida/i.test(reply) && DOUBT_Q, !/(parcela[^.?!]*(coube|cabe)|(coube|cabe)[^.?!]*or[cç]amento)/i.test(reply) && BUDGET_Q].filter(Boolean) as string[];
     if (!falta.length) return;
     if (reply) { result.reply = `${reply}\n\n${falta.join(' ')}`; return; }

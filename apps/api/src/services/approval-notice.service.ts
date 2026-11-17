@@ -937,9 +937,10 @@ export async function checkOutroCanalAnswer(accountId: string, leadId: string, t
   if (!t || t.length > 400 || OUTRO_CANAL_NAO.test(t) || !OUTRO_CANAL_SIM.test(t)) return;
   const q = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, content: { contains: OUTRO_CANAL_Q }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (!q) return;
-  // "sim"/"já" soltos só valem se a pergunta foi a ÚLTIMA mensagem nossa; citando banco/correspondente/site vale qualquer resposta nos 3 dias. Um alerta por pergunta.
+  // Sem citar outro lugar (banco/correspondente/site/app), só vale se a pergunta foi a ÚLTIMA mensagem nossa; citando, vale qualquer resposta nos 3 dias. Um alerta por pergunta.
+  // Fabio 17/11, Gilvano: "Já enviei os dados", horas depois do aviso e com a proposta já preenchida com a gente, falava da PROPOSTA — não é resposta ao aviso (vale também pra "eu enviei os dados", "mandei a proposta").
   const ultimaNossa = await prisma.message.findFirst({ where: { leadId, direction: 'OUTBOUND', deleted: false, channel: { not: 'EMAIL' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
-  if (/^(sim|ja|fiz|tentei|mandei|enviei|passei)\b/.test(t) && !/outro|correspondente|site|app|banco/.test(t) && !String(ultimaNossa?.content || '').includes(OUTRO_CANAL_Q)) return;
+  if (!/outro|correspondente|site|app|banco/.test(t) && !String(ultimaNossa?.content || '').includes(OUTRO_CANAL_Q)) return;
   const jaAvisou = await prisma.note.findFirst({ where: { leadId, content: { startsWith: '⚠️ Outro canal' }, createdAt: { gt: q.createdAt } }, select: { id: true } });
   if (jaAvisou) return;
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
