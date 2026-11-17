@@ -145,6 +145,24 @@ export async function pedirCadastroCaixa(accountId: string, leadId: string, por:
   return null;
 }
 
+/** Endereço da ficha com o CEP que a CAIXA acha (cep-regiao): CEP inexistente → CEP geral/da região, `cepGeral: true` (a extensão escreve o logradouro do
+ *  comprovante por cima do que a CAIXA trouxer) e o CEP original em `cepOriginal`. Anota no card uma vez por participante (cadastros[ordem].cepGeral). */
+async function enderecoComCepDaRegiao(leadId: string, ordem: number, e: any): Promise<any> {
+  const cep = String(e?.cep || '').replace(/\D/g, '');
+  if (cep.length !== 8) return e;
+  const { cepParaCaixa } = require('./cep-regiao.service') as typeof import('./cep-regiao.service');
+  const r = await cepParaCaixa(cep).catch(() => null);
+  if (!r || !r.geral) return e;
+  const atual = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const ja = (((atual?.customFields || {}) as Cf)._caixaCadastro?.cadastros?.[ordem] || {}).cepGeral;
+  if (!ja || ja.para !== r.cep) {
+    await salvar(leadId, (x) => { x.cadastros = x.cadastros || {}; x.cadastros[ordem] = { ...(x.cadastros[ordem] || {}), cepGeral: { de: cep, para: r.cep, regiao: r.de || '' } }; });
+    const fmt = (c: string) => `${c.slice(0, 5)}-${c.slice(5)}`;
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📮 CAIXA: o CEP do comprovante (${fmt(cep)}) não existe na base dos Correios — a CAIXA dá "CEP não localizado". No cadastro vai o CEP da região, ${fmt(r.cep)}${r.de ? ` (${r.de})` : ''}, com o logradouro, o número e o bairro do comprovante (Fabio 17/11).` } }).catch(() => {});
+  }
+  return { ...e, cep: r.cep, cepGeral: true, cepOriginal: cep };
+}
+
 /** Próximo trabalho da extensão: o 1º participante ainda sem consulta do card mais antigo na fila. Marca como "em consulta" (10 min). */
 export async function proximaConsulta(accountId: string): Promise<any | null> {
   // Consulta que já falhou ou foi largada vai pro fim da fila (Fabio 09/11: um card repetiu por horas e prendeu quem estava atrás); a que está em andamento fica na frente pra valer o "um por vez".
@@ -218,8 +236,11 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       await salvar(id, (x) => { x.atual = { ordem: pc.ordem, desde: new Date().toISOString(), tipo: 'cadastrar' }; x.cadastros[pc.ordem] = { ...x.cadastros[pc.ordem], status: 'RODANDO', inicio: new Date().toISOString(), tentativas: (x.cadastros[pc.ordem]?.tentativas || 0) + 1 }; });
       const { fontes, faltando, ...participante } = pc;
       const p1 = ps.find((x) => x.ordem === 1);
+      // CEP que não existe nos Correios (Fabio 17/11, Emerson: "CEP não localizado" na CAIXA) → CEP geral/da região; a extensão escreve o logradouro do comprovante por cima.
+      const endP = await enderecoComCepDaRegiao(id, pc.ordem, participante.endereco);
+      const endP1 = p1 ? (p1.ordem === pc.ordem ? endP : await enderecoComCepDaRegiao(id, p1.ordem, p1.endereco)) : null;
       // avaliacaoFeita: a extensão não relança renda só pra acertar o mês de referência depois do crédito rodado (Fabio 01/11).
-      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: p1.endereco, telefone: p1.telefone || '', email: p1.email || '' } : null }; // celular/e-mail do 1º: o cônjuge sem os dele usa esses (Fabio 12/11)
+      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, endereco: endP, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: endP1, telefone: p1.telefone || '', email: p1.email || '' } : null }; // celular/e-mail do 1º: o cônjuge sem os dele usa esses (Fabio 12/11)
     }
     const p = participantesDa(cf).find((x) => !c.consultas?.[x.ordem]);
     if (!p) continue;
@@ -532,7 +553,10 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   const comRenda = !p.semRenda && !p.rendaInformal && ((Array.isArray(fontes) && fontes.length > 0) || Number(p.rendaBrutaMensal) > 0);
   const manter = comoEsta && comRenda;
   // Órgão do RG já no nome da lista da CAIXA (Fabio 01/11, Fernanda): a ficha antiga diz "INSTITUTO DE IDENTIFICAÇÃO PCDF" e a conferência pedia "Outro" — vai como SSP.
-  const ficha = { ...fichaLida, identidade: fichaLida.identidade && { ...fichaLida.identidade, orgao: orgaoCaixa(fichaLida.identidade) } };
+  const ficha: any = { ...fichaLida, identidade: fichaLida.identidade && { ...fichaLida.identidade, orgao: orgaoCaixa(fichaLida.identidade) } };
+  // CEP do comprovante inexistente nos Correios → o cadastro usa o CEP da região (Fabio 17/11): a conferência compara com ele.
+  const cepGeral = (((l.customFields || {}) as Cf)._caixaCadastro?.cadastros?.[ordem] || {}).cepGeral;
+  if (cepGeral?.para && ficha.endereco) ficha.endereco = { ...ficha.endereco, cep: cepGeral.para, cepDoComprovante: `${cepGeral.de} (não existe nos Correios — no cadastro vai o CEP da região ${cepGeral.para}; NÃO é divergência)` };
   // Normativo CR016 da Base de Conhecimento (Fabio 31/10) pra conferir a renda da tela.
   const system0 = manter ? `${SYSTEM_CONFERE}
 
