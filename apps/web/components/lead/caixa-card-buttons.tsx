@@ -92,8 +92,6 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
   const [modal, setModal] = useState<'cadastro' | 'analise' | null>(null);
   const [enviar, setEnviar] = useState(true);
   const [conferido, setConferido] = useState(false);
-  // Cadastro → análise logo depois (Fabio 11/11: "quando for cadastrar o cliente ele faz essa consulta").
-  const [analiseDepois, setAnaliseDepois] = useState(true);
   const [busy, setBusy] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   // Anotação com a renda aberta aqui mesmo (aviso de outro correspondente — no celular a conversa fica escondida atrás do card).
@@ -186,14 +184,15 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
   const refazer = denovo?.refazer || null;
 
   function abrir(qual: 'cadastro' | 'analise') {
-    setEnviar(true); setConferido(false); setAnaliseDepois(true); setErro(null); setModal(qual);
+    setEnviar(true); setConferido(false); setErro(null); setModal(qual);
   }
 
   async function rodar() {
     if (!modal) return;
     setBusy(true); setErro(null);
     try {
-      const corpo = modal === 'analise' ? { enviar, conferido, ...(denovo ? { denovo: true } : {}) } : { analise: !!a.podeEmSeguida && analiseDepois, enviar: true };
+      // O cadastro nunca leva a análise junto (Fabio 17/11, Emerson: "era apenas para fazer o cadastro") — a análise é o 3º botão, clicado à parte.
+      const corpo = modal === 'analise' ? { enviar, conferido, ...(denovo ? { denovo: true } : {}) } : { analise: false, enviar: true };
       const { data } = await api.post(`/api/caixa-cadastro/${leadId}/card/${modal}`, corpo);
       toast(data?.mensagem || 'Pedido na fila da CAIXA');
       setModal(null);
@@ -219,15 +218,21 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
     : a.avaliacao ? `${curto(a.avaliacao.status).toLowerCase() || '—'} · ${quando(a.avaliacao.fim || a.avaliacao.pedidoEm)}${!aguardando(a.resultado) ? ` · resultado: ${a.resultado}${operacao ? ` (${operacao})` : ''}` : ''}${a.avaliacao.vezes > 1 ? ` · ${a.avaliacao.vezes}ª vez` : ''}`
     : 'não rodou';
 
-  // Botão: desabilitado quando já está na fila/rodando (ou feito, no cadastro) ou o card não está aberto; o título diz por quê. "Falta" fica clicável: a janela mostra o que falta.
+  // ORDEM FIXA (Fabio 17/11: "primeiro a consulta, depois o cadastro, depois a análise, nessa ordem — só abre a próxima caixinha se a primeira tiver sido clicada"):
+  // o Cadastro só libera depois que a consulta foi pedida, e a Análise só depois que o cadastro foi pedido.
+  const consultaClicada = !!estado.pedido || estado.participantes.some((p) => p.consultado || !!p.cadastro);
+  const cadastroClicado = estado.participantes.some((p) => !!p.cadastro) || !!a.avaliacao;
+  const ordemFalta = (qual: 'cadastro' | 'analise') => (qual === 'cadastro' ? (consultaClicada ? null : 'Primeiro a consulta: clique em "Consultar na CAIXA"') : (cadastroClicado ? null : 'Primeiro o cadastro: clique em "Cadastro CAIXA"'));
+  // Botão: desabilitado quando já está na fila/rodando (ou feito, no cadastro), o card não está aberto ou o passo anterior não foi clicado; o título diz por quê. "Falta" fica clicável: a janela mostra o que falta.
   const botao = (qual: 'cadastro' | 'analise', rotulo: string, titulo: string, Icone: typeof UserPlus) => {
     const t = estado[qual].trava;
-    const travado = !!estado.fechado || t?.tipo === 'andamento' || t?.tipo === 'feito';
+    const antes = ordemFalta(qual);
+    const travado = !!estado.fechado || !!antes || t?.tipo === 'andamento' || t?.tipo === 'feito';
     return (
       <button
         onClick={() => abrir(qual)}
         disabled={travado}
-        title={estado.fechado || (t && t.tipo !== 'falta' ? t.msg : titulo)}
+        title={estado.fechado || antes || (t && t.tipo !== 'falta' ? t.msg : titulo)}
         className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-[#005CA9] hover:bg-blue-100 disabled:opacity-50"
       >
         {t?.tipo === 'andamento' ? <span className="relative flex h-2 w-2"><span className="absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75 animate-ping" /><span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" /></span> : <Icone className="h-3 w-3" />}
@@ -273,12 +278,16 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
         </div>
       )}
       <div className="mt-2 flex flex-wrap gap-2">
-        {estado.podeConsultar && botaoConsulta}
-        {botaoAprovacao}
+        {estado.podeConsultar ? botaoConsulta : (
+          <button disabled title="A consulta do nome na CAIXA já foi pedida" className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-2 py-1 text-[11px] font-medium text-[#005CA9] disabled:opacity-50">
+            <Search size={11} /> Consultar na CAIXA ✓
+          </button>
+        )}
         {botao('cadastro', 'Cadastro CAIXA', 'Rodar o cadastro deste cliente na CAIXA (Caixa Aqui) pela extensão', UserPlus)}
         {denovo
           ? botao('analise', 'Rodar análise CAIXA de novo', 'Rodar de novo a Avaliação de Risco que deu erro (ex.: depois da autorização do PV) — a extensão reabre a mesma avaliação e clica em Avançar', RotateCcw)
           : botao('analise', 'Análise CAIXA', 'Rodar a análise de crédito (Avaliação de Risco) deste cliente na CAIXA pela extensão', ShieldCheck)}
+        {botaoAprovacao}
       </div>
       <VistoriaCaixaButton leadId={leadId} onDone={onDone} />
 
@@ -307,15 +316,7 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
                   ))}
                 </ul>
               )}
-              {a.podeEmSeguida && (
-                <label className="flex items-start gap-2 text-xs cursor-pointer">
-                  <input type="checkbox" checked={analiseDepois} onChange={(e) => setAnaliseDepois(e.target.checked)} className="mt-0.5" />
-                  <span>
-                    <strong>Rodar a análise de crédito em seguida</strong> — assim que o cadastro gravar, a extensão roda a Avaliação de Risco ({a.produto}) e envia à CAIXA, sem a
-                    conferência manual. Marcado, o clique é a sua autorização pra este cliente.
-                  </span>
-                </label>
-              )}
+              <p className="text-xs text-slate-500">Só o cadastro: a análise de crédito é o próximo botão (“Análise CAIXA”), liberado depois deste.</p>
               {estado.avaliacaoFeita && (
                 <p className="text-xs rounded-lg bg-amber-50 border border-amber-200 text-amber-800 px-2.5 py-1.5">
                   ⚠️ O crédito já rodou na CAIXA: alterar o cadastro agora pede a 2ª autorização do PV.
