@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import webpush from 'web-push';
+import { recordInAppNotification } from './notification.service';
 
 
 let configured = false;
@@ -95,6 +96,10 @@ async function deliverToSubs(subs: SubWithUser[], body: string): Promise<PushDel
 
 /** Push de teste pros aparelhos de quem pediu (botão em Configurações → Sons), com o resultado de cada um. */
 export async function sendTestPush(userId: string): Promise<{ configured: boolean; results: PushDeliveryResult[] }> {
+  // O teste também aparece na tela (aviso fantasma) e fica na sineta — serve pra conferir as duas pontas.
+  prisma.user.findUnique({ where: { id: userId }, select: { accountId: true } })
+    .then((u) => u && recordInAppNotification(u.accountId, { title: '🔔 Teste do AF CRM', body: 'Se este aviso apareceu, as notificações estão chegando.', url: '/configuracoes' }, [userId]))
+    .catch(() => {});
   if (!configured) return { configured: false, results: [] };
   const subs = await prisma.pushSubscription.findMany({ where: { userId }, include: { user: { select: { name: true } } } });
   if (!subs.length) return { configured: true, results: [] };
@@ -110,8 +115,15 @@ export async function sendTestPush(userId: string): Promise<{ configured: boolea
  * Autolimpa subscriptions que o provedor devolveu como expiradas (410/404).
  */
 export async function sendPushToAccount(accountId: string, payload: PushPayload, onlyUserIds?: string[], opts?: { desktopOnly?: boolean }) {
-  if (!configured) return;
   if (onlyUserIds && !onlyUserIds.length) return;
+  const url = payload.url || (payload.leadId ? `/inbox?leadId=${payload.leadId}` : '/inbox');
+
+  // Aviso fantasma na tela + sineta (Fabio 18/11) — mesmas pessoas do push, mesmo sem VAPID. Ligação tem tela própria (<IncomingCallRinger />).
+  if (payload.type !== 'call' && payload.type !== 'call_cancel') {
+    recordInAppNotification(accountId, { title: payload.title, body: payload.body, url, leadId: payload.leadId }, onlyUserIds).catch(() => {});
+  }
+
+  if (!configured) return;
 
   try {
     let subs = await prisma.pushSubscription.findMany({
@@ -125,7 +137,7 @@ export async function sendPushToAccount(accountId: string, payload: PushPayload,
     const body = JSON.stringify({
       title: payload.title,
       body: payload.body,
-      url: payload.url || (payload.leadId ? `/inbox?leadId=${payload.leadId}` : '/inbox'),
+      url,
       ...(payload.type ? { type: payload.type } : {}),
     });
 

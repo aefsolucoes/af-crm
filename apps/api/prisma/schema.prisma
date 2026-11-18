@@ -1427,6 +1427,23 @@ model AgentPlaybook {
   @@index([accountId])
 }
 
+/// Aviso guardado na sineta (Fabio 18/11, "notificação fantasma"): todo push do CRM vira uma linha por destinatário — aparece
+/// uns segundos na tela e fica na lista pra abrir depois. Sem FK (o card/usuário pode sumir e o aviso fica). Ver notification.service.ts.
+model UserNotification {
+  id        String    @id @default(cuid())
+  accountId String
+  userId    String
+  title     String
+  body      String
+  url       String
+  leadId    String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
 model PushSubscription {
   id        String   @id @default(cuid())
   userId    String

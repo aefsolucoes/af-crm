@@ -34,6 +34,8 @@ import departmentRoutes from './routes/departments';
 import automationRoutes from './routes/automations';
 import pushRoutes from './routes/push';
 import activityRoutes from './routes/activity';
+import notificationRoutes from './routes/notifications';
+import { setNotificationIo } from './services/notification.service';
 import callRoutes from './routes/calls';
 import aiQuestionRoutes from './routes/ai-questions';
 import remarketingRoutes from './routes/remarketing';
@@ -94,6 +96,7 @@ app.use(express.json({ limit: '30mb' }));
 
 const io = setupWebSocket(httpServer);
 app.set('io', io);
+setNotificationIo(io); // aviso fantasma + sineta (notification.service)
 
 app.use('/api/auth', authRoutes);
 app.use('/api/leads', leadRoutes);
@@ -119,6 +122,7 @@ app.use('/api/departments', departmentRoutes);
 app.use('/api/automations', automationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/activity', activityRoutes);
+app.use('/api/notifications', notificationRoutes);
 app.use('/api/calls', callRoutes);
 app.use('/api/ai-questions', aiQuestionRoutes);
 app.use('/api/remarketing', remarketingRoutes);

@@ -1,9 +1,10 @@
 'use client';
-import { useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouter, usePathname } from 'next/navigation';
 import { Sidebar } from '@/components/ui/sidebar';
 import { ToastContainer } from '@/components/ui/toast';
+import { NotificationGhost } from '@/components/ui/notification-ghost';
 import { toast } from '@/components/ui/toast';
 import { GoogleDriveAlert } from '@/components/ui/google-drive-alert';
 import { WhatsAppAlertBanner } from '@/components/ui/whatsapp-alert-banner';
@@ -158,6 +159,8 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         {children}
       </main>
       <ToastContainer />
+      {/* Aviso fantasma: notificação nova aparece uns segundos e fica na sineta (Suspense por causa do useSearchParams no export estático). */}
+      <Suspense fallback={null}><NotificationGhost /></Suspense>
       <GoogleDriveAlert />
       <ContractingLeadAlert />
       <VendaFuturaPrompt />

@@ -2,15 +2,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { Bell } from 'lucide-react';
 import api from '@/lib/api';
+import { useNotificationsStore } from '@/store/notifications.store';
+import { openNotificationUrl } from '@/components/ui/notification-ghost';
 
 /**
- * Sineta de "registro de atividade": mostra o que a equipe fez (mexeu em card,
- * respondeu cliente, mudou status…). É SILENCIOSA — sem som, sem popup; só
- * acumula aqui. Um pontinho aparece quando tem coisa mais nova do que a última
- * vez que a sineta foi aberta (guardado no localStorage por navegador).
- * Fica no Topbar, que está em todas as telas.
+ * Sineta do Topbar (está em todas as telas), com duas abas:
+ * - Notificações (Fabio 18/11): os avisos do CRM pra esta pessoa — os mesmos do push do celular. Cada um aparece uns
+ *   segundos na tela (<NotificationGhost />) e fica aqui pra abrir depois. Número vermelho = não lidas; abrir a sineta
+ *   marca todas como lidas (as que eram novas ficam destacadas enquanto o painel está aberto).
+ * - Atividade da equipe: o que a equipe fez (mexeu em card, respondeu cliente, mudou status…). SILENCIOSA — sem som,
+ *   sem popup; só acumula. Pontinho quando tem coisa mais nova do que a última vez que a aba foi vista (localStorage).
  */
 interface ActivityItem {
   id: string;
@@ -38,6 +42,10 @@ function timeAgo(iso: string): string {
 }
 
 export function ActivityBell() {
+  const router = useRouter();
+  const notif = useNotificationsStore();
+  const [tab, setTab] = useState<'notif' | 'activity'>('notif');
+  const [freshIds, setFreshIds] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [items, setItems] = useState<ActivityItem[]>([]);
@@ -69,14 +77,28 @@ export function ActivityBell() {
     return () => clearInterval(t);
   }, [loadFirst]);
 
+  function markActivitySeen() {
+    try { localStorage.setItem(SEEN_KEY, new Date().toISOString()); } catch { /* ignore */ }
+    setHasNew(false);
+  }
+
   function toggle() {
     const next = !open;
     setOpen(next);
     if (next) {
-      try { localStorage.setItem(SEEN_KEY, new Date().toISOString()); } catch { /* ignore */ }
-      setHasNew(false);
+      // Sem notificação nova, abre direto no registro (como era antes) se lá tiver novidade.
+      const startTab = notif.unread > 0 || !hasNew ? 'notif' : 'activity';
+      setTab(startTab);
+      setFreshIds(new Set(notif.items.filter((n) => !n.readAt).map((n) => n.id)));
+      if (notif.unread > 0) notif.markRead({ all: true });
+      if (startTab === 'activity') markActivitySeen();
       loadFirst();
     }
+  }
+
+  function switchTab(t: 'notif' | 'activity') {
+    setTab(t);
+    if (t === 'activity') markActivitySeen();
   }
 
   async function loadMore() {
@@ -96,11 +118,56 @@ export function ActivityBell() {
       {/* backdrop transparente — clicar fora fecha */}
       <div className="fixed inset-0 z-[998]" onClick={() => setOpen(false)} />
       <div className="fixed top-14 right-3 z-[999] w-80 max-w-[calc(100vw-1.5rem)] bg-white rounded-xl shadow-2xl border border-af-border overflow-hidden">
-        <div className="px-4 py-2.5 border-b border-af-border">
-          <p className="text-sm font-semibold text-slate-800">Registro de atividade</p>
-          <p className="text-[11px] text-slate-400">O que a equipe fez — sem alarde, só registrado</p>
+        <div className="flex border-b border-af-border">
+          {([
+            ['notif', 'Notificações', false],
+            ['activity', 'Atividade da equipe', hasNew],
+          ] as const).map(([key, label, dot]) => (
+            <button
+              key={key}
+              onClick={() => switchTab(key)}
+              className={`relative flex-1 px-3 py-2.5 text-xs font-semibold transition-colors ${tab === key ? 'text-af-navy border-b-2 border-af-accent -mb-px' : 'text-slate-400 hover:text-slate-600'}`}
+            >
+              {label}
+              {dot && tab !== key && <span className="absolute top-2 right-3 w-1.5 h-1.5 rounded-full bg-af-accent" />}
+            </button>
+          ))}
         </div>
+        {tab === 'notif' ? (
         <div className="max-h-[70vh] overflow-y-auto scrollbar-thin">
+          {notif.items.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-8">{notif.loaded ? 'Nenhuma notificação ainda.' : 'Carregando…'}</p>
+          ) : (
+            notif.items.map((n) => (
+              <button
+                key={n.id}
+                onClick={() => { setOpen(false); notif.markRead({ id: n.id }); openNotificationUrl(router, n.url); }}
+                className={`block w-full text-left px-4 py-2.5 border-b border-slate-100 hover:bg-slate-50 ${freshIds.has(n.id) ? 'bg-blue-50/60' : ''}`}
+              >
+                <div className="flex items-start gap-2">
+                  {freshIds.has(n.id) && <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-af-accent flex-shrink-0" />}
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-semibold text-slate-800 leading-snug">{n.title}</p>
+                    {n.body && <p className="text-xs text-slate-600 leading-snug mt-0.5 line-clamp-3 whitespace-pre-line">{n.body}</p>}
+                    <p className="text-[11px] text-slate-400 mt-0.5">{timeAgo(n.createdAt)}</p>
+                  </div>
+                </div>
+              </button>
+            ))
+          )}
+          {notif.nextCursor && (
+            <button
+              onClick={() => notif.loadMore()}
+              disabled={notif.loadingMore}
+              className="w-full text-xs text-af-mid hover:bg-slate-50 py-2.5 disabled:opacity-50"
+            >
+              {notif.loadingMore ? 'Carregando…' : 'Carregar mais'}
+            </button>
+          )}
+        </div>
+        ) : (
+        <div className="max-h-[70vh] overflow-y-auto scrollbar-thin">
+          <p className="px-4 pt-2 pb-1 text-[11px] text-slate-400">O que a equipe fez — sem alarde, só registrado</p>
           {items.length === 0 ? (
             <p className="text-xs text-slate-400 text-center py-8">Nada registrado ainda.</p>
           ) : (
@@ -135,6 +202,7 @@ export function ActivityBell() {
             </button>
           )}
         </div>
+        )}
       </div>
     </>
   );
@@ -144,10 +212,14 @@ export function ActivityBell() {
       <button
         onClick={toggle}
         className="relative app-topbar-text-muted hover:text-af-mid p-1.5 rounded-lg hover:bg-white/10 transition-colors"
-        title="Registro de atividade"
+        title={notif.unread > 0 ? `${notif.unread} notificação(ões) nova(s)` : 'Notificações e atividade da equipe'}
       >
         <Bell size={18} />
-        {hasNew && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-af-accent" />}
+        {notif.unread > 0 ? (
+          <span className="absolute -top-0.5 -right-0.5 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold leading-4 text-center">
+            {notif.unread > 99 ? '99+' : notif.unread}
+          </span>
+        ) : hasNew && <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-af-accent" />}
       </button>
 
       {/* Portal pro <body> — senão os cards do Kanban (que têm transform) ficam
