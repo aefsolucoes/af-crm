@@ -75,6 +75,8 @@ async function planoDeNovaTentativa(db: Db, r: { leadId: string; institution: st
 async function noteFailure(db: Db, r: { id?: string; leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }) {
   // "Encaminhar ao cliente" da CAIXA (Fabio 18/11): a simulação roda minutos depois do clique — quem pediu não vê a falha na tela, então vai nota + push pra equipe.
   if (r.institution === 'FH_CAIXA' && r.id) await (require('./fh-approval.service') as typeof import('./fh-approval.service')).falhouEncaminharCaixa(r.leadId, r.id, r.detail).catch((e: any) => console.error('[Simulação CAIXA] falha do encaminhar:', e?.message));
+  // "Encaminhar ao cliente" dos outros bancos do Financiamento (Fabio 18/11, Gilvano): o resumo espera a simulação com as parcelas — a falha tenta de novo ou vai pra equipe.
+  else if (r.institution.startsWith('FH_') && r.id) await (require('./fh-approval.service') as typeof import('./fh-approval.service')).falhouEncaminharFh(r.leadId, r.id, r.detail).catch((e: any) => console.error('[Simulação FH] falha do encaminhar:', e?.message));
   if (r.source !== 'AI') return; // pedido de pessoa: ela vê o motivo na própria tela
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
   const plano = await planoDeNovaTentativa(db, r).catch(() => ({ quando: null, login: false, falhas: 0 }));
@@ -243,13 +245,24 @@ function slug(text: string): string {
 }
 
 /** Envia o PDF pronto ao cliente e fecha o pedido (DONE) — ou falha com o motivo. */
-async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean; source?: string }, pdf: Buffer, io?: Io) {
+/** 1ª e última parcela da tabela (a linha 0 de carência, só com seguros, não conta). null = tabela sem parcela. Pura. */
+export type ParcelasDaSimulacao = { primeira: number; ultima: number; sistema: string; prazo: number };
+export function parcelasDaTabela(rows: Array<{ n: number; parcela: number }>, sistema: string): ParcelasDaSimulacao | null {
+  const pagas = rows.filter((x) => x.n >= 1 && x.parcela > 0);
+  return pagas.length ? { primeira: pagas[0].parcela, ultima: pagas[pagas.length - 1].parcela, sistema: String(sistema || '').toUpperCase(), prazo: pagas.length } : null;
+}
+
+async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean; source?: string }, pdf: Buffer, io?: Io, parcelas?: ParcelasDaSimulacao | null) {
   if ((r as any).source === 'ASSISTANT') { // pedido pelo ASSISTENTE do CRM (Fabio 26/10: "preciso da simulação do cliente X, ele me retorna com o PDF"): fica SÓ pra equipe, nunca vai ao cliente
     await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'PRIVATE', pdf, finishedAt: new Date(), detail: 'PDF pronto — só pra equipe (pedido pelo assistente do CRM)' } });
     return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
   }
   if (r.hold) { // aviso de aprovação automático ainda não saiu: guarda o PDF pronto; o aviso manda texto + PDF juntos (releaseHeld)
     await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'READY', pdf, detail: 'PDF pronto — vai junto com o aviso de aprovação' } });
+    // "Encaminhar ao cliente" no Financiamento (Fabio 18/11, Gilvano: "O resumo não continha parcelas"): com o PDF pronto, sai o resumo com as parcelas e, logo depois, o PDF.
+    if (r.institution.startsWith('FH_') && r.institution !== 'FH_CAIXA') {
+      (require('./fh-approval.service') as typeof import('./fh-approval.service')).prontoEncaminharFh({ accountId: r.accountId, leadId: r.leadId, docId: r.id, parcelas: parcelas || null, io }).catch((e: any) => console.error('[Simulação FH] encaminhar com o PDF:', e?.message));
+    }
     return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
   }
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
@@ -337,7 +350,10 @@ export async function finishSimulationDoc(db: Db, p: { accountId: string; id: st
     // mantém a logo Inter e põe a faixa A&F, como no Home Equity (Jaime 29/10: "não está no modelo conhecido" e o PDF não saiu).
     try { b = looksLikePortalPdf(p.pdf) ? await brandPortalPdf(p.pdf) : await brandSimulationPdf(p.pdf); } catch (e: any) { return fail(`Não consegui pôr a logo A&F no PDF do Financiamento (${e?.message || 'erro'}). Não enviei.`); }
     if (!b.recognized) return fail('O PDF do Financiamento baixado não está no modelo conhecido do Credimorar. Não enviei, pra não sair com a marca errada — mande à mão.');
-    return deliver(db, r, b.pdf, p.io);
+    // As parcelas do "Evolução das parcelas" (o resumo do "Encaminhar ao cliente" leva a 1ª e a última — Fabio 18/11). Leitura que falha não segura o PDF.
+    let parcelas: ParcelasDaSimulacao | null = null;
+    if (looksLikePortalPdf(p.pdf)) { try { const d = await parsePortalSheetPdf(p.pdf); parcelas = parcelasDaTabela(d.rows, d.sistema); } catch { /* sem leitura: vai sem os números */ } }
+    return deliver(db, r, b.pdf, p.io, parcelas);
   }
   // PADRÃO DA SIMULAÇÃO (Fabio 26/10): o "Evolução das parcelas" do portal Credimorar (Santander) é LIDO e redesenhado no mesmo modelo do Inter e da Creditas —
   // 8 campos (tipo, prazo, sistema, valor do imóvel, valor do empréstimo, taxa mensal/nominal/efetiva), sem CET, CESH, renda e entrada.
@@ -433,8 +449,9 @@ export async function finishInterDoc(db: Db, p: { accountId: string; id: string;
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   let pdf: Buffer;
   // Inter do Financiamento (FH_INTER) usa o mesmo leitor do Home Equity: o título (e o resumo sem taxa mensal) é o do Financiamento.
-  try { pdf = await renderSimulationSheet({ ...sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory }), ...(r.institution.startsWith('FH_') ? { titulo: 'Financiamento Imobiliário | Evolução das parcelas' } : {}) }); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
-  return deliver(db, r, pdf, p.io);
+  const folhaInter = sheetFromInter({ clientName: lead?.name || 'Cliente', proposal: p.proposal, theory });
+  try { pdf = await renderSimulationSheet({ ...folhaInter, ...(r.institution.startsWith('FH_') ? { titulo: 'Financiamento Imobiliário | Evolução das parcelas' } : {}) }); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  return deliver(db, r, pdf, p.io, parcelasDaTabela(folhaInter.rows, folhaInter.summary.sistema));
 }
 
 
@@ -537,8 +554,9 @@ export async function finishItauDoc(db: Db, p: { accountId: string; id: string; 
   if (ap && Math.abs(num(p.data.resumo.valorFinanciado) - ap) / ap > 0.01) return fail(`A simulação do Itaú saiu com R$ ${num(p.data.resumo.valorFinanciado).toLocaleString('pt-BR')}, mas o aprovado é R$ ${ap.toLocaleString('pt-BR')}. Não enviei.`);
   const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
   let pdf: Buffer;
-  try { pdf = await renderSimulationSheet(sheetFromItau({ clientName: lead?.name || 'Cliente', data: p.data })); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
-  return deliver(db, r, pdf, p.io);
+  const folhaItau = sheetFromItau({ clientName: lead?.name || 'Cliente', data: p.data });
+  try { pdf = await renderSimulationSheet(folhaItau); } catch (e: any) { return fail(`Não consegui montar o PDF (${e?.message || 'erro'}). Não enviei.`); }
+  return deliver(db, r, pdf, p.io, parcelasDaTabela(folhaItau.rows, folhaItau.summary.sistema));
 }
 
 export async function listSimulationDocs(db: Db, p: { accountId: string; leadId: string }) {

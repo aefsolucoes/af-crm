@@ -43,7 +43,9 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
 };
 
-interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; /** só a CAIXA na SAC (parcela cai mês a mês): a última parcela da simulação oficial */ ultimaParcela?: string; condicao?: string; pedido?: string; nome?: string }
+interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; /** na SAC (parcela cai mês a mês): a última parcela da simulação */ ultimaParcela?: string; condicao?: string; pedido?: string; nome?: string;
+  /** prazo que o cliente pediu (`_fhPrazo`), quando o banco aprovou em outro (Fabio 18/11, Gilvano: pediu 120, o Bradesco só faz a partir de 180) */ prazoPedido?: string;
+  /** o PDF da simulação vai logo depois do resumo (sem a leitura das parcelas, o resumo aponta pra ele) */ pdfJunto?: boolean }
 
 /** Propostas aprovadas e bancos ainda em análise, pela situação gravada (_fhResumo) + condições da rodada ("CONDIÇÕES — Bradesco: financia …; prazo …; taxa efetiva …; CET …"). Pura. */
 export function fhOptions(resumo: Record<string, { status: string; texto: string }>, condicoes: string): { aprovadas: FhOption[]; emAnalise: string[] } {
@@ -85,11 +87,13 @@ export function fhOptionText(o: FhOption): string {
     o.valor && `💰 Valor financiado: ${o.valor}`,
     o.pedido && `ℹ️ Valor menor que o solicitado (você pediu ${o.pedido})`,
     o.prazo && `📅 Prazo: ${o.prazo} meses`,
+    o.prazo && o.prazoPedido && Number(o.prazoPedido) < Number(o.prazo) && `ℹ️ Você pediu ${o.prazoPedido} meses, mas o prazo mínimo do ${o.banco} no Financiamento é de ${o.prazo} meses.`,
+    o.prazo && o.prazoPedido && Number(o.prazoPedido) > Number(o.prazo) && `ℹ️ Você pediu ${o.prazoPedido} meses; o ${o.banco} aprovou em ${o.prazo} meses.`,
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.cet && `📊 CET: ${o.cet}% a.a.`,
     o.parcela && `💵 1ª parcela: ${o.parcela}`,
     o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
-    !o.parcela && `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`,
+    !o.parcela && (o.pdfJunto ? '🧾 As parcelas estão na simulação em PDF logo abaixo.' : `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`),
     o.condicao && `📌 Aprovação condicionada: ${o.condicao}`,
   ].filter(Boolean).join('\n');
 }
@@ -135,6 +139,9 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
       if (x.condicao) x.condicao = condicaoLegivel(d);
     }
     if (pedido && num(x.valor) && num(x.valor) + 1 < pedido) x.pedido = brl(pedido);
+    // Prazo pedido ≠ aprovado (Fabio 18/11, Gilvano): o resumo explica — "Você pediu 120 meses, mas o prazo mínimo do Bradesco no Financiamento é de 180 meses".
+    const prazoPedido = Number(String(cf._fhPrazo || '').replace(/\D/g, '')) || 0;
+    if (prazoPedido && Number(x.prazo) && prazoPedido !== Number(x.prazo)) x.prazoPedido = String(prazoPedido);
     if (doSegundo(x.banco, num(x.valor))) x.nome = (require('../lib/text') as typeof import('../lib/text')).paraNomeSocial(cf, p2);
     return x;
   });
@@ -397,6 +404,8 @@ export async function enviarPropostasFh(p: { accountId: string; leadId: string; 
   if (!lista.length) return { ok: false, error: so.length ? `O ${so.join(', ')} não está aprovado neste card.` : 'Não há proposta aprovada do Financiamento pra mandar.' };
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!(await whatsappWindowOpen(p.leadId))) return { ok: false, error: 'A conversa do WhatsApp está fechada (o cliente não escreve há mais de 24 h): mande um template antes ou espere ele responder.' };
+  // Um banco só e a leitura sem parcela (Bradesco/Santander do Credimorar…): baixa a simulação antes e o resumo vai com as parcelas e o PDF (Fabio 18/11, Gilvano).
+  if (so.length === 1 && lista.length === 1 && !lista[0].parcela && PDF_INST[lista[0].banco]) return encaminharComSimulacaoFh(p, x.lead, x.cf, lista[0]);
   const quem = p.userName || 'a equipe';
   if (!so.length) {
     const out = await sendFhNotice(p.accountId, p.leadId, x.lead.name, lista, x.emAnalise, p.io);
@@ -558,6 +567,120 @@ export async function falhouEncaminharCaixa(leadId: string, docId: string, motiv
   await marcaEncaminharCaixa(leadId, null);
   await note(leadId, `⚠️ Encaminhar CAIXA: a simulação no simulador da CAIXA não saiu (${String(motivo || 'sem detalhe').slice(0, 300)}). As condições NÃO foram ao cliente — nada foi mandado. Confira (WhatsApp do código em /caixa-codigo, extensão SIOPI aberta) e clique em "Encaminhar" na CAIXA de novo.`);
   pushEquipe(lead.accountId, lead.userId, `⚠️ ${lead.name}: simulação da CAIXA não saiu`, 'As condições da CAIXA não foram ao cliente.', leadId);
+}
+
+// ── "Encaminhar ao cliente" com a simulação (Fabio 18/11, Gilvano: pediu 120 meses, o Bradesco pré-aprovou em 180 — o mínimo dele — e o resumo foi "sem parcelas") ──
+// A leitura do Credimorar não traz a parcela: o CRM baixa antes o "Evolução das parcelas" do banco (PDF segurado), lê a 1ª e a última parcela e manda o resumo com elas, o
+// prazo pedido × o aprovado, o botão "Seguir com esta" e, logo depois, o PDF. Simulação que falha tenta de novo sozinha (3, 10 e 20 min); depois disso, nota + push e nada vai.
+const ENCAMINHAR_FH_RETRY_MIN = [3, 10, 20];
+const proximaTentativaFh = new Map<string, NodeJS.Timeout>(); // leadId → timer da nova tentativa (perde no restart: a marca vence e a equipe clica de novo)
+
+async function encaminharComSimulacaoFh(p: { accountId: string; leadId: string; userName?: string; userId?: string; io?: any }, lead: { id: string; name: string }, cf: Cf, o: FhOption, retry?: { tentativa: number; voltas: number }): Promise<{ ok: boolean; error?: string; bancos?: string[]; simulando?: boolean }> {
+  if (cf._autoPaused) return { ok: false, error: 'O STOP TOTAL deste cliente está ligado: nada vai ao cliente.' };
+  const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  if (ca.foraDoHorario() && !(await ca.liberadoAte(prisma as any, p.accountId))) return { ok: false, error: `Fora do horário das extensões (07h–22h): a simulação do ${o.banco} não sai agora.` };
+  const enc = cf._fhEncaminhar as Cf | null | undefined;
+  if (!retry && enc?.at && Date.now() - Date.parse(enc.at) < ENCAMINHAR_VALIDADE_MS) return { ok: false, error: `A simulação do ${enc.banco} pra encaminhar já está sendo baixada: o resumo vai ao cliente assim que ela chegar.` };
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  const out = await sd.requestSimulationDocs(prisma as any, { accountId: p.accountId, leadId: p.leadId, institutions: [PDF_INST[o.banco]], userId: p.userId, source: 'USER', caption: `Segue a simulação do financiamento no ${o.banco} em PDF 📄`, hold: true });
+  const docId = out.created[0]?.id;
+  if (!docId) return { ok: false, error: `Já tem um PDF do ${o.banco} sendo gerado pra este cliente: espere ele terminar e clique de novo.` };
+  const quem = p.userName || 'a equipe';
+  await saveCf(p.leadId, { _fhEncaminhar: { docId, banco: o.banco, at: new Date().toISOString(), por: quem, userId: p.userId || null, opcao: o, tentativa: retry?.tentativa || 0, voltas: retry?.voltas || 0 } });
+  if (!retry) {
+    await note(p.leadId, `📣 ${quem} pediu pra encaminhar ao cliente a proposta do ${o.banco}${o.prazo ? ` (${o.prazo} meses)` : ''}: o CRM está baixando a simulação do portal e, quando ela chegar, vão o resumo com a 1ª e a última parcela${o.prazoPedido ? `, o aviso do prazo (pedido ${o.prazoPedido} × aprovado ${o.prazo} meses)` : ''}, o botão "Seguir com esta" e o PDF.`);
+    logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: lead.name, summary: `pediu pra encaminhar ao cliente a proposta do ${o.banco} (com a simulação)` });
+  }
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return { ok: true, bancos: [o.banco], simulando: true };
+}
+
+/** PDF do encaminhar pronto (simulation-doc.deliver, segurado): manda o resumo com as parcelas e o botão, e logo depois o PDF. false = não era pedido do encaminhar. */
+export async function prontoEncaminharFh(p: { accountId: string; leadId: string; docId: string; parcelas: { primeira: number; ultima: number; sistema: string; prazo: number } | null; io?: any }): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { name: true, userId: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const enc = cf._fhEncaminhar as Cf | null | undefined;
+  if (!lead || !enc || enc.docId !== p.docId) return false;
+  await saveCf(p.leadId, { _fhEncaminhar: null });
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const brlFh = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const o: FhOption = { ...(enc.opcao as FhOption) };
+  if (p.parcelas) {
+    o.parcela = brlFh(p.parcelas.primeira);
+    if (Math.abs(p.parcelas.ultima - p.parcelas.primeira) > 1) o.ultimaParcela = brlFh(p.parcelas.ultima); // SAC: a parcela cai mês a mês
+  } else o.pdfJunto = true;
+  const falhou = async (porque: string) => {
+    await note(p.leadId, `⚠️ Encaminhar ${o.banco}: a simulação chegou, mas o resumo NÃO foi ao cliente: ${porque}. Nada foi mandado. Clique em "Encaminhar" no ${o.banco} (aba Financiamento) de novo quando der.`);
+    pushEquipe(p.accountId, lead.userId, `⚠️ ${lead.name}: proposta do ${o.banco} não foi`, porque.slice(0, 120), p.leadId);
+    await sd.failSimulationDoc(prisma as any, { accountId: p.accountId, id: p.docId, reason: `Encaminhar ${o.banco}: ${porque}` }).catch(() => {});
+    return false;
+  };
+  if (cf._autoPaused) return falhou('o card entrou em STOP TOTAL');
+  // O PDF tem que ser DESTA proposta: simulação de outro prazo (ex.: a rodada antiga de 420 meses) não vai com números trocados.
+  if (p.parcelas && Number(o.prazo) && Math.abs(p.parcelas.prazo - Number(o.prazo)) > 1) return falhou(`o PDF baixado do portal é de ${p.parcelas.prazo} meses e a proposta é de ${o.prazo} meses (simulação de outra rodada)`);
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(p.leadId))) return falhou('a conversa do WhatsApp fechou enquanto a simulação era baixada (mais de 24 h sem mensagem do cliente)');
+  const base = { accountId: p.accountId, leadId: p.leadId, io: p.io, userId: enc.userId || undefined };
+  const texto = fhOptionText(o);
+  let r = await sendOutboundWhatsApp({ ...base, content: texto, buttons: [CHOOSE] });
+  if (!r.success) r = await sendOutboundWhatsApp({ ...base, content: `${texto}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
+  if (!r.success) return falhou(`o WhatsApp não aceitou a mensagem (${r.error || 'erro no envio'})`);
+  await new Promise((res) => setTimeout(res, 1200));
+  const pdf = await sd.releaseHeld(prisma as any, p.docId, p.io).catch((e: any) => ({ ok: false as const, error: e?.message || 'erro' }));
+  // Entra no que o cliente recebeu (o "Seguir com esta" reconhece por aqui) e guarda a proposta encaminhada com o PDF: o toque nela não manda o PDF de novo.
+  const fresh = ((await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+  const agora = new Date().toISOString();
+  const ja: string[] = Array.isArray(fresh._fhNotice?.bancos) ? fresh._fhNotice.bancos : [];
+  const semNum: string[] = Array.isArray(fresh._fhNotice?.semNumeros) ? fresh._fhNotice.semNumeros : [];
+  await saveCf(p.leadId, {
+    _fhNotice: { ...(fresh._fhNotice || {}), sentAt: fresh._fhNotice?.sentAt || agora, bancos: Array.from(new Set([...ja, o.banco])), semNumeros: semNum.filter((b) => b !== o.banco || !(o.valor && o.prazo)) },
+    _fhEncaminhado: { banco: o.banco, proposta: propostaNoResumo(fresh, o.banco), at: agora, docId: p.docId, pdf: !!pdf.ok },
+  });
+  await note(p.leadId, `📣 ${enc.por} encaminhou ao cliente a proposta do ${o.banco}: ${[o.valor, o.prazo && `${o.prazo} meses`, o.taxa, o.parcela && `1ª parcela ${o.parcela}`, o.ultimaParcela && `última ${o.ultimaParcela}`].filter(Boolean).join(', ')}${o.prazoPedido ? ` (o cliente pediu ${o.prazoPedido} meses — o resumo explica)` : ''} — com o botão "Seguir com esta"${pdf.ok ? ' e o PDF da simulação' : `. ⚠️ O PDF NÃO foi (${(pdf as any).error || 'erro'}): mande à mão pela Inbox`}.${p.parcelas ? '' : ' Não consegui ler as parcelas no PDF: o resumo aponta pro PDF.'}`);
+  if (!pdf.ok) pushEquipe(p.accountId, lead.userId, `⚠️ ${lead.name}: PDF do ${o.banco} não foi`, 'O resumo foi; mande o PDF à mão.', p.leadId);
+  logActivity({ accountId: p.accountId, userId: null, userName: enc.por, action: 'lead_updated', leadId: p.leadId, leadName: lead.name, summary: `encaminhou ao cliente a proposta do ${o.banco} com as parcelas da simulação` });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return true;
+}
+
+/** Nº da proposta do banco no resumo do Financiamento ("Bradesco: Pré-aprovado, proposta 5705240, …"). */
+function propostaNoResumo(cf: Cf, banco: string): string | null {
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  return (/proposta\s*(\d{5,})/i.exec(parseBancosFinanciamento(cf._fhResumo)[banco]?.texto || '') || [])[1] || null;
+}
+
+/** A simulação do encaminhar falhou (simulation-doc.noteFailure): tenta de novo em 3, 10 e 20 min (portal deslogado espera o login sem contar); depois, nota + push. */
+export async function falhouEncaminharFh(leadId: string, docId: string, motivo: string | null): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, accountId: true, customFields: true } });
+  const enc = ((lead?.customFields || {}) as Cf)._fhEncaminhar as Cf | null | undefined;
+  if (!lead || !enc || enc.docId !== docId) return;
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  const login = sd.FALHA_LOGIN.test(String(motivo || ''));
+  const n = Number(enc.tentativa || 0) + (login ? 0 : 1);
+  const espera = login ? 5 : ENCAMINHAR_FH_RETRY_MIN[n - 1];
+  if (espera && Number(enc.voltas || 0) < 8) {
+    const quando = new Date(Date.now() + espera * 60_000);
+    await saveCf(leadId, { _fhEncaminhar: { ...enc, docId: null, at: new Date().toISOString(), tentativa: n, voltas: Number(enc.voltas || 0) + 1, proxima: quando.toISOString() } });
+    await note(leadId, `⏳ Encaminhar ${enc.banco}: a simulação não saiu (${String(motivo || 'sem detalhe').slice(0, 200)}). ${login ? 'O portal do Credimorar está deslogado — entre nele; ' : ''}O CRM tenta de novo sozinho por volta das ${quando.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' })}. Nada foi ao cliente ainda.`);
+    clearTimeout(proximaTentativaFh.get(leadId));
+    proximaTentativaFh.set(leadId, setTimeout(() => { proximaTentativaFh.delete(leadId); reencaminharFh(lead.accountId, leadId).catch((e: any) => console.error('[Financiamento] nova tentativa do encaminhar:', e?.message)); }, espera * 60_000));
+    return;
+  }
+  await saveCf(leadId, { _fhEncaminhar: null });
+  await note(leadId, `⚠️ Encaminhar ${enc.banco}: a simulação não saiu${n > 1 ? ` depois de ${n} tentativas` : ''} (${String(motivo || 'sem detalhe').slice(0, 300)}). O resumo NÃO foi ao cliente — nada foi mandado. Confira a extensão do banco e clique em "Encaminhar" de novo.`);
+  pushEquipe(lead.accountId, lead.userId, `⚠️ ${lead.name}: simulação do ${enc.banco} não saiu`, 'A proposta não foi ao cliente.', leadId);
+}
+
+async function reencaminharFh(accountId: string, leadId: string): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { id: true, name: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const enc = cf._fhEncaminhar as Cf | null | undefined;
+  if (!lead || !enc || enc.docId || !enc.opcao) return; // já saiu, a equipe clicou de novo ou desistiu
+  const out = await encaminharComSimulacaoFh({ accountId, leadId, userName: enc.por, userId: enc.userId || undefined }, lead, cf, { ...(enc.opcao as FhOption) }, { tentativa: Number(enc.tentativa || 0), voltas: Number(enc.voltas || 0) });
+  if (out.ok) return;
+  await saveCf(leadId, { _fhEncaminhar: null });
+  await note(leadId, `⚠️ Encaminhar ${enc.banco}: a nova tentativa da simulação não começou (${out.error}). Nada foi ao cliente — clique em "Encaminhar" de novo.`);
 }
 
 /** Push pro responsável do card (sem responsável, pra conta). */
@@ -821,8 +944,14 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const jaEra = cf._fhChosen?.bank === banco;
+  // Proposta NOVA do mesmo banco (outro prazo/valor — Fabio 18/11, Gilvano: Bradesco 420 → 180 meses): vale como escolha nova. O card passa pra ela e, se o "Encaminhar"
+  // ainda não mandou o PDF dela, vai a simulação (antes o toque era lido como "tocou de novo no mesmo botão" e nada acontecia).
+  const soNum = (v: unknown) => String(v ?? '').replace(/\D/g, '').replace(/^0+/, '');
+  const propostaAgora = propostaNoResumo(cf, banco);
+  const novaDoMesmo = jaEra && !!soNum(propostaAgora) && !!soNum(cf.num_proposta) && soNum(propostaAgora) !== soNum(cf.num_proposta);
   await saveCf(lead.id, { _fhChosen: { bank: banco, at: new Date().toISOString() } });
-  if (!jaEra) await preencherEscolhaFh(accountId, lead.id, banco).catch((e: any) => console.error('[Financiamento] preencher a escolha:', e?.message));
+  if (!jaEra || novaDoMesmo) await preencherEscolhaFh(accountId, lead.id, banco).catch((e: any) => console.error('[Financiamento] preencher a escolha:', e?.message));
+  if (novaDoMesmo) await note(lead.id, `⭐ Financiamento: o cliente seguiu com a NOVA proposta do ${banco} (${propostaAgora}; antes ${cf.num_proposta}) — card atualizado.`);
   if (!jaEra) {
     await note(lead.id, `⭐ Financiamento: o cliente escolheu o ${banco} (botão "Seguir com esta").`);
     push(accountId, `🏠 ${lead.name}: escolheu o ${banco}`, 'Financiamento — o CRM manda simulação, documentos, próximos passos e taxas', lead.id);
@@ -830,13 +959,15 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   }
   io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
   if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: mande a simulação do banco escolhido, a lista de documentos, os próximos passos e as taxas, e pergunte se ele quer aprovar também na CAIXA e no BRB.'); return true; }
-  if (jaEra && cf._fhDocsAt) return true; // tocou de novo no mesmo botão: não repete
+  if (jaEra && cf._fhDocsAt && !novaDoMesmo) return true; // tocou de novo no mesmo botão: não repete
   // Card que já passou da documentação (funil "Em contratação": Documentação Recebida, Vistoria…) — Fabio 14/11, Adriano: a equipe pode encaminhar as propostas pelo card a quem já
   // mandou tudo. Aí também vai só a simulação: nada de lista de documentos, próximos passos, taxas nem a pergunta do BRB de novo.
   const adiante = /em contrata/i.test((await prisma.lead.findUnique({ where: { id: lead.id }, select: { pipeline: { select: { name: true } } } }))?.pipeline?.name || '');
   // Nova proposta (outro prazo/valor) de quem JÁ recebeu a lista de documentos: só a simulação em PDF do banco escolhido, sem repetir documentos/passos/taxas.
   if (cf._fhDocsAt || adiante) {
-    const instNova = PDF_INST[banco];
+    // O "Encaminhar ao cliente" já mandou o PDF desta proposta (resumo com as parcelas + PDF): o toque só confirma.
+    const pdfJaFoi = !!cf._fhEncaminhado?.pdf && cf._fhEncaminhado.banco === banco && !!soNum(propostaAgora) && soNum(cf._fhEncaminhado.proposta) === soNum(propostaAgora);
+    const instNova = pdfJaFoi ? '' : PDF_INST[banco];
     if (instNova) {
       try {
         const { requestSimulationDocs } = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
@@ -845,7 +976,7 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
     }
     // Já passou da documentação do comprador (Fabio 14/11): na mesma mensagem, a do imóvel (pra vistoria) e a do vendedor (contratação) — só o que ainda não chegou.
     const docs = adiante ? await pedidoDocsImovelVendedor(accountId, cf).catch(() => '') : '';
-    const env = await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}*${cf._fhDocsAt ? ' nessa nova proposta' : ''}. Já te mando a simulação em PDF.${docs ? `\n\n${docs}` : ''}` });
+    const env = await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `Perfeito! ✅ Seguimos com o *${banco}*${cf._fhDocsAt ? ' nessa nova proposta' : ''}.${pdfJaFoi ? '' : ' Já te mando a simulação em PDF.'}${docs ? `\n\n${docs}` : ''}` });
     if (docs && env.success) { await saveCf(lead.id, { _fhDocsImovelAt: new Date().toISOString() }); await note(lead.id, `🏠 Financiamento (${banco}): pedi ao cliente a documentação do imóvel e do vendedor que ainda não estava na pasta. Com a do imóvel, a vistoria já pode ser pedida; a do vendedor pode vir depois (Fabio 14/11).`); }
     return true;
   }
