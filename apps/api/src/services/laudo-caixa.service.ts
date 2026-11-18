@@ -123,6 +123,13 @@ export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { e
   const garantiaFinal = garantia ?? leitura?.garantiaAceita ?? null;
   const status = garantiaFinal === false ? 'REPROVADO' : pendencias.length ? 'PENDENCIA' : 'SALVO';
   await salvarL(leadId, (x) => { x.status = status; x.situacao = b.situacao || null; x.laudoStatus = b.laudoStatus || null; x.os = b.os || x.os || null; x.laudo = { ...lau, garantiaValida: garantiaFinal }; x.pendencias = pendencias; x.ressalvas = leitura?.ressalvas || []; x.conclusao = leitura?.conclusao || null; x.pendOs = po; x.leuPdf = !!leitura; x.driveId = driveId; x.pdfNome = b.pdf?.nome || null; x.fim = new Date().toISOString(); delete x.inicio; delete x.proximaEm; });
+  // Valor do laudo no card (Fabio 18/11: "precisa preencher o valor do laudo no campo valor laudo") — campo "Valor de avaliação" (chave valor_de_avaliacao).
+  const valorLaudo = Number(String(lau.valorAtribuido || '').replace(/[^\d,]/g, '').replace(',', '.'));
+  const valorAntes = String(cf.valor_de_avaliacao ?? '').trim();
+  if (valorLaudo > 0 && Number(valorAntes.replace(/[^\d.]/g, '')) !== valorLaudo) {
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{valor_de_avaliacao}', to_jsonb(${String(valorLaudo)}::text), true) WHERE id = ${leadId}`;
+    await note(leadId, `✏️ Valor de avaliação do card = ${brl(lau.valorAtribuido)} (valor atribuído no laudo da CAIXA)${valorAntes ? ` — era ${valorAntes}` : ''}.`);
+  }
   if (antes.status === status && antes.driveId) return; // já anotado
   const linhas = [
     `• Imóvel válido como garantia (engenheiro): ${garantiaFinal === true ? '✅ SIM' : garantiaFinal === false ? '❌ NÃO' : `— (${lau.garantia || 'não li'})`}`,
