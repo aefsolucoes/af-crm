@@ -1127,7 +1127,9 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   // aprovado reabre a conversa. Trava ANTES de tentar (a Meta ia recusar de
   // qualquer jeito) e já manda direto pro seletor de template, em vez de só
   // deixar a mensagem falhar silenciosamente lá na frente.
-  const windowClosedForApi = channel === 'WHATSAPP' && windowOpen === false;
+  // Cliente que nunca escreveu pela API (só recebeu template — lead do site, Follow Up) também está com a janela fechada (Fabio 18/11): conta só
+  // com o histórico inteiro carregado, pra não confundir com mensagem dele numa leva mais antiga.
+  const windowClosedForApi = channel === 'WHATSAPP' && (windowOpen === false || (windowOpen === null && !hasOlderMessages && messages.length > 0));
 
   async function sendStagedFiles() {
     if (uploadingFile || !stagedFiles.length) return;
