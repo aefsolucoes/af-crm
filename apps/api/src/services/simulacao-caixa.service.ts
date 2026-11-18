@@ -280,7 +280,11 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
     const condA = cfA._caixaResultado?.condicionada;
     const lib = condA?.tipo === 'liberado' && condA?.simDocId === docId ? condA : null;
     const taxaNom = pct(r.jurosNominais);
-    const taxaTxt = taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}` : '—';
+    // "(bonificada)" quando a simulação saiu com a taxa bonificada (Fabio 18/11: "o valor da parcela com a taxa bonificada").
+    const taxaTxt = taxaNom ? `${taxaNom.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}% a.a. + ${indexador}${bonif}` : '—';
+    // "Encaminhar ao cliente" da CAIXA na aba Financiamento (Fabio 18/11): este PDF é o do pedido da equipe — as condições vão no padrão dos outros bancos, com o PDF logo depois.
+    const fhAp = require('./fh-approval.service') as typeof import('./fh-approval.service');
+    const ehEncaminhar = fhAp.encaminharCaixaDoPedido(cfA, docId);
     // Construção (Fabio 14/11): o aviso de aprovação termina perguntando a previsão do projeto aprovado pela prefeitura — a contratação só vem depois dele.
     const cr = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
     const perguntaProjeto = !!avisoProposta && !he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cfA);
@@ -297,6 +301,19 @@ async function prontaComPdf(accountId: string, leadId: string, nome: string, r: 
       const ent = await sd.finishCaixaDoc(prisma as any, { accountId, id: docId, pdf: pdfPronto }).catch((e: any) => { console.error('[Simulação CAIXA] PDF ao cliente:', e?.message); return null; });
       const ok = !!(ent && (ent as any).ok);
       const foiAoCliente = ok && !(ent as any).held;
+      if (ehEncaminhar && ok && (ent as any).held) {
+        const condLib = condA?.tipo === 'liberado' ? condA : null;
+        const desejado = condLib ? Number(condLib.desejado) || 0 : 0;
+        let nomeTomador: string | undefined;
+        try { const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service'); const t = cc.participantesDaAvaliacao(cc.participantesDa(cfA)).tomador; if (t && Number(t.ordem) !== 1 && t.nome) nomeTomador = String(t.nome); } catch { /* sem a linha do 2º participante */ }
+        const ultima = rows[rows.length - 1]?.parcela || null;
+        await fhAp.enviarCondicoesCaixaFh({
+          accountId, leadId, docId,
+          opcao: { valor: `R$ ${brl(fin)}`, prazo: String(rows.length), taxa: taxaTxt, parcela: `R$ ${brl(rows[0].parcela)}`, ...(sistema === 'SAC' && ultima ? { ultimaParcela: `R$ ${brl(ultima)}` } : {}), ...(desejado > fin + 1 ? { pedido: `R$ ${brl(desejado)}` } : {}), ...(nomeTomador ? { nome: nomeTomador } : {}) },
+          oficial: { valor: fin, prazo: rows.length, taxa: taxaTxt, parcela: rows[0]?.parcela || null, ultima, sistema, em: new Date().toISOString() },
+          construcao: !he && (require('./construcao-fh.service') as typeof import('./construcao-fh.service')).ehConstrucaoFh('', cfA),
+        }).catch((e: any) => console.error('[Simulação CAIXA] encaminhar ao cliente:', e?.message));
+      }
       // PDF da CAIXA mandado ao cliente com a aprovada na PRICE já avisada (botão "PDF" — Isidro 13/11): a IA passa a usar os números dele, não os do site.
       const corrigeLiberado = !lib && foiAoCliente && condA?.tipo === 'liberado';
       if (avisoProposta || corrigeLiberado) {

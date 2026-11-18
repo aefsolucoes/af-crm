@@ -1515,7 +1515,10 @@ export async function fhBoard(db: Db, p: { accountId: string; scopeDepartmentIds
       // Qual PROPOSTA do banco escolhido (Fabio 14/11, Deborah: duas do Inter aprovadas; o card só mostrava a última de cada banco): a ⭐ da equipe guarda o número; senão a linha marcada / o nº do card.
       // A linha marcada só vale se for do banco escolhido (17/11: ⭐ antiga de outro banco não pode apontar a proposta).
       escolhidoProposta: cf._fhChosen?.bank ? String(cf._fhChosen.proposta || l.creditAnalyses.find((r) => r.chosen && BANKS[r.bank]?.instituicao === String(cf._fhChosen.bank))?.proposalNumber || cf.num_proposta || '') || null : null,
-      enviados: Array.isArray(cf._fhNotice?.bancos) ? (cf._fhNotice.bancos as string[]) : [],
+      // CAIXA também conta como mandada quando o aviso automático da aprovação (com o PDF) já saiu — o botão vira "Encaminhar de novo" (Fabio 18/11).
+      enviados: Array.from(new Set([...(Array.isArray(cf._fhNotice?.bancos) ? (cf._fhNotice.bancos as string[]) : []), ...(cf._caixaResultado?.aprovadaAviso?.status === 'ENVIADO' || (cf._caixaResultado?.condicionada?.tipo === 'liberado' && cf._caixaResultado.condicionada.status === 'ENVIADO') ? ['CAIXA'] : [])])),
+      // "Encaminhar" da CAIXA esperando a simulação oficial terminar (as condições saem sozinhas quando ela volta; 30 min = pedido perdido).
+      caixaSimulando: !!cf._caixaSimulacao?.encaminhar?.at && Date.now() - Date.parse(String(cf._caixaSimulacao.encaminhar.at)) < 30 * 60_000,
       aiOn: !!l.aiAutoReplyActive,
       emAndamento: l.creditAnalyses.some((r) => ['REQUESTED', 'RUNNING', 'SENT'].includes(r.status) && !r.dryRun),
     };

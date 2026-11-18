@@ -72,7 +72,9 @@ async function planoDeNovaTentativa(db: Db, r: { leadId: string; institution: st
   return { quando: new Date(fim + RETRY_MIN[Math.max(0, falhas - 1)] * 60_000), login: false, falhas };
 }
 
-async function noteFailure(db: Db, r: { leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }) {
+async function noteFailure(db: Db, r: { id?: string; leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }) {
+  // "Encaminhar ao cliente" da CAIXA (Fabio 18/11): a simulação roda minutos depois do clique — quem pediu não vê a falha na tela, então vai nota + push pra equipe.
+  if (r.institution === 'FH_CAIXA' && r.id) await (require('./fh-approval.service') as typeof import('./fh-approval.service')).falhouEncaminharCaixa(r.leadId, r.id, r.detail).catch((e: any) => console.error('[Simulação CAIXA] falha do encaminhar:', e?.message));
   if (r.source !== 'AI') return; // pedido de pessoa: ela vê o motivo na própria tela
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
   const plano = await planoDeNovaTentativa(db, r).catch(() => ({ quando: null, login: false, falhas: 0 }));

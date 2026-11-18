@@ -20,6 +20,8 @@ type FhLead = {
   valores: { imovel: number | null; financia: number | null; entrada: number | null; renda: number | null };
   // Botões iguais aos do Home Equity (Fabio 14/11): banco escolhido (⭐), propostas já mandadas ao cliente, IA do card, STOP e banco ainda rodando/em análise.
   escolhido?: string | null; enviados?: string[]; aiOn?: boolean; autoPaused?: boolean; emAndamento?: boolean;
+  // "Encaminhar" da CAIXA esperando a simulação oficial (Fabio 18/11): as condições saem sozinhas quando ela termina.
+  caixaSimulando?: boolean;
   // TODAS as propostas aprovadas, uma por proposta (Fabio 14/11, Deborah: duas do Inter — a lista de bancos só mostra a última de cada banco) e qual delas tem a ⭐.
   aprovadas?: { banco: string; status: string; proposta: string | null; valor: number | null; prazo: number | null; taxa: string | null; parcela: number | null; createdAt: string; quem: 'p1' | 'p2' | null }[];
   escolhidoProposta?: string | null;
@@ -87,11 +89,16 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
   async function avisar(banco?: string) {
     const quais = banco || aprovadas.map(([b]) => b).join(', ');
     const ja = banco ? l?.enviados?.includes(banco) : false;
-    if (!window.confirm(`${banco ? 'Encaminhar' : 'Mandar'} ao cliente, pelo WhatsApp, a proposta do Financiamento aprovada (${quais}) com o botão "Seguir com esta"?${ja ? '\n\nEssa proposta já foi mandada antes: vai de novo.' : ''}`)) return;
+    // CAIXA (Fabio 18/11): primeiro a simulação no simulador da CAIXA (parcela com a taxa bonificada); as condições vão quando ela terminar.
+    const caixa = banco === 'CAIXA';
+    const pergunta = caixa
+      ? 'Rodar a simulação no simulador da CAIXA e mandar ao cliente, pelo WhatsApp, as condições do financiamento (valor, prazo, taxa de juros e parcela com a taxa bonificada) com o botão "Seguir com esta" e o PDF da simulação?\n\nLeva alguns minutos: as condições saem sozinhas quando a simulação terminar.'
+      : `${banco ? 'Encaminhar' : 'Mandar'} ao cliente, pelo WhatsApp, a proposta do Financiamento aprovada (${quais}) com o botão "Seguir com esta"?`;
+    if (!window.confirm(`${pergunta}${ja ? '\n\nEssa proposta já foi mandada antes: vai de novo.' : ''}`)) return;
     setBusy(banco ? `fwd-${banco}` : 'avisar');
     try {
       const { data: r } = await api.post('/api/credit-analysis/fh-avisar', { leadId, ...(banco ? { banco } : {}) });
-      toast(`Proposta enviada ao cliente: ${(r.bancos || []).join(', ')}`, 'success');
+      toast(r.simulando ? 'Simulação da CAIXA pedida: as condições vão ao cliente com o PDF assim que ela terminar' : `Proposta enviada ao cliente: ${(r.bancos || []).join(', ')}`, 'success');
       recarregar();
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao mandar a proposta', 'error'); } finally { setBusy(null); }
   }
@@ -157,7 +164,9 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
             <div className="space-y-1.5">
               {bancos.map(([nome, b]) => {
                 const aprovado = aprovadoTxt(b.status);
-                const proposta = aprovado && !/^(CAIXA|BRB)$/.test(nome); // CAIXA/BRB: escolhe (⭐), mas não vão no "Encaminhar ao cliente" (aviso só dos bancos do Credimorar/Inter/Itaú)
+                // "Encaminhar ao cliente" em todos os aprovados menos o BRB (sem simulador): a CAIXA roda a simulação oficial antes (Fabio 18/11).
+                const proposta = aprovado && nome !== 'BRB';
+                const simulandoCaixa = nome === 'CAIXA' && !!l.caixaSimulando;
                 const escolhida = l.escolhido === nome;
                 const enviada = !!l.enviados?.includes(nome);
                 return (
@@ -170,13 +179,13 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
                     {nome === 'Santander' && <SantanderManualEnvio leadId={leadId} produto="FH" />}
                     {aprovado && (
                       <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1">
-                        {/* ⭐ também na CAIXA/BRB (Fabio 14/11: "tem que ter a opção de escolher também"); o "Encaminhar" continua só pros bancos do aviso */}
+                        {/* ⭐ também na CAIXA/BRB (Fabio 14/11: "tem que ter a opção de escolher também"); "Encaminhar" também na CAIXA (Fabio 18/11) */}
                         {aprovado && (escolhida
                           ? <span className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-600"><Star size={10} className="fill-current" /> Proposta escolhida</span>
                           : <button onClick={() => escolher(nome)} disabled={!!busy} className="inline-flex items-center gap-1 rounded bg-af-mid px-2 py-0.5 text-[11px] text-white hover:bg-af-dark disabled:opacity-50"><Star size={10} /> Escolher esta proposta</button>)}
                         {proposta && (
-                          <button onClick={() => avisar(nome)} disabled={!!busy} className="inline-flex items-center gap-1 rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-50 disabled:opacity-50" title={enviada ? 'Já foi mandada ao cliente — manda de novo' : 'Mandar ao cliente esta proposta, com o botão "Seguir com esta"'}>
-                            <Send size={10} /> {enviada ? 'Encaminhar de novo' : 'Encaminhar ao cliente'}
+                          <button onClick={() => avisar(nome)} disabled={!!busy || simulandoCaixa} className="inline-flex items-center gap-1 rounded border border-emerald-600 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-50 disabled:opacity-50" title={simulandoCaixa ? 'Simulação da CAIXA rodando: as condições vão ao cliente assim que ela terminar' : `${enviada ? 'Já foi mandada ao cliente — manda de novo' : 'Mandar ao cliente esta proposta, com o botão "Seguir com esta"'}${nome === 'CAIXA' ? ' (antes roda a simulação no simulador da CAIXA: parcela com a taxa bonificada)' : ''}`}>
+                            {simulandoCaixa ? <><RefreshCw size={10} className="animate-spin" /> Simulando na CAIXA…</> : <><Send size={10} /> {enviada ? 'Encaminhar de novo' : 'Encaminhar ao cliente'}</>}
                           </button>
                         )}
                         {aprovado && PDF[nome] && (

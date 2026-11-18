@@ -152,7 +152,7 @@ router.post('/fh-avisar', async (req: AuthRequest, res: Response) => {
     if (!leadId) return res.status(400).json({ error: 'leadId é obrigatório' });
     const { enviarPropostasFh } = require('../services/fh-approval.service') as typeof import('../services/fh-approval.service');
     const userName = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || undefined;
-    const out = await enviarPropostasFh({ accountId: req.user!.accountId, leadId, userName, bancos: req.body?.banco ? [String(req.body.banco)] : undefined, io: io(req) });
+    const out = await enviarPropostasFh({ accountId: req.user!.accountId, leadId, userName, userId: req.user!.id, bancos: req.body?.banco ? [String(req.body.banco)] : undefined, io: io(req) }); // CAIXA: roda a simulação oficial antes (simulando: true)
     if (!out.ok) return res.status(400).json({ error: out.error });
     emit(req, { leadId });
     res.json(out);

@@ -43,7 +43,7 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); } catch { /* push é só aviso */ }
 };
 
-interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; condicao?: string; pedido?: string; nome?: string }
+interface FhOption { banco: string; valor: string; prazo: string; taxa: string; cet: string; parcela?: string; /** só a CAIXA na SAC (parcela cai mês a mês): a última parcela da simulação oficial */ ultimaParcela?: string; condicao?: string; pedido?: string; nome?: string }
 
 /** Propostas aprovadas e bancos ainda em análise, pela situação gravada (_fhResumo) + condições da rodada ("CONDIÇÕES — Bradesco: financia …; prazo …; taxa efetiva …; CET …"). Pura. */
 export function fhOptions(resumo: Record<string, { status: string; texto: string }>, condicoes: string): { aprovadas: FhOption[]; emAnalise: string[] } {
@@ -88,6 +88,7 @@ export function fhOptionText(o: FhOption): string {
     o.taxa && `📈 Taxa de juros: ${o.taxa}`,
     o.cet && `📊 CET: ${o.cet}% a.a.`,
     o.parcela && `💵 1ª parcela: ${o.parcela}`,
+    o.ultimaParcela && `💵 Última parcela: ${o.ultimaParcela}`,
     !o.parcela && `🧾 As parcelas exatas são confirmadas na formalização, conforme o valor e o prazo aprovados.`,
     o.condicao && `📌 Aprovação condicionada: ${o.condicao}`,
   ].filter(Boolean).join('\n');
@@ -386,10 +387,12 @@ async function propostasFh(accountId: string, leadId: string) {
 
 /** "Avisar cliente" (todas as aprovadas, com a introdução do aviso automático) e "Encaminhar ao cliente" (só a do banco) no Financiamento: uma mensagem por banco com o botão
  *  "Seguir com esta". Vale com a IA do card desligada (quem manda é a equipe) e pode mandar de novo. Conversa fechada (24 h) → erro: o template vai antes. */
-export async function enviarPropostasFh(p: { accountId: string; leadId: string; userName?: string; bancos?: string[]; io?: any }): Promise<{ ok: boolean; error?: string; bancos?: string[] }> {
+export async function enviarPropostasFh(p: { accountId: string; leadId: string; userName?: string; userId?: string; bancos?: string[]; io?: any }): Promise<{ ok: boolean; error?: string; bancos?: string[]; simulando?: boolean }> {
+  const so = (p.bancos || []).filter(Boolean);
+  // CAIXA (Fabio 18/11): antes de encaminhar, a simulação no simulador da CAIXA (parcela com a taxa bonificada) — as condições saem quando ela termina.
+  if (so.length === 1 && so[0] === 'CAIXA') return encaminharCaixaFh(p);
   const x = await propostasFh(p.accountId, p.leadId);
   if (!x) return { ok: false, error: 'Card não encontrado' };
-  const so = (p.bancos || []).filter(Boolean);
   const lista = so.length ? x.aprovadas.filter((o) => so.includes(o.banco)) : x.aprovadas;
   if (!lista.length) return { ok: false, error: so.length ? `O ${so.join(', ')} não está aprovado neste card.` : 'Não há proposta aprovada do Financiamento pra mandar.' };
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
@@ -419,6 +422,147 @@ export async function enviarPropostasFh(p: { accountId: string; leadId: string; 
   logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: x.lead.name, summary: `mandou ao cliente a proposta do Financiamento (${lista.map((o) => o.banco).join(', ')})` });
   p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
   return { ok: true, bancos: lista.map((o) => o.banco) };
+}
+
+// ─── "Encaminhar ao cliente" da CAIXA no Financiamento (Fabio 18/11: "coloque esse encaminhar proposta para o cliente no caso de aprovação na CAIXA, igual é nos
+// outros bancos, só que na CAIXA precisa fazer a simulação para saber o valor da parcela com a taxa bonificada, taxa de juros e encaminhar para o cliente igual é nos
+// outros bancos as condições de financiamento") ───
+// 1) O botão pede a simulação no simulador da CAIXA (extensão SIOPI, a mesma do botão "PDF") com o PDF SEGURADO (hold) e marca `_caixaSimulacao.encaminhar`.
+// 2) A simulação termina (simulacao-caixa.prontaComPdf) → `enviarCondicoesCaixaFh`: as condições no padrão dos outros bancos (fhOptionText, botão "Seguir com esta")
+//    com os números da simulação oficial, e logo depois o PDF.
+// 3) A simulação não sai (QR desligado, extensão parou, passou do tempo) → nota + push pra equipe (`falhouEncaminharCaixa`); NADA vai ao cliente (nunca texto livre).
+
+const ENCAMINHAR_VALIDADE_MS = 30 * 60_000; // marca mais velha que isso = pedido perdido (a simulação nunca voltou): libera pedir de novo
+
+/** Marca/limpa o pedido do encaminhar da CAIXA em `_caixaSimulacao.encaminhar` — só essa chave, por SQL (a simulação grava o resto de `_caixaSimulacao` ao mesmo tempo). */
+async function marcaEncaminharCaixa(leadId: string, v: Cf | null): Promise<void> {
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaSimulacao}', COALESCE("customFields"->'_caixaSimulacao', '{}'::jsonb) || jsonb_build_object('encaminhar', ${JSON.stringify(v)}::jsonb), true) WHERE id = ${leadId}`;
+}
+
+/** A CAIXA está aprovada no card pra mandar as condições? Avaliação de Risco aprovada no SIOPI (condicionada só depois de liberada na PRICE) ou o resultado lançado à mão. */
+async function caixaAprovadaFh(leadId: string, cf: Cf): Promise<{ ok: true; proposta: string | null } | { ok: false; error: string }> {
+  const res = cf._caixaResultado || {};
+  const bruto = String(res.status || '').replace(/^RESULTADO:\s*/i, '');
+  const row = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CAIXA_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { updatedAt: 'desc' }, select: { proposalNumber: true } });
+  const proposta = (String(res.ultimaTela || '').match(/Proposta\s+(\d{6,})/) || [])[1] || row?.proposalNumber || null;
+  if (/n[aã]o aprovad|reprovad|recusad|negad/i.test(bruto) && !row) return { ok: false, error: 'A CAIXA não aprovou este cliente.' };
+  if (/condicionad/i.test(bruto)) return { ok: false, error: 'A CAIXA condicionou a aprovação e ainda não liberou (o CRM refaz na PRICE): espere a aprovação pra encaminhar.' };
+  if (/aprovad/i.test(bruto) || row) return { ok: true, proposta };
+  return { ok: false, error: 'A CAIXA não está aprovada neste card.' };
+}
+
+/** Botão "Encaminhar ao cliente" / "Encaminhar de novo" na CAIXA (aba Financiamento): pede a simulação oficial; as condições vão ao cliente quando ela terminar. */
+export async function encaminharCaixaFh(p: { accountId: string; leadId: string; userName?: string; userId?: string; io?: any }): Promise<{ ok: boolean; error?: string; bancos?: string[]; simulando?: boolean }> {
+  const lead = await prisma.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true, name: true, customFields: true } });
+  if (!lead) return { ok: false, error: 'Card não encontrado' };
+  const cf = (lead.customFields || {}) as Cf;
+  const ap = await caixaAprovadaFh(p.leadId, cf);
+  if (!ap.ok) return { ok: false, error: ap.error };
+  if (cf._autoPaused) return { ok: false, error: 'O STOP TOTAL deste cliente está ligado: nada vai ao cliente.' };
+  if (cf._caixaTeste) return { ok: false, error: 'O card está em MODO TESTE da CAIXA: nada vai ao cliente.' };
+  const sim = cf._caixaSimulacao || {};
+  const enc = sim.encaminhar as Cf | null | undefined;
+  if (enc?.at && Date.now() - Date.parse(enc.at) < ENCAMINHAR_VALIDADE_MS) return { ok: false, error: 'A simulação da CAIXA pra encaminhar já está rodando: as condições vão ao cliente assim que ela terminar.' };
+  if (['FILA', 'RODANDO'].includes(String(sim.status || '')) || sim.avisoAprovacao) return { ok: false, error: 'Já tem uma simulação da CAIXA em andamento pra este cliente: espere ela terminar.' };
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(p.leadId))) return { ok: false, error: 'A conversa do WhatsApp está fechada (o cliente não escreve há mais de 24 h): mande um template antes ou espere ele responder.' };
+  const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  if (ca.foraDoHorario() && !(await ca.liberadoAte(prisma as any, p.accountId))) return { ok: false, error: 'Fora do horário das extensões (07h–22h): o simulador da CAIXA não roda agora.' };
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  // PDF segurado (hold): ele sai logo depois das condições, por enviarCondicoesCaixaFh.
+  const out = await sd.requestSimulationDocs(prisma as any, { accountId: p.accountId, leadId: p.leadId, institutions: ['FH_CAIXA'], userId: p.userId, source: 'USER', caption: 'Segue a simulação da CAIXA em PDF 📄', hold: true });
+  const docId = out.created[0]?.id;
+  if (!docId) return { ok: false, error: 'Já tem uma simulação da CAIXA sendo gerada pra este cliente: espere ela terminar.' };
+  const st = await prisma.simulationDocRequest.findUnique({ where: { id: docId }, select: { status: true, detail: true } });
+  if (st?.status === 'FAILED') return { ok: false, error: `A simulação da CAIXA não começou: ${String(st.detail || 'falhou').slice(0, 200)}` }; // ex.: WhatsApp do código (QR) desconectado, CPF/nascimento/renda vazios
+  const quem = p.userName || 'a equipe';
+  await marcaEncaminharCaixa(p.leadId, { docId, at: new Date().toISOString(), por: quem, userId: p.userId || null, proposta: ap.proposta });
+  // O aviso automático da aprovação que ainda esperava (fora do horário / template sem resposta) não sai por cima: quem manda agora é a equipe.
+  {
+    const fresh = ((await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+    const fr = { ...(fresh._caixaResultado || {}) } as Cf;
+    let mexeu = false;
+    if (['PENDING', 'TEMPLATE'].includes(String(fr.aprovadaAviso?.status || ''))) { fr.aprovadaAviso = { ...fr.aprovadaAviso, status: 'EQUIPE' }; mexeu = true; }
+    if (fr.condicionada?.tipo === 'liberado' && ['PENDING', 'TEMPLATE'].includes(String(fr.condicionada.status || ''))) { fr.condicionada = { ...fr.condicionada, status: 'EQUIPE' }; mexeu = true; }
+    if (mexeu) await saveCf(p.leadId, { _caixaResultado: fr });
+  }
+  await note(p.leadId, `📣 ${quem} pediu pra encaminhar ao cliente as condições da CAIXA${ap.proposta ? ` (proposta ${ap.proposta})` : ''}: a simulação está rodando no simulador da CAIXA e, quando terminar, vão a parcela com a taxa bonificada (quando houver), a taxa de juros, o prazo e o valor financiado, com o botão "Seguir com esta" e o PDF.`);
+  logActivity({ accountId: p.accountId, userId: null, userName: quem, action: 'lead_updated', leadId: p.leadId, leadName: lead.name, summary: 'pediu pra encaminhar ao cliente as condições da CAIXA (simulação oficial)' });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return { ok: true, bancos: ['CAIXA'], simulando: true };
+}
+
+/** Pedido do encaminhar da CAIXA em aberto pra ESTE PDF? (simulacao-caixa.prontaComPdf decide por aqui se manda as condições). */
+export function encaminharCaixaDoPedido(cf: Cf, docId: string | null | undefined): boolean {
+  const e = cf?._caixaSimulacao?.encaminhar as Cf | null | undefined;
+  return !!docId && !!e && e.docId === docId;
+}
+
+/** A simulação do encaminhar terminou (PDF pronto e segurado): manda as condições no padrão dos outros bancos com o botão "Seguir com esta" e, logo depois, o PDF.
+ *  Qualquer falha aqui = nota + push pra equipe e o PDF não vai sozinho. */
+export async function enviarCondicoesCaixaFh(p: { accountId: string; leadId: string; docId: string; opcao: Omit<FhOption, 'banco' | 'cet'>; oficial: Cf; construcao?: boolean; io?: any }): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: p.leadId }, select: { name: true, userId: true, customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  const enc = cf._caixaSimulacao?.encaminhar as Cf | undefined;
+  if (!lead || !enc || enc.docId !== p.docId) return false;
+  await marcaEncaminharCaixa(p.leadId, null); // daqui pra frente quem avisa da falha é esta função (não a nota genérica de falhouEncaminharCaixa)
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  const pausa = () => new Promise((r) => setTimeout(r, 1200));
+  const o: FhOption = { banco: 'CAIXA', cet: '', ...p.opcao };
+  const texto = fhOptionText(o);
+  const falhou = async (porque: string) => {
+    await note(p.leadId, `⚠️ Encaminhar CAIXA: a simulação saiu (${o.valor}, ${o.prazo} meses, ${o.taxa}, 1ª parcela ${o.parcela}), mas as condições NÃO foram ao cliente: ${porque}. Nada foi mandado. Clique em "Encaminhar" na CAIXA (aba Financiamento) de novo quando der.`);
+    pushEquipe(p.accountId, lead.userId, `⚠️ ${lead.name}: condições da CAIXA não foram`, porque.slice(0, 120), p.leadId);
+    await sd.failSimulationDoc(prisma as any, { accountId: p.accountId, id: p.docId, reason: `Encaminhar CAIXA: ${porque}` }).catch(() => {});
+    return false;
+  };
+  if (cf._autoPaused) return falhou('o card entrou em STOP TOTAL');
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(p.leadId))) return falhou('a conversa do WhatsApp fechou enquanto a simulação rodava (mais de 24 h sem mensagem do cliente)');
+  const base = { accountId: p.accountId, leadId: p.leadId, io: p.io, userId: enc.userId || undefined };
+  let r = await sendOutboundWhatsApp({ ...base, content: texto, buttons: [CHOOSE] });
+  if (!r.success) r = await sendOutboundWhatsApp({ ...base, content: `${texto}\n\n👉 Para seguir com esta, é só me responder "CAIXA".` });
+  if (!r.success) return falhou(`o WhatsApp não aceitou a mensagem (${r.error || 'erro no envio'})`);
+  await pausa();
+  const pdf = await sd.releaseHeld(prisma as any, p.docId, p.io).catch((e: any) => ({ ok: false as const, error: e?.message || 'erro' }));
+  // Construção (Fabio 14/11): a contratação só vem com o projeto aprovado pela prefeitura — a pergunta da previsão vai uma vez por card.
+  const cr = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
+  const perguntaProjeto = !!p.construcao && !cf._caixaResultado?.projetoPrefeitura?.perguntadoAt;
+  if (perguntaProjeto) { await pausa(); await sendOutboundWhatsApp({ ...base, content: cr.PERGUNTA_PROJETO_PREFEITURA }); }
+  // Entra no que o cliente recebeu (é por aqui que o "Seguir com esta" e o "Encaminhar de novo" reconhecem a CAIXA); o aviso automático da aprovação que ainda
+  // estava pendente/segurado não sai mais por cima; a IA passa a falar com os números da simulação oficial.
+  const fresh = ((await prisma.lead.findUnique({ where: { id: p.leadId }, select: { customFields: true } }))?.customFields || {}) as Cf;
+  const agora = new Date().toISOString();
+  const fr = { ...(fresh._caixaResultado || {}) } as Cf;
+  if (fr.aprovadaAviso && fr.aprovadaAviso.status !== 'ENVIADO') fr.aprovadaAviso = { ...fr.aprovadaAviso, status: 'ENVIADO', enviadoAt: agora, porEquipe: enc.por };
+  if (fr.condicionada?.tipo === 'liberado') fr.condicionada = { ...fr.condicionada, ...(fr.condicionada.status !== 'ENVIADO' ? { status: 'ENVIADO', enviadoAt: agora } : {}), oficial: p.oficial };
+  if (perguntaProjeto) fr.projetoPrefeitura = { perguntadoAt: agora };
+  const ja: string[] = Array.isArray(fresh._fhNotice?.bancos) ? fresh._fhNotice.bancos : [];
+  await saveCf(p.leadId, {
+    _caixaResultado: fr,
+    _fhNotice: { ...(fresh._fhNotice || {}), sentAt: fresh._fhNotice?.sentAt || agora, bancos: Array.from(new Set([...ja, 'CAIXA'])) },
+    _caixaSimulacao: { ...(fresh._caixaSimulacao || {}), encaminhar: null, encaminhado: { at: agora, por: enc.por, proposta: enc.proposta || null, docId: p.docId, ...p.oficial } },
+  });
+  await note(p.leadId, `📣 ${enc.por} encaminhou ao cliente as condições da CAIXA${enc.proposta ? ` (proposta ${enc.proposta})` : ''} com os números da simulação oficial: ${o.valor}, ${o.prazo} meses, ${o.taxa}, 1ª parcela ${o.parcela}${o.ultimaParcela ? `, última ${o.ultimaParcela}` : ''} — com o botão "Seguir com esta"${pdf.ok ? ' e o PDF da simulação' : `. ⚠️ O PDF NÃO foi (${(pdf as any).error || 'erro'}): ele está na pasta do cliente, mande à mão pela Inbox`}.${perguntaProjeto ? ' Como é construção, perguntei a previsão do projeto aprovado pela prefeitura.' : ''}`);
+  if (!pdf.ok) pushEquipe(p.accountId, lead.userId, `⚠️ ${lead.name}: PDF da CAIXA não foi`, 'As condições foram; mande o PDF da pasta à mão.', p.leadId);
+  logActivity({ accountId: p.accountId, userId: null, userName: enc.por, action: 'lead_updated', leadId: p.leadId, leadName: lead.name, summary: 'encaminhou ao cliente as condições da CAIXA (simulação oficial)' });
+  p.io?.to(`lead:${p.leadId}`).emit('lead_updated', { leadId: p.leadId });
+  return true;
+}
+
+/** A simulação pedida pelo encaminhar da CAIXA falhou ou passou do tempo (simulation-doc.noteFailure): nota + push pra equipe; nada vai ao cliente. */
+export async function falhouEncaminharCaixa(leadId: string, docId: string, motivo: string | null): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true, accountId: true, customFields: true } });
+  if (!lead || !encaminharCaixaDoPedido((lead.customFields || {}) as Cf, docId)) return;
+  await marcaEncaminharCaixa(leadId, null);
+  await note(leadId, `⚠️ Encaminhar CAIXA: a simulação no simulador da CAIXA não saiu (${String(motivo || 'sem detalhe').slice(0, 300)}). As condições NÃO foram ao cliente — nada foi mandado. Confira (WhatsApp do código em /caixa-codigo, extensão SIOPI aberta) e clique em "Encaminhar" na CAIXA de novo.`);
+  pushEquipe(lead.accountId, lead.userId, `⚠️ ${lead.name}: simulação da CAIXA não saiu`, 'As condições da CAIXA não foram ao cliente.', leadId);
+}
+
+/** Push pro responsável do card (sem responsável, pra conta). */
+function pushEquipe(accountId: string, userId: string | null | undefined, title: string, body: string, leadId: string) {
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title, body, leadId }, userId ? [userId] : undefined).catch(() => {}); } catch { /* push é só aviso */ }
 }
 
 /** "Escolher esta proposta" da equipe no Financiamento — igual ao ⭐ do Home Equity: marca o banco (`_fhChosen`), preenche o card (instituição, valor, prazo, taxa, nº da proposta,
@@ -673,6 +817,7 @@ export async function retomarEscolhaFh(accountId: string, leadId: string, io?: a
 }
 
 async function chooseFhBank(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, banco: string, io?: any): Promise<boolean> {
+  if (banco === 'CAIXA') return escolheuCaixaFh(accountId, lead, cf, io);
   const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
   const { moveToAwaitingDocs } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const jaEra = cf._fhChosen?.bank === banco;
@@ -731,6 +876,39 @@ async function chooseFhBank(accountId: string, lead: { id: string; name: string;
   if (!r.success) await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: `${pergunta}\n\nÉ só me responder *sim* ou *não*.` });
   await saveCf(lead.id, { _fhCaixaAsk: { at: new Date().toISOString(), banco } });
   await note(lead.id, `🏠 Financiamento (${banco}): ${inst ? 'pedi a simulação em PDF (sai sozinha quando a extensão baixar do portal; se falhar, o CRM tenta de novo), ' : ''}mandei a lista de documentos (RG/CNH + comprovante de residência${comRenda ? ' + RENDA' : ''} + imóvel + vendedor)${passos ? ', os próximos passos' : ''}${taxas ? ' e as taxas' : ''}, e perguntei se ele quer aprovar também no BRB.${movido ? ` Card movido pra "${movido}".` : ''}`);
+  return true;
+}
+
+/** Cliente tocou em "Seguir com esta" nas condições da CAIXA (encaminhar da equipe, 18/11). A CAIXA já analisou com a documentação completa: nada de lista de documentos,
+ *  taxas nem a pergunta do BRB — marca a ⭐ na CAIXA, preenche o card com os números da simulação oficial que ele recebeu, avisa a equipe (vistoria/contratação pela CAIXA)
+ *  e confirma curto ao cliente (com a IA do card ligada). Tocou de novo → nada. */
+async function escolheuCaixaFh(accountId: string, lead: { id: string; name: string; aiAutoReplyActive: boolean }, cf: Cf, io?: any): Promise<boolean> {
+  const jaEra = cf._fhChosen?.bank === 'CAIXA';
+  if (jaEra && cf._fhCaixaSeguirAt) return true;
+  const sim = (cf._caixaSimulacao?.encaminhado || {}) as Cf;
+  const fill: Cf = { _fhCaixaSeguirAt: new Date().toISOString() };
+  if (!jaEra) {
+    const row = await prisma.creditAnalysis.findFirst({ where: { leadId: lead.id, bank: 'CAIXA_FH', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { updatedAt: 'desc' }, select: { id: true, proposalNumber: true } });
+    await prisma.creditAnalysis.updateMany({ where: { leadId: lead.id, chosen: true }, data: { chosen: false } });
+    if (row) await prisma.creditAnalysis.update({ where: { id: row.id }, data: { chosen: true } });
+    const proposta = sim.proposta || row?.proposalNumber || (String(cf._caixaResultado?.ultimaTela || '').match(/Proposta\s+(\d{6,})/) || [])[1] || null;
+    Object.assign(fill, { instituicao: 'CAIXA', _fhChosen: { bank: 'CAIXA', at: new Date().toISOString(), ...(proposta ? { proposta } : {}) } });
+    if (proposta) fill.num_proposta = proposta;
+    if (Number(sim.valor) > 0) { fill.valor_credito = String(sim.valor); if (cf.valor_credito && Number(String(cf.valor_credito).replace(/[^\d.]/g, '')) !== Number(sim.valor)) fill._valorPedido = cf.valor_credito; }
+    if (Number(sim.prazo) > 0) fill.prazo_financ = `${sim.prazo} meses`;
+    if (sim.taxa) fill.taxa_efetiva = String(sim.taxa);
+    if (Number(sim.parcela) > 0) fill.primeira_parcela = String(sim.parcela);
+    if (Number(sim.ultima) > 0) fill.ultima_parcela = String(sim.ultima);
+  }
+  await saveCf(lead.id, fill);
+  if (Number(fill.valor_credito) > 0) await prisma.lead.update({ where: { id: lead.id }, data: { value: Number(fill.valor_credito) } });
+  await note(lead.id, `⭐ Financiamento: o cliente escolheu a CAIXA (botão "Seguir com esta" nas condições da CAIXA)${jaEra ? ' — ela já estava escolhida' : `. Card preenchido: ${Object.keys(fill).filter((k) => !k.startsWith('_')).join(', ')}`}. Siga com a vistoria/contratação pela CAIXA.`);
+  push(accountId, `🏠 ${lead.name}: escolheu a CAIXA`, 'Financiamento — seguir com a vistoria/contratação pela CAIXA', lead.id);
+  logActivity({ accountId, userId: null, userName: 'Cliente', action: 'lead_updated', leadId: lead.id, leadName: lead.name, summary: 'escolheu a CAIXA no Financiamento ("Seguir com esta")' });
+  io?.to(`lead:${lead.id}`).emit('lead_updated', { leadId: lead.id });
+  if (!lead.aiAutoReplyActive) { await note(lead.id, '💬 A IA deste card está desligada: confirme com o cliente que vocês seguem pela CAIXA.'); return true; }
+  const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
+  await sendOutboundWhatsApp({ accountId, leadId: lead.id, io, content: 'Perfeito! ✅ Seguimos com a *CAIXA*. A gente já dá andamento por aqui.' });
   return true;
 }
 
