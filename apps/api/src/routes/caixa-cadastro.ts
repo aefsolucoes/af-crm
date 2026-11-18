@@ -249,6 +249,14 @@ router.post('/:leadId/card/desbloqueio', requirePermission('funnel_manage'), asy
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true, mensagem: 'Desbloqueio na fila da extensão da CAIXA' });
 });
+// Cancela a análise que sairia sozinha depois do cadastro (Fabio 18/11).
+router.delete('/:leadId/card/analise-pendente', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  try {
+    const { cancelarAnalisePendente } = require('../services/caixa-cadastro.service') as typeof import('../services/caixa-cadastro.service');
+    const ok = await cancelarAnalisePendente(req.params.leadId, await nomeDe(req));
+    res.json({ ok: true, mensagem: ok ? 'Análise pendente cancelada' : 'Não havia análise pendente' });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
 // Pergunta ao cliente (outro correspondente) — o texto fixo de textoPerguntaOutroCca; daí em diante a IA conduz.
 router.post('/:leadId/card/desbloqueio/perguntar', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   const erro = await perguntarAoCliente(req.user!.accountId, req.params.leadId, await nomeDe(req), req.app.get('io')).catch((e) => e?.message || 'erro');

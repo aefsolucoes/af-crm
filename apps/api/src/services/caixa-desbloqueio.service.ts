@@ -224,12 +224,12 @@ export async function entregarCodigo(accountId: string, leadId: string): Promise
 }
 
 async function cadastroDepoisDeLiberar(accountId: string, leadId: string): Promise<void> {
-  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } });
-  const { cadastroCaixaPeloCard } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  // Fabio 18/11: "cancela, roda o cadastro pelo nosso e faz o crédito" + "coloca tudo para rodar automático" — o cliente pediu pra seguir com a gente (o código dele é o
-  // pedido): cadastro pela ficha e, gravado, a Avaliação de Risco vai pra CAIXA sozinha (análise pendente do cadastro).
-  const r = await cadastroCaixaPeloCard(accountId, leadId, { id: l?.userId || '', nome: 'Fabio 18/11 (automático: cliente liberou o cadastro do outro correspondente)' }, undefined, { analise: true, enviar: true });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'erro' in r ? `⚠️ CAIXA — cadastro liberado do outro correspondente, mas o cadastro pelo nosso convênio não foi pra fila: ${r.erro}` : `🏦 CAIXA — cadastro liberado do outro correspondente: ${r.mensagem}` } }).catch(() => {});
+  // Fabio 18/11 (Lucas): "cadastro dele já estava atualizado — por que ela tá refazendo?" + "não precisa mandar para a CAIXA analisar o crédito ainda". Liberado = só
+  // isso: o cadastro que já está na CAIXA fica como está e nada roda sozinho — cadastro e análise pelos botões do card, quando a equipe quiser.
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '✅ CAIXA — cadastro LIBERADO: as avaliações/propostas do outro correspondente foram canceladas e o cliente ficou livre pro nosso convênio. O cadastro que já está na CAIXA fica como está; a análise de crédito sai só quando a equipe pedir (botão "Análise CAIXA").' } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `✅ ${l?.name}: liberado na CAIXA`, body: 'Saiu do outro correspondente. A análise de crédito só quando você pedir.', leadId }).catch(() => {});
 }
 
 /** Pede um código NOVO (modo `enviar`; o cliente é avisado de que é novo). No máximo 3 envios por desbloqueio — depois, a equipe. */

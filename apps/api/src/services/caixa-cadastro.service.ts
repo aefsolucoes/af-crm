@@ -829,6 +829,15 @@ async function gravarAnalisePendente(leadId: string, p: AnalisePendente | null):
   if (p) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAnalisePendente}', ${JSON.stringify(p)}::jsonb, true) WHERE id = ${leadId}`;
   else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_caixaAnalisePendente' WHERE id = ${leadId}`;
 }
+/** Tira a análise que ia sair sozinha depois do cadastro (Fabio 18/11, Lucas: "não precisa mandar para a CAIXA analisar o crédito ainda"). */
+export async function cancelarAnalisePendente(leadId: string, por: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const pend = ((l?.customFields || {}) as Cf)._caixaAnalisePendente as AnalisePendente | undefined;
+  if (!pend) return false;
+  await gravarAnalisePendente(leadId, null);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⏹️ CAIXA — a análise de crédito que sairia depois do cadastro (autorizada por ${pend.por}) foi CANCELADA por ${por}. Nada vai pra CAIXA até alguém pedir de novo.` } }).catch(() => {});
+  return true;
+}
 /** true = havia análise pendente (seguiu ou ainda espera alguém gravar) — a conferência manual não é pedida. */
 async function seguirAnalisePendente(accountId: string, leadId: string): Promise<boolean> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, userId: true, customFields: true } });
