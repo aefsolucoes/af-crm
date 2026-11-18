@@ -5,6 +5,7 @@ import { requirePermission } from '../middleware/permission';
 import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, informarEstadoCivil, informarDadosRenda, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
+import { pedirDesbloqueio, proximoDesbloqueio, gravarDesbloqueio } from '../services/caixa-desbloqueio.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -12,7 +13,8 @@ router.use(authMiddleware);
 
 router.get('/fila', async (req: AuthRequest, res: Response) => {
   // Sem consulta/cadastro/avaliação pendente → consulta do resultado de avaliação já enviada (Formulários Enviados).
-  try { res.json((await proximaConsulta(req.user!.accountId)) || (await proximaConsultaResultado(req.user!.accountId))); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
+  // Desbloqueio do cadastro (cliente em outro convênio, Fabio 18/11) vem primeiro: é pedido pela equipe e espera o cliente.
+  try { res.json((await proximoDesbloqueio(req.user!.accountId)) || (await proximaConsulta(req.user!.accountId)) || (await proximaConsultaResultado(req.user!.accountId))); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
 });
 
 // Resultado da Avaliação de Risco (Fabio 01/11: "PARA CONSULTAR O RESULTADO, PRECISA VOLTAR NO MENU E IR EM FORMULÁRIOS ENVIADOS").
@@ -238,6 +240,19 @@ router.post('/:leadId/mapa', async (req: AuthRequest, res: Response) => {
   const mapa = { at: new Date().toISOString(), pagina: String((req.body as any)?.pagina || '').slice(0, 200), campos: Array.isArray((req.body as any)?.campos) ? (req.body as any).campos.slice(0, 150) : [], botoes: Array.isArray((req.body as any)?.botoes) ? (req.body as any).botoes.slice(0, 40) : [] };
   await prisma.lead.update({ where: { id: req.params.leadId }, data: { customFields: { ...((l.customFields || {}) as Record<string, unknown>), _caixaFormMapa: mapa } as any } });
   res.json({ ok: true });
+});
+
+// Desbloqueio do cadastro CAIXA — cliente atendido por OUTRO convênio (Fabio 18/11, Lucas): a extensão abre o cadastro, responde SIM ao aviso e, com `enviar`,
+// clica "Enviar Token" (a CAIXA manda o SMS pro celular cadastrado do cliente). Quem pede fica na anotação.
+router.post('/:leadId/card/desbloqueio', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const erro = await pedirDesbloqueio(req.user!.accountId, req.params.leadId, await nomeDe(req), { enviar: req.body?.enviar === true }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true, mensagem: 'Desbloqueio na fila da extensão da CAIXA' });
+});
+router.post('/:leadId/desbloqueio', async (req: AuthRequest, res: Response) => {
+  const b = (req.body || {}) as { status?: string; texto?: string; telefones?: string[]; campos?: string[]; final?: boolean };
+  if (!b.status) return res.status(400).json({ error: 'status obrigatório' });
+  try { await gravarDesbloqueio(req.user!.accountId, req.params.leadId, { status: String(b.status), texto: b.texto, telefones: Array.isArray(b.telefones) ? b.telefones : [], campos: Array.isArray(b.campos) ? b.campos : [], final: b.final }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
 // Histórico da extensão nos logs do servidor (diagnóstico sem precisar abrir o Chrome do Fabio).
