@@ -561,8 +561,14 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
           continue;
         }
       }
-      const prev = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true } }) : null;
-      const doCard = kind === 'CHECK' && !prev?.proposalNumber ? propostaDoCard(cfPedido) : null; // sem análise com número: usa a proposta anotada no card
+      const prev0 = kind === 'CHECK' ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, proposalNumber: { not: null } }, orderBy: { createdAt: 'desc' }, select: { proposalNumber: true, holderCpf: true, holderName: true, requestedValue: true, createdAt: true } }) : null;
+      // Rodada NOVA, sem número, DEPOIS da proposta numerada (Fabio 18/11, Nadja/João): a proposta nova do João (R$ 100 mil, imóvel de R$ 800 mil) caiu depois do "Simular" e a
+      // retomada das 7h pediu conferência — que herdou o nº 56487477, de OUTUBRO (Nadja sozinha, R$ 50 mil, outro imóvel). A extensão leu essa proposta antiga e o cliente recebeu
+      // "Crédito aprovado" de uma análise que não era a dele. A proposta numerada de antes da rodada nova não é o resultado dela: a conferência vai sem o número antigo.
+      const rodadaNova = prev0 ? await db.creditAnalysis.findFirst({ where: { leadId: l.id, bank, kind: 'RUN', dryRun: false, proposalNumber: null, createdAt: { gt: prev0.createdAt }, OR: [{ detail: null }, { NOT: { detail: { startsWith: 'NÃO RODEI' } } }] }, orderBy: { createdAt: 'desc' }, select: { requestedValue: true } }) : null;
+      const prev = rodadaNova ? { proposalNumber: null, holderCpf: null, holderName: null, requestedValue: rodadaNova.requestedValue } : prev0;
+      const doCard0 = kind === 'CHECK' && !prev?.proposalNumber ? propostaDoCard(cfPedido) : null; // sem análise com número: usa a proposta anotada no card
+      const doCard = doCard0 && !(rodadaNova && prev0 && String(doCard0.numero).replace(/\D/g, '') === String(prev0.proposalNumber).replace(/\D/g, '')) ? doCard0 : null; // o card ainda tem o nº da proposta antiga
       const prevNumber = prev?.proposalNumber || (doCard && doCard.bank === bank ? doCard.numero : null);
       // Só Bradesco ou só Santander (Fabio 17/11): a escolha fica no card (`_fhBancosCredimorar`) — a extensão marca só esse banco no portal e lê só ele, também nas
       // conferências dessa simulação. Rodada com os dois (inclusive as automáticas) apaga a escolha.
@@ -1040,6 +1046,26 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
         detail: row.bank === 'CREDITAS'
           ? `CPF já possui uma proposta ativa na Creditas — a conferência trouxe ${lido}, que não é o pedido deste card (${brl(pedido)}). Resultado descartado; confira no portal.`
           : `RESULTADO DESCARTADO: o portal devolveu ${lido}, muito acima do pedido deste card (${brl(pedido)}) — provavelmente outra proposta do mesmo CPF. Confira no portal.`,
+      };
+    }
+  }
+  // Proposta de uma RODADA ANTERIOR (Fabio 18/11, Nadja/João — proposta 56487477): a conferência leu uma proposta que já tinha resultado ANTES de uma rodada nova do mesmo banco
+  // (outro valor, outro imóvel, outro titular). Não é o resultado da rodada nova: não vira aprovação nem aviso ao cliente — volta pra equipe conferir no portal.
+  // Creditas fica de fora: lá o portal não deixa criar outra proposta pro mesmo CPF e a ativa é a nossa (propostaCreditasNossa).
+  if (!row.dryRun && row.source !== 'PORTAL' && row.bank !== 'CREDITAS' && (next === 'APPROVED' || next === 'CONDITIONAL')) {
+    const cur = await db.creditAnalysis.findUnique({ where: { id: row.id }, select: { proposalNumber: true, createdAt: true } });
+    const numero = String((data.proposalNumber as string | null | undefined) || cur?.proposalNumber || '').trim();
+    const antiga = numero && cur ? await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, dryRun: false, id: { not: row.id }, proposalNumber: numero, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED'] }, createdAt: { lt: cur.createdAt } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }) : null;
+    const nova = antiga && cur ? await db.creditAnalysis.findFirst({
+      where: { leadId: row.leadId, bank: row.bank, dryRun: false, kind: 'RUN', createdAt: { gt: antiga.createdAt, lt: cur.createdAt }, AND: [{ OR: [{ proposalNumber: null }, { proposalNumber: { not: numero } }] }, { OR: [{ detail: null }, { NOT: { detail: { startsWith: 'NÃO RODEI' } } }] }] },
+      orderBy: { createdAt: 'desc' }, select: { createdAt: true, requestedValue: true },
+    }) : null;
+    if (antiga && nova) {
+      const dia = (d: Date) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo' });
+      next = 'CHECK';
+      data = {
+        ...data, status: next, proposalNumber: null, approvedValue: null, netValue: null, termMonths: null, rate: null, indexer: null, firstInstallment: null, lastInstallment: null, conditions: null, ...(data.options ? { options: [] } : {}),
+        detail: `RESULTADO DESCARTADO: a conferência leu a proposta nº ${numero}, que é da rodada de ${dia(antiga.createdAt)} — não é o resultado da rodada de ${dia(nova.createdAt)}${nova.requestedValue ? ` (${brl(Number(nova.requestedValue))})` : ''}. Confira no portal se a proposta nova foi enviada; se não foi, rode de novo.`,
       };
     }
   }

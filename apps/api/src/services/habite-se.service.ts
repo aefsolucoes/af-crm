@@ -86,7 +86,9 @@ export type Terreno = { anexos: string[]; descricao: string; emissao: string; an
 export function terrenoNaCertidao(cf: Cf, agora = new Date()): Terreno | null {
   const rev = (cf._docReview || {}) as Record<string, any>;
   const leit = (cf._habiteSeLeitura || {}) as Record<string, LeituraConstrucao>;
-  const ids = Object.keys(rev).filter((id) => rev[id] && ehMat(rev[id].tipo) && rev[id].resultado !== 'NAO_DOCUMENTO' && leit[id]);
+  // Certidão de OUTRO imóvel (Fabio 18/11, Nadja/João: a do Lote 09 da Quadra 18, com escritura e IPTU do Lote 4 da Quadra 19) não descreve a casa do cliente: não conta.
+  const outro = (require('./doc-review.service') as typeof import('./doc-review.service')).certidoesDeOutroImovel(rev);
+  const ids = Object.keys(rev).filter((id) => rev[id] && ehMat(rev[id].tipo) && rev[id].resultado !== 'NAO_DOCUMENTO' && leit[id] && !outro.has(id));
   if (ids.some((id) => leit[id].construcao === 'AVERBADA')) return null;
   const terr = ids.filter((id) => leit[id].construcao === 'SO_TERRENO');
   if (!terr.length) return null;

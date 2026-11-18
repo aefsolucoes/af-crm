@@ -251,8 +251,13 @@ async function deliver(db: Db, r: { id: string; accountId: string; leadId: strin
     return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
   }
   const label = SIM_INSTITUTIONS[r.institution]?.label || r.institution;
-  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true } });
-  const fileName = `AeF_${r.institution.replace(/_CM$/, "")}_${slug(lead?.name || 'Cliente') || 'Cliente'}.pdf`;
+  const lead = await db.lead.findUnique({ where: { id: r.leadId }, select: { name: true, customFields: true } });
+  // Nome do arquivo pelos PARTICIPANTES, não pelo nome do card (Fabio 18/11: a cliente recebeu "AeF_SANTANDER_KIOSKE_DAS_MENINAS.pdf" — o card tem o nome do perfil do WhatsApp).
+  const cfn = (lead?.customFields || {}) as Record<string, any>;
+  const primeiro = (n: unknown) => String(n || '').trim().split(/\s+/)[0] || '';
+  const p1 = primeiro(cfn.participante_1), p2 = primeiro(cfn.participante_2);
+  const nomeArq = p1 ? (p2 && p2.toLowerCase() !== p1.toLowerCase() ? `${p1} e ${p2}` : String(cfn.participante_1)) : lead?.name || 'Cliente';
+  const fileName = `AeF_${r.institution.replace(/_CM$/, "")}_${slug(nomeArq.toUpperCase()) || 'Cliente'}.pdf`;
   const caption = r.caption || `Segue a simulação do ${label} em PDF 📄`;
   const sent = await sendOutboundMedia({ accountId: r.accountId, leadId: r.leadId, buffer: pdf, fileName, mimeType: 'application/pdf', caption, userId: r.requestedById || undefined, io });
   if (!sent.success) {

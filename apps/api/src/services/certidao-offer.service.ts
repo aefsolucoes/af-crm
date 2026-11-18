@@ -48,6 +48,14 @@ export function temCertidaoEmMaos(cf: Record<string, any>): boolean {
   return revs.some((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(r?.tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) && r.resultado !== 'PROBLEMA' && !r.encerrada);
 }
 
+/** O cliente mandou a certidão de ônus/matrícula, mas só parte das folhas (a conferência já pediu o resto)? Então ele TEM a certidão: a oferta de emitir não sai
+ *  (Fabio 18/11, Nadja: mandou a folha final da certidão 109.182 e perguntou "pego no site da prefeitura?"; a IA respondeu "recebi a escritura… não recebi a certidão"). Pura. */
+export function certidaoIncompletaEmMaos(cf: Record<string, any>): boolean {
+  const revs = Object.values((cf._docReview || {}) as Record<string, Rev & { problemas?: string[]; observacao?: string }>);
+  return revs.some((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(r?.tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '')) && r.resultado === 'PROBLEMA' && !r.encerrada
+    && (r.problemas || []).some((p) => /folha|p[aá]gina|verso|certifica|autentica|incomplet|conte[uú]do|cortad/i.test(String(p)) && !/vencid|validade|antig|prazo|30 dias|outro im[oó]vel|ileg/i.test(String(p))));
+}
+
 /** Matrícula + cartório + cidade/UF lidos nos documentos do cliente (escritura, IPTU, cadastro). null se não der pra pedir. Pura. */
 export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; cartorio: string; cidade: string; uf: string } | null {
   // Matrícula DIVERGENTE (Fabio 21/10, Edson: a certidão do cliente é da 70.617 e o termo de quitação cita a 94168 — antiga, transporte, matrícula-mãe ou nova): pede a certidão da matrícula CORRETA.
@@ -205,7 +213,7 @@ export async function maybeOfferCertidao(accountId: string, leadId: string, io: 
   // Home Equity; no Financiamento só quem segue pelo Inter (Fabio 30/10: "INTER MESMO FLUXO") — os outros bancos do FH ainda são à mão.
   const dept = lead.pipeline?.department?.name || '';
   if (!/home equity/i.test(dept) && !(/habitacional/i.test(dept) && /^inter$/i.test(String(cf._fhChosen?.bank || '')) && !cf._optouCaixa)) return false;
-  if (temCertidaoEmMaos(cf)) return false;
+  if (temCertidaoEmMaos(cf) || certidaoIncompletaEmMaos(cf)) return false;
   const d = certidaoFromDocs(cf);
   // Endereço só em ÚLTIMO CASO (Fabio 14/11): antes pede a escritura pública ou o contrato de compra e venda; só quem disse que não tem nenhum dos dois (_certidaoSemDocumento) vai pelo endereço.
   if (!d) return opts.porEnderecoOk && cf._certidaoSemDocumento ? maybeOfferPorEndereco(accountId, leadId, lead, cf, io) : false;

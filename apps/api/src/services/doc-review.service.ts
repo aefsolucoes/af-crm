@@ -423,38 +423,71 @@ export function sameProperty(a: { endereco?: string; inscricao?: string }, b: { 
   // 28/10 (Wagner): a capa do IPTU de Praia Grande traz a inscrição da prefeitura (170.171.007) e a matrícula, a do cadastro (2.03.07.002.006.0035-4) — numerações diferentes
   // do MESMO apto, e o cliente ouviu "esse IPTU é de outro imóvel". Inscrições de tamanhos diferentes não se comparam: decide pelo endereço.
   if (!a.endereco || !b.endereco) return null;
-  const ta = normEnd(a.endereco).split(' '), tb = normEnd(b.endereco).split(' ');
+  // Lote e quadra (Fabio 18/11, Nadja/João): a certidão do "Lote 09 da Quadra 18" e o cadastro do "Quadra 19, Lote 4" são lotes diferentes; a escritura do "Lote nº 004, Quadra 019"
+  // e o cadastro do "Quadra 19, Lote 4" são o MESMO. Com lote e quadra nos dois, decidem eles.
+  const la = loteQuadra(a.endereco), lb = loteQuadra(b.endereco);
+  if (la && lb) return la.lote === lb.lote && la.quadra === lb.quadra;
+  // Sem lote/quadra nos dois: compara rua + número da porta — sem o CEP e sem os números do lote/quadra (eram lidos como "número da porta"). Antes a "rua em comum" podia ser
+  // só o bairro ("Serraria") e o carnê do IPTU (Av. ..., 2553) virava "IPTU de outro imóvel" contra a certidão que descreve só "Lote 09 da Quadra 18".
+  const limpa = (e: string) => normEnd(e.replace(/\bCEP\b[:\s]*[\d.\-]{8,10}/gi, ' ').replace(/\b\d{2}\.?\d{3}-\d{3}\b/g, ' ')).replace(/\b(LOTE|LT|QUADRA|QD)\s*(N\s*)?\d{1,4}[A-Z]?\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const ta = limpa(a.endereco).split(' '), tb = limpa(b.endereco).split(' ');
   const rua = (t: string[]) => t.filter((w) => !STOP_END.has(w) && !/^\d+$/.test(w));
   const compartilhaRua = rua(ta).some((w) => w.length > 3 && rua(tb).includes(w));
   if (!compartilhaRua) return null; // descrição de outro jeito (matrícula antiga: "esquina com..."): não dá pra afirmar
   // números dos dois endereços (porta, apto): só acusa "outro imóvel" quando NÃO há nenhum número em comum — conservador (um doc com só a porta e outro com porta+apto contam como o mesmo)
-  const nums = (t: string[]) => t.filter((w) => /^\d{1,5}$/.test(w));
+  const nums = (t: string[]) => t.filter((w) => /^\d{1,5}$/.test(w)).map((w) => String(Number(w))); // "004" = "4"
   const na = nums(ta), nb = nums(tb);
   if (!na.length || !nb.length) return null;
   return na.some((n) => nb.includes(n));
 }
 
+/** Lote e quadra escritos no endereço ("Lote nº 004, Quadra 019", "QD 19 LT 4"), sem zero à esquerda; null se faltar um dos dois. Pura (testável). */
+export function loteQuadra(endereco?: string): { lote: string; quadra: string } | null {
+  const t = normEnd(String(endereco || ''));
+  const lote = /\b(?:LOTE|LT)\s*(?:N\s*)?0*(\d{1,4}[A-Z]?)\b/.exec(t)?.[1];
+  const quadra = /\b(?:QUADRA|QD)\s*(?:N\s*)?0*(\d{1,4}[A-Z]?)\b/.exec(t)?.[1];
+  return lote && quadra ? { lote, quadra } : null;
+}
+
 /** IPTU/cadastro de OUTRO imóvel: compara cada documento de IPTU com o imóvel do cliente (cadastro imobiliário/matrícula em nome do participante primeiro). Devolve o texto do problema por documento. Pura (testável). */
-export function iptuDeOutroImovel(docs: DocReview[]): Map<DocReview, string> {
+export function iptuDeOutroImovel(docs: DocReview[], todos: DocReview[] = docs): Map<DocReview, string> {
   const out = new Map<DocReview, string>();
-  const ehIptu = (r: DocReview) => /IPTU|CADASTRO IMOBILIARIO/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase());
+  const tipoN = (r: DocReview) => r.tipo.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+  const ehIptu = (r: DocReview) => /IPTU|CADASTRO IMOBILIARIO/.test(tipoN(r));
   const iptus = docs.filter((r) => ehIptu(r) && (r.endereco || r.inscricao));
   if (!iptus.length) return out;
   const emNomeDoCliente = (r: DocReview) => r.donoSituacao === 'PARTICIPANTE';
+  const ehMatricula = (r: DocReview) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(tipoN(r));
   const refs = [
-    ...docs.filter((r) => /CADASTRO IMOBILIARIO/.test(r.tipo.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase()) && emNomeDoCliente(r) && (r.endereco || r.inscricao)),
-    ...docs.filter((r) => /^(MATRICULA|CERTIDAO DE ONUS)/.test(r.tipo) && r.endereco),
+    ...docs.filter((r) => /CADASTRO IMOBILIARIO/.test(tipoN(r)) && emNomeDoCliente(r) && (r.endereco || r.inscricao)),
+    ...docs.filter((r) => ehMatricula(r) && r.endereco),
   ];
+  // Título do imóvel EM NOME DO PARTICIPANTE (escritura, contrato de compra e venda): se ele bate com o IPTU e não com a certidão, quem é de outro imóvel é a CERTIDÃO, não o IPTU
+  // (Fabio 18/11, Nadja/João: a certidão que ela tirou no cartório é do Lote 09 da Quadra 18; a escritura do João, o IPTU e o cadastro são do Lote 4 da Quadra 19 — ela ouviu
+  // "esse IPTU é de outro imóvel" e a pergunta do habite-se saiu da certidão do lote errado).
+  const titulos = todos.filter((r) => /^(ESCRITURA|CONTRATO|COMPROMISSO|PROMESSA|INSTRUMENTO PARTICULAR)/.test(tipoN(r)) && emNomeDoCliente(r) && r.endereco);
   for (const r of iptus) {
     for (const ref of refs) {
       if (ref === r) continue;
       if (sameProperty(r, ref) === false) {
+        const titulo = ehMatricula(ref) ? titulos.find((t) => sameProperty(t, r) === true && sameProperty(t, ref) === false) : undefined;
+        if (titulo) {
+          if (!out.has(ref)) out.set(ref, `essa certidão parece ser de outro imóvel (${cleanText(ref.endereco, 85)}) — a escritura e o IPTU que você mandou são de ${cleanText(titulo.endereco, 85)}. Consegue conferir com o cartório e me mandar a certidão de ônus/matrícula desse imóvel?`);
+          break;
+        }
         out.set(r, `esse IPTU é de outro imóvel${r.endereco ? ` (${r.endereco})` : ''} — o seu é ${ref.endereco ? cleanText(ref.endereco, 85) : 'o imóvel da proposta'}. Manda o IPTU do imóvel da proposta`);
         break;
       }
     }
   }
   return out;
+}
+
+/** Ids das certidões de ônus/matrícula que são de OUTRO imóvel (a escritura do participante e o IPTU batem entre si e não com ela). A pergunta do habite-se não sai delas. Pura. */
+export function certidoesDeOutroImovel(rev: Record<string, DocReview>): Set<string> {
+  const docs = Object.values(rev || {}).filter((r): r is DocReview => !!r && r.resultado !== 'NAO_DOCUMENTO' && r.resultado !== 'DUVIDA' && typeof r.tipo === 'string');
+  const m = iptuDeOutroImovel(docs, docs);
+  return new Set(Object.keys(rev || {}).filter((id) => rev[id] && m.has(rev[id]) && /^(MATRICULA|CERTIDAO DE ONUS)/.test(String(rev[id].tipo).normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase())));
 }
 
 /** Situação ATUAL da documentação a partir das leituras guardadas (sem IA): a leitura mais recente de cada tipo+titular (reenviou corrigido → o problema antigo some), RG/CNH somando
@@ -493,7 +526,7 @@ export function situacaoDosDocumentos(atts: { id: string; fileName?: string | nu
   }
   const problemas: ReviewSummary['problemas'] = [];
   const ok: string[] = [];
-  const iptuErrado = iptuDeOutroImovel([...latest.values()]);
+  const iptuErrado = iptuDeOutroImovel([...latest.values()], ordered);
   for (const [k, r] of latest) {
     const texto = r.resultado === 'PROBLEMA' ? [...r.problemas] : [];
     if (iptuErrado.has(r)) texto.push(iptuErrado.get(r)!);
