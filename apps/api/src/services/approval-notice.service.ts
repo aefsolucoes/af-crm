@@ -1237,6 +1237,15 @@ export async function forwardApprovalToClient(p: { accountId: string; leadId: st
   await sendOutroCanalAviso(p);
   // Sem as palavras "aprov"/"R$" de propósito: essa nota não pode virar fonte de condições do aviso de aprovação.
   await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: `📣 Proposta ${opt.instituicao}${r.proposalNumber ? ` nº ${r.proposalNumber}` : ''} encaminhada ao cliente ${p.porIa ? 'pela IA (ela tinha prometido os detalhes dessa proposta)' : 'pela equipe'}${pdf === 'pedido' ? ', com o PDF da simulação pedido à extensão' : pdf === 'outra' ? ' (sem PDF: a extensão baixa a proposta maior/escolhida desse banco)' : ''}.` } }).catch(() => {});
+  // Encaminhar pelo botão é a equipe falando com o cliente: desliga a IA do card, igual à mensagem digitada (Fabio 18/11, Alexandre: "mesmo encaminhando manualmente
+  // ao cliente pelo celular a IA continuou ligada"). O que religa é o de sempre (card entrando em Aguardando Documentação, "Ativar IA").
+  if (p.userId && !p.porIa) {
+    const { count } = await prisma.lead.updateMany({ where: { id: p.leadId, accountId: p.accountId, aiAutoReplyActive: true }, data: { aiAutoReplyActive: false } }).catch(() => ({ count: 0 }));
+    if (count) {
+      p.io?.to(`lead:${p.leadId}`).emit('lead_ai_toggled', { leadId: p.leadId, active: false });
+      await prisma.note.create({ data: { leadId: p.leadId, type: 'COMMENT', content: 'IA desligada automaticamente: alguém da equipe encaminhou a proposta ao cliente.' } }).catch(() => {});
+    }
+  }
   return { ok: true, pdf };
 }
 

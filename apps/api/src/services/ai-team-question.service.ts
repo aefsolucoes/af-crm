@@ -614,13 +614,14 @@ export async function composeClientReply(accountId: string, leadId: string, ques
   const coreRules = await fixedRule(accountId, 'CORE_RULES', CORE_RULES);
   const system = `Você atende clientes da A&F Soluções Financeiras pelo WhatsApp. Você tinha dito ao cliente que ia verificar uma dúvida com a equipe; a equipe respondeu pelo chat interno do CRM. Agora:
 0. NUNCA anuncie aprovação de crédito nem escreva valores/prazos/parcelas aprovados: isso o CRM envia pelo aviso padrão (se a equipe mandou "avisar da aprovação", escreva só uma frase curta dizendo que o resumo da aprovação segue em seguida).
+0b. OPÇÃO DA CREDITAS (Fabio 18/11, Alexandre): se a dúvida propunha oferecer ao cliente uma opção da Creditas (P1, P2…) e a equipe CONCORDOU ("pode sim", "ok", "manda"), devolva o número dela em "creditasOpcao" (ex.: 1 pra P1) e escreva só uma frase curta dizendo que o resumo dessa opção segue logo abaixo, sem valores — o CRM troca a opção e manda o resumo. Equipe não concordou ou a dúvida não era sobre opção da Creditas: "creditasOpcao": null.
 1. Escreva a mensagem pro cliente passando a resposta da equipe — fiel ao que a equipe disse (não acrescente fato, valor, prazo ou promessa que não esteja na resposta), no tom da conversa, curta. Não conte que perguntou pra equipe nem cite nomes; só dê a resposta, como quem voltou com a informação. Se a resposta da equipe tiver comentário interno sobre o cliente, não repasse — só a informação que responde a dúvida.
 1b. EMISSÃO DE DOCUMENTOS (Fabio 19/10; 21/10: sem citar nome de empresa nem de pessoa): a gente emite certidões/documentos e você pode dizer isso, mas só no horário comercial (veja "HORÁRIO AGORA" no contexto). DENTRO: pode dizer que a gente vai emitir e que envia assim que sair. FORA: diga só que consegue emitir (sem citar o nome da empresa), sem "vou emitir agora", "já te envio", "te mando assim que sair" nem "só um instante". Nunca prometa horário. Se o cliente já mandou o documento que a equipe pediu, só agradeça e siga. NUNCA diga que algo que o cliente mandou "não serve"/"não é esse"/"não a guia" se a equipe não disse isso com todas as letras (no IPTU do Home Equity a guia, o carnê ou a capa já servem).
 2. Decida se a resposta é uma REGRA GERAL que vale pra outros clientes (ex.: "imóvel só com escritura, sem matrícula, não serve de garantia") ou se é só sobre a situação DESTE cliente (ex.: "o crédito dele já foi pro banco"). Se for regra geral, devolva em "knowledge" um título curto (a dúvida, genérica, sem nome de cliente) e o conteúdo (a regra, genérica, completa o suficiente pra ser entendida sozinha). Se não for, "knowledge": null. SÓ é regra geral se a equipe deixou claro que vale pra todos os clientes (ou é um fato fixo do produto/banco dito com todas as letras). Resposta CURTA de operação sobre o pedido deste cliente ("precisa ser a CND", "pode", "avisa que vou gerar", "isso mesmo") é do CASO: "knowledge": null. NUNCA acrescente à regra o que a equipe não disse (ex.: "e não a guia/carnê") e NUNCA grave como regra qual documento o banco exige ou NÃO aceita a partir de resposta curta ou ambígua — na dúvida, null.
 
 ${coreRules}
 
-Responda SOMENTE com JSON válido, sem markdown: {"reply": "<mensagem pro cliente>", "knowledge": {"title": "<...>", "content": "<...>"} ou null}
+Responda SOMENTE com JSON válido, sem markdown: {"reply": "<mensagem pro cliente>", "knowledge": {"title": "<...>", "content": "<...>"} ou null, "creditasOpcao": <número> ou null}
 
 ${buildContextBlocks(ctx)}`;
 
@@ -648,7 +649,49 @@ ${buildContextBlocks(ctx)}`;
   const knowledge = k && typeof k.title === 'string' && typeof k.content === 'string' && k.title.trim() && k.content.trim()
     ? { title: k.title.trim().slice(0, 200), content: k.content.trim().slice(0, 2000) }
     : null;
-  return { reply, knowledge };
+  const co = Number(parsed.creditasOpcao);
+  const creditasOpcao = Number.isInteger(co) && co > 0 && co < 20 ? co : null;
+  return { reply, knowledge, creditasOpcao };
+}
+
+/** Opções da Creditas citadas na dúvida ("a opção P1 da Creditas…", "P2 Creditas"). Pura (testável). */
+export function opcoesCreditasDaDuvida(texto: string): number[] {
+  const t = String(texto || '');
+  if (!/creditas/i.test(t)) return [];
+  const ns = new Set<number>();
+  for (const m of t.matchAll(/\bP\s?(\d{1,2})\b/g)) ns.add(Number(m[1]));
+  return [...ns].filter((n) => n > 0);
+}
+
+/** A equipe concordou com a proposta da dúvida? ("Pode sim", "ok", "manda") — só a abertura da resposta, sem "não". Pura (testável). */
+export function equipeConcordou(answer: string): boolean {
+  const a = String(answer || '').trim().toLowerCase();
+  return /^(sim|pode|ok|okay|claro|isso|manda|mande|envia|envie|autorizad|positivo|segue|siga|beleza|perfeito|certo|correto|fechado|exato)\b/.test(a) && !/\bn[aã]o\b/.test(a);
+}
+
+/**
+ * A dúvida propunha oferecer uma opção da Creditas e a equipe concordou (Fabio 18/11, Alexandre: "Pode sim" pra P1 de 60 meses e a IA prometeu "o resumo segue em
+ * seguida", mas a opção do card continuou a de 240 meses e o reenvio foi barrado como aviso repetido). Acha a análise aprovada da Creditas que tem essa opção. A opção
+ * precisa estar CITADA na dúvida (o número da IA sozinho não basta). null = não é esse caso.
+ */
+async function opcaoCreditasAprovada(q: { accountId: string; leadId: string; question: string }, answer: string, daIa: number | null): Promise<{ id: string; i: number; n: number } | null> {
+  const citadas = opcoesCreditasDaDuvida(q.question);
+  if (!citadas.length) return null;
+  const n = daIa && citadas.includes(daIa) ? daIa : (!daIa && citadas.length === 1 && equipeConcordou(answer) ? citadas[0] : null);
+  if (!n) return null;
+  const { limparOpcoes } = require('./creditas-opcoes.service') as typeof import('./creditas-opcoes.service');
+  const rows = await prisma.creditAnalysis.findMany({
+    where: { leadId: q.leadId, accountId: q.accountId, bank: 'CREDITAS', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL'] } },
+    orderBy: { createdAt: 'desc' }, take: 10, select: { id: true, options: true, holderName: true },
+  });
+  const norm = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const comOpcao = rows.map((r) => ({ r, i: limparOpcoes(r.options).findIndex((o) => o.n === n) })).filter((x) => x.i >= 0);
+  if (!comOpcao.length) return null;
+  // Dois participantes com lista de opções: vale o citado na dúvida; senão a mais recente.
+  const pergunta = norm(q.question);
+  const doCitado = comOpcao.find((x) => { const nome = norm(x.r.holderName).split(/\s+/)[0]; return nome.length > 2 && pergunta.includes(nome); });
+  const alvo = doCitado || comOpcao[0];
+  return { id: alvo.r.id, i: alvo.i, n };
 }
 
 /**
@@ -719,7 +762,23 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
     return updated;
   }
 
-  const { reply, knowledge } = await composeClientReply(accountId, q.leadId, q.question, answer);
+  const composed = await composeClientReply(accountId, q.leadId, q.question, answer);
+  const { knowledge } = composed;
+  let reply = composed.reply;
+
+  // A equipe concordou em oferecer uma opção da Creditas (Fabio 18/11, Alexandre): o CRM troca a opção do card (igual ao "Seguir com esta") e, depois da frase da IA,
+  // encaminha o resumo dela. Os números nunca vão no texto da IA.
+  const opcao = await opcaoCreditasAprovada(q, answer, composed.creditasOpcao).catch((e: any) => { console.error('[Dúvidas da IA] opção da Creditas:', e?.message); return null; });
+  let opcaoTrocada = false;
+  let opcaoFalha = '';
+  if (opcao) {
+    try {
+      const { trocarOpcaoCreditas } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+      await trocarOpcaoCreditas(prisma as any, { accountId, id: opcao.id, i: opcao.i, userName: user?.name || undefined });
+      opcaoTrocada = true;
+    } catch (e: any) { opcaoFalha = `não consegui trocar pra P${opcao.n}: ${e?.message || 'erro'}`; }
+    if (anunciaAprovacao(reply)) reply = 'Consegui a opção que você pediu. O resumo dela segue logo abaixo.';
+  }
 
   // Aprovação NUNCA vai em texto livre da IA (Fabio 19/10): se a mensagem anuncia aprovação com valores, vai o aviso padrão do CRM; sem aprovação registrada, não envia nada.
   if (anunciaAprovacao(reply)) {
@@ -740,6 +799,17 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
     });
     emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
     return updated;
+  }
+
+  if (opcao && opcaoTrocada) {
+    await new Promise((resolve) => setTimeout(resolve, 1500)); // o resumo vem depois da frase da IA
+    const { forwardApprovalToClient } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+    const fw = await forwardApprovalToClient({ accountId, leadId: q.leadId, analysisId: opcao.id, io, porIa: true }).catch((e: any) => ({ ok: false, error: e?.message as string | undefined }));
+    if (!fw.ok) opcaoFalha = `opção P${opcao.n} trocada, mas o resumo não saiu: ${fw.error || 'erro'}`;
+  }
+  if (opcaoFalha) {
+    const lead = await prisma.lead.findUnique({ where: { id: q.leadId }, select: { name: true, userId: true } });
+    sendPushToAccount(accountId, { title: `⚠️ ${lead?.name || 'Cliente'}: resumo da Creditas não saiu`, body: `A IA disse que o resumo segue abaixo, mas ${opcaoFalha}. Mande à mão.`.slice(0, 180), leadId: q.leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
   }
 
   let knowledgeEntryId: string | null = null;
@@ -763,7 +833,7 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
     select: SELECT,
   });
   await prisma.note.create({
-    data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida respondida por ${user?.name || 'alguém da equipe'}: ${answer}\n🤖 IA passou ao cliente: "${reply}"${knowledgeTitle ? `\n📚 Guardado na Base de Conhecimento: ${knowledgeTitle}` : ''}` },
+    data: { leadId: q.leadId, type: 'COMMENT', content: `Dúvida respondida por ${user?.name || 'alguém da equipe'}: ${answer}\n🤖 IA passou ao cliente: "${reply}"${opcao ? (opcaoFalha ? `\n⚠️ Opção da Creditas: ${opcaoFalha}. Mande à mão.` : `\n🔀 Opção P${opcao.n} da Creditas escolhida e o resumo dela encaminhado ao cliente.`) : ''}${knowledgeTitle ? `\n📚 Guardado na Base de Conhecimento: ${knowledgeTitle}` : ''}` },
   }).catch(() => {});
   logActivity({ accountId, userId, action: 'ai_team_answered', leadId: q.leadId, summary: 'respondeu uma dúvida da IA' });
   emitTo(io, await recipientsFor(accountId, q.departmentId), 'ai_team_question_updated', { id: q.id });
