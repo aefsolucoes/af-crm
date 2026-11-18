@@ -223,12 +223,15 @@ export async function entregarCodigo(accountId: string, leadId: string): Promise
 }
 
 async function cadastroDepoisDeLiberar(accountId: string, leadId: string): Promise<void> {
-  // Fabio 18/11 (Lucas): "cadastro dele já estava atualizado — por que ela tá refazendo?" + "não precisa mandar para a CAIXA analisar o crédito ainda". Liberado = só
-  // isso: o cadastro que já está na CAIXA fica como está e nada roda sozinho — cadastro e análise pelos botões do card, quando a equipe quiser.
-  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '✅ CAIXA — cadastro LIBERADO: as avaliações/propostas do outro correspondente foram canceladas e o cliente ficou livre pro nosso convênio. O cadastro que já está na CAIXA fica como está; a análise de crédito sai só quando a equipe pedir (botão "Análise CAIXA").' } }).catch(() => {});
+  // Fabio 18/11 (Lucas): "cadastro dele já estava atualizado — por que ela tá refazendo?" + "precisa concluir o cadastro, colocar apenas a nossa agência de vinculação e
+  // clicar em concluir cadastro" + "não precisa mandar para a CAIXA analisar o crédito ainda". Liberado → cadastro no modo "concluir sem mexer" (sem análise).
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, userId: true } });
+  const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const r = await cc.cadastroCaixaPeloCard(accountId, leadId, { id: l?.userId || '', nome: 'CRM (liberado do outro correspondente: concluir o cadastro)' }, undefined, { analise: false });
+  const n = 'erro' in r ? 0 : await cc.marcarSoConcluir(leadId);
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'erro' in r ? `⚠️ CAIXA — liberado do outro correspondente, mas o cadastro não foi pra fila: ${r.erro}` : `✅ CAIXA — cadastro LIBERADO do outro correspondente. A extensão conclui o cadastro sem mexer (${n} participante(s)): mantém o que está na CAIXA, põe a agência 3444 e clica "Concluir Cadastro". A análise de crédito sai só quando a equipe pedir.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-  sendPushToAccount(accountId, { title: `✅ ${l?.name}: liberado na CAIXA`, body: 'Saiu do outro correspondente. A análise de crédito só quando você pedir.', leadId }).catch(() => {});
+  sendPushToAccount(accountId, { title: `✅ ${l?.name}: liberado na CAIXA`, body: 'Saiu do outro correspondente; concluindo o cadastro (agência 3444). Análise só quando você pedir.', leadId }).catch(() => {});
 }
 
 /** Pede um código NOVO (modo `enviar`; o cliente é avisado de que é novo). No máximo 3 envios por desbloqueio — depois, a equipe. */

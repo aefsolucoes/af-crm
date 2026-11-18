@@ -66,6 +66,8 @@ router.post('/:leadId/card/cadastro', requirePermission('funnel_manage'), async 
   try {
     const r = await cadastroCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, req.app.get('io'), { analise: req.body?.analise === true, enviar: req.body?.enviar !== false });
     if ('erro' in r) return res.status(400).json({ error: r.erro });
+    // `concluir` (Fabio 18/11): passa as páginas como estão, só a agência 3444 e "Concluir Cadastro".
+    if (req.body?.concluir === true) { const { marcarSoConcluir } = require('../services/caixa-cadastro.service') as typeof import('../services/caixa-cadastro.service'); const n = await marcarSoConcluir(req.params.leadId); return res.json({ ok: true, mensagem: `${r.mensagem} Modo concluir sem mexer (${n} cadastro(s)): mantém o que está na CAIXA, agência 3444 e Concluir Cadastro.` }); }
     res.json({ ok: true, mensagem: r.mensagem });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir o cadastro na CAIXA' }); }
 });
@@ -109,7 +111,7 @@ router.post('/:leadId/card/rota', requirePermission('funnel_manage'), async (req
 // `denovo` (Fabio 03/11, Jézer/Fernanda depois da autorização do PV): roda a Avaliação de Risco de novo — a anterior vai pro histórico e o resultado é consultado de novo.
 router.post('/:leadId/card/analise', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   try {
-    const r = await analiseCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, { enviar: req.body?.enviar === true, conferido: req.body?.conferido === true, denovo: req.body?.denovo === true });
+    const r = await analiseCaixaPeloCard(req.user!.accountId, req.params.leadId, { id: req.user!.id, nome: await nomeDe(req) }, { enviar: req.body?.enviar === true, conferido: req.body?.conferido === true, denovo: req.body?.denovo === true, price: req.body?.price === true });
     if ('erro' in r) return res.status(400).json({ error: r.erro });
     res.json({ ok: true, mensagem: r.mensagem });
   } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro ao pedir a análise na CAIXA' }); }

@@ -211,7 +211,8 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         const ajuste = await prisma.creditOverride.findFirst({ where: { leadId: id, bank: 'CAIXA' }, select: { data: true } }).catch(() => null);
         const ehFh = !/empr[eé]stimo com garantia/i.test(String(av.produto || ''));
         const pediu = async (rx: RegExp, palavra: string) => (await prisma.message.findMany({ where: { leadId: id, direction: 'INBOUND', deleted: false, content: { contains: palavra, mode: 'insensitive' } }, select: { content: true }, take: 20 })).some((m) => rx.test(m.content || ''));
-        const pediuPrice = ehFh && (await pediu(/\bprice\b/i, 'price'));
+        // PRICE pedido pela equipe no clique (Fabio 18/11, Lucas: "roda o crédito dele na PRICE") ou pelo cliente na conversa.
+        const pediuPrice = ehFh && (av.price === true || (await pediu(/\bprice\b/i, 'price')));
         const pediuSac = !ehFh && (await pediu(/\bsac\b/i, 'sac'));
         // Compra e venda da proposta que o cliente mandou (a mais recente com essa linha).
         const prop = ehFh ? await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', deleted: false, content: { contains: 'compra e venda', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, select: { content: true } }) : null;
@@ -240,7 +241,7 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
       const endP = await enderecoComCepDaRegiao(id, pc.ordem, participante.endereco);
       const endP1 = p1 ? (p1.ordem === pc.ordem ? endP : await enderecoComCepDaRegiao(id, p1.ordem, p1.endereco)) : null;
       // avaliacaoFeita: a extensão não relança renda só pra acertar o mês de referência depois do crédito rodado (Fabio 01/11).
-      return { tipo: 'cadastrar', leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, endereco: endP, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: endP1, telefone: p1.telefone || '', email: p1.email || '' } : null }; // celular/e-mail do 1º: o cônjuge sem os dele usa esses (Fabio 12/11)
+      return { tipo: 'cadastrar', soConcluir: !!(c.cadastros?.[pc.ordem] as Cf | undefined)?.soConcluir, leadId: id, leadName: l!.name, ordem: pc.ordem, nome: pc.nome, cpf: pc.cpf, participante: { ...participante, endereco: endP, avaliacaoFeita: avaliacaoFeita(cf) }, primeiro: p1 ? { endereco: endP1, telefone: p1.telefone || '', email: p1.email || '' } : null }; // celular/e-mail do 1º: o cônjuge sem os dele usa esses (Fabio 12/11)
     }
     const p = participantesDa(cf).find((x) => !c.consultas?.[x.ordem]);
     if (!p) continue;
@@ -702,7 +703,7 @@ export function avaliacaoParaRefazer(historico: Cf[], produto: string): Cf | nul
  *  nessa hora ("O RESULTADO NÃO SAI NESSA TELA, PRECISA CONSULTAR DEPOIS"). Só com o pedido explícito do Fabio; avaliação já ENVIADA não é pedida de novo —
  *  salvo `denovo` (Fabio 03/11, Jézer/Fernanda: "JÁ FORAM AUTORIZADAS PELO PV … RODE A AVALIAÇÃO NOVAMENTE"): a anterior vai pro histórico (`avaliacao.anteriores`),
  *  o resultado dela sai de `_caixaResultado` (a consulta de Formulários Enviados roda de novo depois do novo envio) e a extensão refaz o mesmo roteiro. */
-export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown>; construcaoConferida?: boolean; manual?: boolean } = {}): Promise<string | null> {
+export async function pedirAvaliacao(accountId: string, leadId: string, por: string, opts: { enviar?: boolean; autorizacao?: Record<string, unknown>; denovo?: boolean; ajuste?: Record<string, unknown>; construcaoConferida?: boolean; manual?: boolean; price?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -727,7 +728,7 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   // Nenhuma chegou à CAIXA (a anterior parou antes de enviar) → roda do começo, como a 1ª.
   const refazer = denovo ? avaliacaoParaRefazer(anteriores, produto) : null;
   await salvar(leadId, (x) => {
-    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(construcao ? { construcaoPedida: true, ...(opts.construcaoConferida ? { construcaoConferida: true } : {}) } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.amortizacao ? { amortizacao: String(opts.ajuste.amortizacao).toUpperCase() } : {}), ...(anteriores.length ? { anteriores } : {}) };
+    x.avaliacao = { status: 'FILA', pedidoEm: new Date().toISOString(), por, produto, ...(enviar ? { enviar: true } : {}), ...(opts.price ? { price: true } : {}), ...(construcao ? { construcaoPedida: true, ...(opts.construcaoConferida ? { construcaoConferida: true } : {}) } : {}), ...(opts.autorizacao ? { autorizacao: opts.autorizacao } : {}), ...(refazer ? { denovo: true, refazer } : {}), ...(refazer && anterior?.enquadramento ? { enquadramento: anterior.enquadramento } : {}), ...(refazer && !opts.ajuste && anterior?.amortizacao ? { amortizacao: anterior.amortizacao } : {}) /* reaberta sem ajuste = mesma operação; com ajuste (condicionada → PRICE) a tela refeita é que diz */, ...(refazer && opts.ajuste ? { ajuste: opts.ajuste } : {}), ...(refazer && opts.ajuste && !opts.ajuste.prestacao && opts.ajuste.amortizacao ? { amortizacao: String(opts.ajuste.amortizacao).toUpperCase() } : {}), ...(anteriores.length ? { anteriores } : {}) };
     if (x.atual?.tipo === 'avaliar') delete x.atual;
   });
   if (refazer && cf._caixaResultado) await (require('./caixa-resultado.service') as typeof import('./caixa-resultado.service')).reiniciarResultado(leadId);
@@ -824,10 +825,17 @@ export async function gravarCadastro(accountId: string, leadId: string, ordem: n
  * consulta"). O clique da equipe é o OK daquele cliente (regra de 31/10: a Avaliação de Risco só roda com o OK de alguém): "Cadastro CAIXA" com "rodar a análise em
  * seguida" marcado, ou "Análise CAIXA" com o cadastro ainda não gravado. Fica em _caixaAnalisePendente (fora de _caixaCadastro — a fila regrava aquela chave) e,
  * quando o cadastro de quem entra na avaliação grava, a análise vai pra fila sozinha. A conferência manual do cadastro fica dispensada nessa sequência. */
-type AnalisePendente = { por: string; userId: string | null; em: string; enviar: boolean; via: string };
+type AnalisePendente = { por: string; userId: string | null; em: string; enviar: boolean; via: string; price?: boolean };
 async function gravarAnalisePendente(leadId: string, p: AnalisePendente | null): Promise<void> {
   if (p) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAnalisePendente}', ${JSON.stringify(p)}::jsonb, true) WHERE id = ${leadId}`;
   else await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) - '_caixaAnalisePendente' WHERE id = ${leadId}`;
+}
+/** Cadastro "concluir sem mexer" (Fabio 18/11, Lucas liberado do outro correspondente: "precisa concluir o cadastro, colocar apenas a nossa agência de vinculação e
+ *  clicar em concluir cadastro"): marca os cadastros na fila — a extensão passa as páginas como estão (a renda da lista fica), põe a agência 3444 e conclui. */
+export async function marcarSoConcluir(leadId: string): Promise<number> {
+  let n = 0;
+  await salvar(leadId, (x) => { for (const [o, v] of Object.entries(x.cadastros || {}) as [string, any][]) if (v && /^(FILA|RODANDO)$/.test(String(v.status || ''))) { x.cadastros[o] = { ...v, soConcluir: true }; n++; } });
+  return n;
 }
 /** Tira a análise que ia sair sozinha depois do cadastro (Fabio 18/11, Lucas: "não precisa mandar para a CAIXA analisar o crédito ainda"). */
 export async function cancelarAnalisePendente(leadId: string, por: string): Promise<boolean> {
@@ -853,7 +861,7 @@ async function seguirAnalisePendente(accountId: string, leadId: string): Promise
   const agora = new Date().toISOString();
   await salvar(leadId, (x) => { x.conferencia = { status: 'CONFERIDO', por: `automático (análise autorizada por ${pend.por})`, em: agora }; });
   // A pendente nasce de um clique ("Análise CAIXA" com o cadastro faltando, ou "Cadastro CAIXA" com a análise em seguida): vale como o clique direto (Fabio 14/11).
-  const erro = await pedirAvaliacao(accountId, leadId, `${pend.por} (depois do cadastro)`, { enviar: pend.enviar, manual: true, autorizacao: { por: pend.por, userId: pend.userId, em: pend.em, enviar: pend.enviar, denovo: false, via: pend.via } });
+  const erro = await pedirAvaliacao(accountId, leadId, `${pend.por} (depois do cadastro)`, { enviar: pend.enviar, price: pend.price === true, manual: true, autorizacao: { por: pend.por, userId: pend.userId, em: pend.em, enviar: pend.enviar, denovo: false, via: pend.via } });
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   if (erro) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Cadastro na CAIXA gravado, mas a análise de crédito autorizada por ${pend.por} NÃO foi pra fila: ${erro}. Rode pelo botão "Análise CAIXA" depois de acertar.` } }).catch(() => {});
@@ -1325,7 +1333,7 @@ export async function cadastroCaixaPeloCard(accountId: string, leadId: string, q
 /** Botão "Análise CAIXA": o clique é o OK pra este cliente. Cadastro gravado e ainda não conferido → pede a confirmação "já conferi" (Fabio 31/10: "depois de o
  *  colaborador conferir é que ele roda"). `enviar` = a extensão clica na seta da tela 3 (sem ele, preenche e para antes de enviar). Avaliação que já rodou → só com
  *  `denovo` (botão "Rodar análise CAIXA de novo", Fabio 03/11 — Jézer/Fernanda depois da autorização do PV): o clique é a nova autorização. */
-export async function analiseCaixaPeloCard(accountId: string, leadId: string, quem: Quem, opts: { enviar?: boolean; conferido?: boolean; denovo?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
+export async function analiseCaixaPeloCard(accountId: string, leadId: string, quem: Quem, opts: { enviar?: boolean; conferido?: boolean; denovo?: boolean; price?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, status: true, archived: true, customFields: true, pipeline: { select: { department: { select: { name: true } } } } } });
   if (!l) return { erro: 'Lead não encontrado' };
   const fechado = cardFechado(l);
@@ -1339,7 +1347,7 @@ export async function analiseCaixaPeloCard(accountId: string, leadId: string, qu
     if (tc?.tipo !== 'andamento') { const erroCad = await fazerCadastroManual(accountId, leadId, quem.nome, quem.id); if (erroCad) return { erro: erroCad }; }
     const quandoFoi = new Date().toISOString();
     const vaiEnviar = opts.enviar === true;
-    await gravarAnalisePendente(leadId, { por: quem.nome, userId: quem.id, em: quandoFoi, enviar: vaiEnviar, via: 'botão Análise CAIXA do card (cadastro antes)' });
+    await gravarAnalisePendente(leadId, { por: quem.nome, userId: quem.id, em: quandoFoi, enviar: vaiEnviar, via: 'botão Análise CAIXA do card (cadastro antes)', ...(opts.price ? { price: true } : {}) });
     const mensagem = `Cadastro na CAIXA ${tc?.tipo === 'andamento' ? 'já estava na fila' : 'na fila da extensão'}; quando gravar, a análise de crédito ${vaiEnviar ? 'vai pra fila e é enviada à CAIXA' : 'vai pra fila (para antes de enviar)'} sozinha.`;
     await prisma.note.create({ data: { leadId, userId: quem.id, type: 'COMMENT', content: `🏦 ${quem.nome} autorizou a análise de crédito na CAIXA (Avaliação de Risco) em ${quando(quandoFoi)}, com o cadastro ainda não gravado. ${mensagem} A conferência manual do cadastro fica dispensada nessa sequência (Fabio 11/11).` } }).catch(() => {});
     logActivity({ accountId, userId: quem.id, userName: quem.nome, action: 'lead_edited', leadId, leadName: l.name, summary: 'autorizou o cadastro + a análise de crédito na CAIXA' });
@@ -1354,7 +1362,7 @@ export async function analiseCaixaPeloCard(accountId: string, leadId: string, qu
   if (conferir && !opts.conferido) return { erro: 'O cadastro gravado na CAIXA ainda não foi conferido: confira no Caixa Aqui e marque "Já conferi o cadastro" na confirmação.' };
   if (conferir) await salvar(leadId, (x) => { x.conferencia = { ...(x.conferencia || {}), status: 'CONFERIDO', por: quem.nome, em: agora }; });
   const via = denovo ? 'botão Rodar análise CAIXA de novo do card' : 'botão Análise CAIXA do card';
-  const erro = await pedirAvaliacao(accountId, leadId, quem.nome, { enviar, denovo, manual: true, autorizacao: { por: quem.nome, userId: quem.id, em: agora, enviar, denovo, via } });
+  const erro = await pedirAvaliacao(accountId, leadId, quem.nome, { enviar, denovo, manual: true, price: opts.price === true, autorizacao: { por: quem.nome, userId: quem.id, em: agora, enviar, denovo, via, ...(opts.price ? { price: true } : {}) } });
   if (erro) return { erro };
   const oQue = enviar ? 'A extensão preenche a operação e ENVIA à CAIXA; o resultado sai depois, na consulta de Formulários Enviados.' : 'A extensão preenche a operação e PARA antes de enviar (tela 3), pra conferir.';
   const ant = denovo ? ` Avaliação anterior: ${String(anterior!.status || '—').slice(0, 120)} (${quando(anterior!.fim || anterior!.pedidoEm)})${cf._caixaResultado?.status ? ` — resultado: ${String(cf._caixaResultado.status).slice(0, 140)}` : ''}; foi pro histórico.` : '';
