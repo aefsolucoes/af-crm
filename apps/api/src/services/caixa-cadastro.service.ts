@@ -177,9 +177,14 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
         ELSE COALESCE(("customFields"->'_caixaCadastro'->>'tentativasConsulta')::int, 0)
       END ASC, "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
   // Depois das consultas: cadastros pedidos (Fabio 29/10: "faz o cadastro da Bianca e da Adriana").
+  // Só quem tem cadastro PENDENTE (FILA, ou RODANDO que pode ter sido largado): antes entrava todo card aberto com cadastro, até os já GRAVADOS, e o LIMIT 10 pelos
+  // mais antigos deixava o pedido mais novo de fora pra sempre (18/11, Marcelo: 13 cards abertos com cadastro, o dele na fila desde 14h26 sem a extensão pegar).
   const cads = await prisma.$queryRaw<{ id: string }[]>`
     SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
-      AND "customFields"->'_caixaCadastro'->'cadastros' IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM jsonb_each(CASE WHEN jsonb_typeof("customFields"->'_caixaCadastro'->'cadastros') = 'object' THEN "customFields"->'_caixaCadastro'->'cadastros' ELSE '{}'::jsonb END) AS c(k, v)
+        WHERE c.v->>'status' IN ('FILA', 'RODANDO')
+      )
     ORDER BY "customFields"->'_caixaCadastro'->>'pedidoEm' ASC LIMIT 10`;
   // Depois: Avaliação de Risco (passo 2 — análise de crédito da CAIXA, Fabio 30/10).
   const avs = await prisma.$queryRaw<{ id: string }[]>`
