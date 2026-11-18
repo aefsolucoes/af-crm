@@ -27,7 +27,7 @@ function finaisDoCard(cf: Cf, phones: (string | null | undefined)[]): string[] {
 
 /** Pede à extensão o caminho do desbloqueio. modo `ver`: para no aviso do outro convênio; `ate` (padrão): responde SIM, marca o celular na tela do token e para;
  *  `enviar`: clica "Enviar Token" (o SMS da CAIXA sai pro cliente) — só depois de o cliente concordar em seguir com a gente. */
-export async function pedirDesbloqueio(accountId: string, leadId: string, por: string, opts: { modo?: 'ver' | 'ate' | 'enviar'; seNaoEnviado?: boolean } = {}): Promise<string | null> {
+export async function pedirDesbloqueio(accountId: string, leadId: string, por: string, opts: { modo?: 'ver' | 'ate' | 'enviar'; seNaoEnviado?: boolean; perguntar?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, customFields: true } });
   if (!l) return 'Card não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -40,7 +40,7 @@ export async function pedirDesbloqueio(accountId: string, leadId: string, por: s
   const modo = opts.modo === 'ver' || opts.modo === 'enviar' ? opts.modo : 'ate';
   await salvarDesbloqueio(leadId, (d) => {
     for (const k of Object.keys(d)) if (!['historico', 'telefones', 'perguntadoEm', 'perguntadoPor'].includes(k)) delete d[k];
-    Object.assign(d, { status: 'FILA', modo, pedidoEm: new Date().toISOString(), por, tentativas: 0 });
+    Object.assign(d, { status: 'FILA', modo, pedidoEm: new Date().toISOString(), por, tentativas: 0, ...(opts.perguntar ? { perguntarAuto: true } : {}) });
   });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔓 CAIXA — desbloqueio do cadastro (cliente em outro convênio) na fila da extensão (${por}): ${modo === 'enviar' ? 'ela clica "Enviar Token" — a CAIXA manda o código por SMS pro celular cadastrado do cliente' : modo === 'ate' ? 'ela responde SIM ao aviso, marca o celular na tela do token e PARA antes do "Enviar Token"' : 'ela abre o cadastro e para no aviso do outro convênio'}.` } }).catch(() => {});
   return null;
@@ -82,7 +82,7 @@ export async function gravarDesbloqueio(accountId: string, leadId: string, body:
   const status = String(body.status || '').slice(0, 200);
   const texto = mascaraCpf(String(body.texto || '')).slice(0, 3000);
   const telefones = (body.telefones || []).map((x) => String(x).slice(0, 60)).slice(0, 6);
-  await salvarDesbloqueio(leadId, (d) => {
+  const salvo = await salvarDesbloqueio(leadId, (d) => {
     d.status = status;
     d.atualizadoEm = new Date().toISOString();
     if (telefones.length) d.telefones = telefones;
@@ -96,6 +96,12 @@ export async function gravarDesbloqueio(accountId: string, leadId: string, body:
   if (/^TOKEN ENVIADO/.test(status)) await avisarClienteDoCodigo(accountId, leadId).catch((e) => console.error('[CAIXA desbloqueio] aviso do código:', e?.message));
   // Fabio 18/11: "e cancela, roda o cadastro pelo nosso e faz o crédito" — liberado → cadastro pela ficha na fila (a análise de crédito continua só com o OK da equipe).
   if (/^LIBERADO/.test(status)) await cadastroDepoisDeLiberar(accountId, leadId).catch((e) => console.error('[CAIXA desbloqueio] cadastro depois de liberar:', e?.message));
+  // Tudo automático (Fabio 18/11): chegou na tela do token pelo pedido automático → pergunta ao cliente; código expirado → pede outro sozinho.
+  if (/^NA TELA DO TOKEN/.test(status) && salvo.perguntarAuto && !salvo.perguntadoEm) {
+    const e = await perguntarAoCliente(accountId, leadId, 'CRM (automático)').catch((x) => x?.message || 'erro');
+    if (e) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — outro correspondente: a pergunta automática ao cliente não saiu (${e}).` } }).catch(() => {});
+  }
+  if (/^TOKEN RECUSADO/.test(status) && /expirad/i.test(texto)) await reenviarCodigo(accountId, leadId, 'a CAIXA disse que o código expirou').catch(() => {});
   if (/^(TOKEN ENVIADO|TOKEN RECUSADO|TOKEN DIGITADO|LIBERADO|SEM OUTRO CONVÊNIO|PAROU|ERRO)/.test(status)) {
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(accountId, { title: `🔓 ${l.name}: desbloqueio CAIXA`, body: `${status}${telefones.length ? ` — ${telefones[0]}` : ''}`.slice(0, 180), leadId }).catch(() => {});
@@ -171,6 +177,8 @@ export async function guardarCodigoDoCliente(accountId: string, leadId: string, 
   if (!d.enviadoEm || Date.now() - Date.parse(d.enviadoEm) > 60 * 60_000) return false;
   const codigo = codigoNoTexto(texto);
   if (!codigo || d.tokenRecebido === codigo) return false;
+  // Passou de 30 min (a extensão já largou a tela do token e o código da CAIXA vale pouco — Fabio 18/11 "passou do prazo"): pede um código novo sozinho.
+  if (Date.now() - Date.parse(d.enviadoEm) > 30 * 60_000) { await reenviarCodigo(accountId, leadId, `o cliente mandou o código ${codigo} depois de 30 min`); return true; }
   await salvarDesbloqueio(leadId, (x) => { x.tokenRecebido = codigo; x.tokenRecebidoEm = new Date().toISOString(); });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔑 CAIXA — o cliente mandou o código do SMS: ${codigo}. Digite na tela do token do Caixa Aqui pra liberar o cadastro (cancela a análise do outro correspondente).` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
@@ -218,6 +226,45 @@ export async function entregarCodigo(accountId: string, leadId: string): Promise
 async function cadastroDepoisDeLiberar(accountId: string, leadId: string): Promise<void> {
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } });
   const { cadastroCaixaPeloCard } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  const r = await cadastroCaixaPeloCard(accountId, leadId, { id: l?.userId || '', nome: 'CRM (cadastro liberado do outro correspondente)' }, undefined, { analise: false });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'erro' in r ? `⚠️ CAIXA — cadastro liberado do outro correspondente, mas o cadastro pelo nosso convênio não foi pra fila: ${r.erro}` : `🏦 CAIXA — cadastro liberado do outro correspondente: ${r.mensagem} A análise de crédito sai só com o OK da equipe (botão "Análise CAIXA").` } }).catch(() => {});
+  // Fabio 18/11: "cancela, roda o cadastro pelo nosso e faz o crédito" + "coloca tudo para rodar automático" — o cliente pediu pra seguir com a gente (o código dele é o
+  // pedido): cadastro pela ficha e, gravado, a Avaliação de Risco vai pra CAIXA sozinha (análise pendente do cadastro).
+  const r = await cadastroCaixaPeloCard(accountId, leadId, { id: l?.userId || '', nome: 'Fabio 18/11 (automático: cliente liberou o cadastro do outro correspondente)' }, undefined, { analise: true, enviar: true });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'erro' in r ? `⚠️ CAIXA — cadastro liberado do outro correspondente, mas o cadastro pelo nosso convênio não foi pra fila: ${r.erro}` : `🏦 CAIXA — cadastro liberado do outro correspondente: ${r.mensagem}` } }).catch(() => {});
+}
+
+/** Pede um código NOVO (modo `enviar`; o cliente é avisado de que é novo). No máximo 3 envios por desbloqueio — depois, a equipe. */
+async function reenviarCodigo(accountId: string, leadId: string, motivo: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const d = (((l?.customFields || {}) as Cf)._caixaDesbloqueio || {}) as Cf;
+  const envios = ((d.historico || []) as Cf[]).filter((h) => /^TOKEN ENVIADO/.test(String(h.status || ''))).length;
+  if (envios >= 3) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — desbloqueio: ${motivo}, mas já foram ${envios} códigos. Não peço outro sozinho — fale com o cliente.` } }).catch(() => {});
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `⚠️ ${l?.name}: desbloqueio CAIXA parado`, body: `${envios} códigos enviados — fale com o cliente.`, leadId }).catch(() => {});
+    return;
+  }
+  const e = await pedirDesbloqueio(accountId, leadId, `CRM (automático: ${motivo})`, { modo: 'enviar' });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: e ? `⚠️ CAIXA — desbloqueio: ${motivo}; o código novo não foi pedido (${e}).` : `🔁 CAIXA — desbloqueio: ${motivo} → pedi um código NOVO (a extensão clica "Nova Solicitação de token"; o cliente é avisado).` } }).catch(() => {});
+}
+
+const SIM_RX = /^\s*(sim|s|pode|pode ser|pode sim|pode pedir|pode mandar|manda|ok|okay|claro|quero|quero sim|vamos|bora|isso|com certeza|fechado|beleza|blz|certo|positivo|t[aá] bom|tudo bem|aham|uhum|desejo|prossiga|segue|seguir)\b/i;
+const NAO_RX = /^\s*(n[aã]o|nao|prefiro (n[aã]o|l[aá]|o outro|seguir l[aá])|vou seguir (com|l[aá])|deixa (l[aá]|quieto))\b/i;
+/** Mensagem do cliente (IA ligada ou não): o código do SMS, ou a resposta à pergunta (sim → código; não → equipe). */
+export async function aoReceberDoCliente(accountId: string, leadId: string, texto: string): Promise<void> {
+  if (await guardarCodigoDoCliente(accountId, leadId, texto)) return;
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const d = (((l?.customFields || {}) as Cf)._caixaDesbloqueio || {}) as Cf;
+  if (!d.perguntadoEm || Date.now() - Date.parse(d.perguntadoEm) > 72 * 3600_000) return;
+  if (d.enviadoEm && Date.parse(d.enviadoEm) > Date.parse(d.perguntadoEm)) return; // já enviou depois da pergunta
+  if (d.recusouEm || /^LIBERADO/.test(String(d.status || ''))) return;
+  const t = String(texto || '').trim();
+  if (!t || t.length > 200) return;
+  if (NAO_RX.test(t)) {
+    await salvarDesbloqueio(leadId, (x) => { x.recusouEm = new Date().toISOString(); });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — outro correspondente: o cliente respondeu "${t.slice(0, 120)}" à pergunta do código. Nada foi enviado — fale com ele.` } }).catch(() => {});
+    const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+    sendPushToAccount(accountId, { title: `⚠️ ${l?.name}: não quer cancelar o outro correspondente?`, body: t.slice(0, 140), leadId }).catch(() => {});
+    return;
+  }
+  if (SIM_RX.test(t) && !/\bn[aã]o\b/i.test(t)) await pedirDesbloqueio(accountId, leadId, `cliente respondeu "${t.slice(0, 40)}" (automático)`, { modo: 'enviar', seNaoEnviado: true }).catch(() => {});
 }

@@ -1355,7 +1355,7 @@ export async function processIncomingWhatsApp(body: any, accountId: string, io: 
       { const { scheduleCardFill } = require('./card-fill.service') as typeof import('./card-fill.service'); scheduleCardFill(accountId, leadId, io); }
       // Código do SMS da CAIXA (desbloqueio do outro correspondente, Fabio 18/11) — IA ligada ou não: o número que o cliente manda depois do "Enviar Token" vai pro card,
       // a extensão (parada na tela do token) pega e digita.
-      if (text) { const { guardarCodigoDoCliente } = require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service'); guardarCodigoDoCliente(accountId, leadId, text).catch((e: any) => console.warn('[CAIXA desbloqueio] código:', e?.message)); }
+      if (text) { const { aoReceberDoCliente } = require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service'); aoReceberDoCliente(accountId, leadId, text).catch((e: any) => console.warn('[CAIXA desbloqueio] mensagem do cliente:', e?.message)); }
       // Cliente fala em seguir pela CAIXA com a IA do card DESLIGADA (Fabio 11/11: "ele informar ou a gente"): consulta do nome na CAIXA antes de qualquer documento.
       if (text) { const { detectarPedidoCaixa } = require('./caixa-screening.service') as typeof import('./caixa-screening.service'); detectarPedidoCaixa(accountId, leadId, text, 'cliente', io as any).catch((e: any) => console.warn('[CAIXA] pedido do cliente:', e?.message)); }
       // Card em "Aguardando Documentação": o cliente mandou um DOCUMENTO

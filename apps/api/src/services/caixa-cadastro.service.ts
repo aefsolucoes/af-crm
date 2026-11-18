@@ -307,6 +307,10 @@ async function avisarOutroCorrespondente(accountId: string, leadId: string, nome
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — CLIENTE EM OUTRO CORRESPONDENTE: a consulta do nome mostra ${descreveOutroCca(cods)}. O nosso convênio é ${CONVENIO_AF}.\nA análise de crédito NÃO vai pra CAIXA pelo CRM enquanto isso aparecer (Fabio 14/11). Os dados de renda que o outro correspondente lançou ficam na anotação "Cadastro ANTIGO na CAIXA" quando a extensão passa pela renda; os lidos dos documentos, na "FICHA DE CADASTRO". Nada foi dito ao cliente.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `⚠️ ${nome}: cliente em outro correspondente (CAIXA)`, body: `${descreveOutroCca(cods)}. A análise de crédito fica segurada — veja o card.`.slice(0, 180), leadId }).catch(() => {});
+  // Tudo automático (Fabio 18/11, Lucas): a extensão vai até a tela do token (sem enviar) e o CRM pergunta ao cliente se ele lembra da análise e se segue com a gente;
+  // o "sim" dele pede o código, o código dele libera, e o cadastro + a análise seguem pelo nosso convênio (caixa-desbloqueio.service).
+  const { pedirDesbloqueio } = require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service');
+  await pedirDesbloqueio(accountId, leadId, 'CRM (automático: a consulta mostrou outro correspondente)', { modo: 'ate', perguntar: true }).catch((e) => console.error('[CAIXA] desbloqueio automático:', e?.message));
 }
 
 /** Anotação com os dados de RENDA do cliente pro link do aviso: o cadastro antigo da CAIXA com a lista de rendas (o que o outro correspondente lançou), senão a ficha. */

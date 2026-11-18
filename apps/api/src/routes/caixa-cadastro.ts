@@ -257,7 +257,12 @@ router.post('/:leadId/card/desbloqueio/perguntar', requirePermission('funnel_man
 });
 // A extensão, parada na tela do token, pergunta se o cliente já mandou o código (entregue uma vez por código).
 router.get('/:leadId/desbloqueio/token', async (req: AuthRequest, res: Response) => {
-  try { res.json({ token: await entregarCodigo(req.user!.accountId, req.params.leadId) }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+  try {
+    const token = await entregarCodigo(req.user!.accountId, req.params.leadId);
+    // Pedido novo na fila pra este cliente (código novo / outro modo): a extensão larga a tela do token e vai pra fila.
+    const st = ((await prisma.lead.findUnique({ where: { id: req.params.leadId }, select: { customFields: true } }))?.customFields as any)?._caixaDesbloqueio?.status;
+    res.json({ token, largar: !token && st === 'FILA' });
+  } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 router.post('/:leadId/desbloqueio', async (req: AuthRequest, res: Response) => {
   const b = (req.body || {}) as { status?: string; texto?: string; telefones?: string[]; campos?: string[]; final?: boolean };
