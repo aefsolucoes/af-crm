@@ -28,7 +28,7 @@ router.post('/:leadId/pedir', requirePermission('funnel_manage'), async (req: Au
 router.post('/:leadId/complementar', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const b = req.body || {};
-  const erro = await pedirComplementarSiopi(req.user!.accountId, req.params.leadId, quem, { primeiraAquisicao: b.primeiraAquisicao === 'S' || b.primeiraAquisicao === 'N' ? b.primeiraAquisicao : undefined, agendamento: b.agendamento, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, salvar: b.salvar === true }).catch((e) => e?.message || 'erro');
+  const erro = await pedirComplementarSiopi(req.user!.accountId, req.params.leadId, quem, { primeiraAquisicao: b.primeiraAquisicao === 'S' || b.primeiraAquisicao === 'N' ? b.primeiraAquisicao : undefined, agendamento: b.agendamento, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, salvar: b.salvar === true, natoDigital: b.natoDigital === 'S' || b.natoDigital === 'N' ? b.natoDigital : undefined, situacoes: Array.isArray(b.situacoes) ? b.situacoes : undefined, agencia: b.agencia ? String(b.agencia) : undefined }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });

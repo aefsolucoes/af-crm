@@ -146,7 +146,7 @@ export async function aoAprovarCaixa(accountId: string, leadId: string, propagad
 
 /** Etapa "Complementar Dados" da proposta escolhida (Fabio 18/11: seguradora "Caixa residencial", assinatura "15 dias após"; valores do card). `salvar` false = só
  *  preenche e devolve a tela. Valores em texto no formato do SIOPI ("292.998,84", "03/12/2026"). Erro em texto. */
-export async function pedirComplementarSiopi(accountId: string, leadId: string, por: string, d: { primeiraAquisicao?: 'S' | 'N'; agendamento?: string; financiamento?: number; compraVenda?: number; salvar?: boolean }): Promise<string | null> {
+export async function pedirComplementarSiopi(accountId: string, leadId: string, por: string, d: { primeiraAquisicao?: 'S' | 'N'; agendamento?: string; financiamento?: number; compraVenda?: number; salvar?: boolean; natoDigital?: 'S' | 'N'; situacoes?: string[]; agencia?: string }): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -158,8 +158,20 @@ export async function pedirComplementarSiopi(accountId: string, leadId: string, 
   if (!(fin > 0) || !(cv > 0)) return 'Falta o valor do financiamento ou do imóvel no card';
   const br = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const ag = d.agendamento && /^\d{2}\/\d{2}\/\d{4}$/.test(d.agendamento) ? d.agendamento : new Date(Date.now() + 15 * 86400_000).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
-  const dados = { financiamento: br(fin), compraVenda: br(cv), agendamento: ag, seguradora: '14', apolice: 'LIMITE COBERTURA', tipoApolice: 'C', amortizacao: 'PRICE', garantia: '426', ...(d.primeiraAquisicao ? { primeiraAquisicao: d.primeiraAquisicao } : {}) };
+  // 1º encargo = 30 dias depois da assinatura (Fabio 18/11); unidade de cobrança = agência + dígito pela lupa (padrão: 3444 Planaltina de Goiás, SR 2639 Brasília Norte/DF);
+  // UF/município do imóvel = os do laudo/imóvel (DF → Brasília); situações especiais 117, 132 e 791 (Fabio 18/11).
+  const [dd0, mm0, aa0] = ag.split('/').map(Number);
+  const venc = new Date(Date.UTC(aa0, mm0 - 1, dd0 + 30)).toLocaleDateString('pt-BR', { timeZone: 'UTC' });
+  const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+  const end = await enderecoDoImovel(leadId, cf).catch(() => null);
+  const ufIm = String(end?.uf || cf.uf_imovel || '').toUpperCase().slice(0, 2) || 'DF';
+  const munIm = ufIm === 'DF' ? 'BRASILIA' : String(end?.cidade || cf.cidade_imovel || '').trim();
+  const agencia = String(d.agencia || '3444').replace(/\D/g, '');
+  const dados = { financiamento: br(fin), compraVenda: br(cv), agendamento: ag, vencimento: venc, seguradora: '14', apolice: 'LIMITE COBERTURA', tipoApolice: 'C', amortizacao: 'PRICE', garantia: '426',
+    unidadeCobranca: { pv: agencia, uf: agencia === '3444' ? 'DF' : ufIm, sr: agencia === '3444' ? '2639' : '' }, ufImovel: ufIm, municipio: munIm,
+    situacoes: Array.isArray(d.situacoes) && d.situacoes.length ? d.situacoes.map(String) : ['117', '132', '791'],
+    ...(d.primeiraAquisicao ? { primeiraAquisicao: d.primeiraAquisicao } : {}), ...(d.natoDigital ? { natoDigital: d.natoDigital } : {}) };
   await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'complementar'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.complementar = { dados, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
-  await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Complementar Dados na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): financiamento R$ ${dados.financiamento}, compra e venda R$ ${dados.compraVenda}, assinatura ${dados.agendamento}, seguradora CAIXA RESIDENCIAL HABITACIONAL (apólice SBPE limite de cobertura, coletiva), PRICE, garantia 426 Alienação Fiduciária${d.primeiraAquisicao ? `, 1ª aquisição no SFH: ${d.primeiraAquisicao === 'S' ? 'Sim' : 'Não'}` : ''}.`);
+  await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Complementar Dados na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): financiamento R$ ${dados.financiamento}, compra e venda R$ ${dados.compraVenda}, assinatura ${dados.agendamento}, 1º encargo ${dados.vencimento}, unidade de cobrança ${agencia}, imóvel ${munIm}/${ufIm}, situações ${dados.situacoes.join(', ')}, seguradora CAIXA RESIDENCIAL HABITACIONAL (apólice SBPE limite de cobertura, coletiva), PRICE, garantia 426 Alienação Fiduciária${d.primeiraAquisicao ? `, 1ª aquisição no SFH: ${d.primeiraAquisicao === 'S' ? 'Sim' : 'Não'}` : ''}.`);
   return null;
 }
