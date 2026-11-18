@@ -499,6 +499,10 @@ export async function aiCardState(leadId: string): Promise<string> {
     const cads = Object.values(cx.cadastros || {}).map((v: any) => String(v?.status || ''));
     const rodado = !!cf._caixaResultado || /ENVIAD|RODANDO/i.test(String(cx.avaliacao?.status || ''));
     partes.push(`CAIXA: ${cads.length ? `cadastro ${cads.every((st) => st === 'GRAVADO') ? 'feito' : 'em andamento'}` : 'consulta do nome feita ou na fila'}; ${rodado ? 'CRÉDITO JÁ RODADO na CAIXA (Avaliação de Risco enviada) — alteração no cadastro só com a equipe' : 'crédito ainda NÃO rodado na CAIXA'}.`);
+    // Cliente em OUTRO correspondente (Fabio 18/11, Lucas): perguntar se lembra da análise e se segue com a gente; o cancelamento é por código SMS da CAIXA.
+    const { outroCcaDe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+    const oc = (require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service')).aiOutroCorrespondenteLinha(cf, outroCcaDe(cf).length > 0);
+    if (oc) partes.push(oc);
   }
 
   // Agenda

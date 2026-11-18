@@ -25,8 +25,9 @@ function finaisDoCard(cf: Cf, phones: (string | null | undefined)[]): string[] {
   return [...new Set(nums.map((x) => x.slice(-4)))];
 }
 
-/** Pede à extensão o caminho do desbloqueio. `enviar`: vai até o "Enviar Token" (o SMS da CAIXA sai pro cliente) — só com o OK da equipe. */
-export async function pedirDesbloqueio(accountId: string, leadId: string, por: string, opts: { enviar?: boolean } = {}): Promise<string | null> {
+/** Pede à extensão o caminho do desbloqueio. modo `ver`: para no aviso do outro convênio; `ate` (padrão): responde SIM, marca o celular na tela do token e para;
+ *  `enviar`: clica "Enviar Token" (o SMS da CAIXA sai pro cliente) — só depois de o cliente concordar em seguir com a gente. */
+export async function pedirDesbloqueio(accountId: string, leadId: string, por: string, opts: { modo?: 'ver' | 'ate' | 'enviar' } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, customFields: true } });
   if (!l) return 'Card não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -34,12 +35,12 @@ export async function pedirDesbloqueio(accountId: string, leadId: string, por: s
   if (!p1 || String(p1.cpf || '').length !== 11) return 'O card não tem o CPF do 1º participante';
   const atual = cf._caixaDesbloqueio as Cf | undefined;
   if (atual?.status === 'RODANDO' && atual.inicio && Date.now() - Date.parse(atual.inicio) < LEASE_MS) return 'A extensão já está no desbloqueio deste cliente';
-  const modo = opts.enviar ? 'enviar' : 'ver';
+  const modo = opts.modo === 'ver' || opts.modo === 'enviar' ? opts.modo : 'ate';
   await salvarDesbloqueio(leadId, (d) => {
     for (const k of Object.keys(d)) if (k !== 'historico') delete d[k];
     Object.assign(d, { status: 'FILA', modo, pedidoEm: new Date().toISOString(), por, tentativas: 0 });
   });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔓 CAIXA — desbloqueio do cadastro (cliente em outro convênio) na fila da extensão (${por}): ${modo === 'enviar' ? 'ela vai até o "Enviar Token" — a CAIXA manda o token por SMS pro celular cadastrado do cliente' : 'ela abre o cadastro e para no aviso do outro convênio, sem enviar token'}.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔓 CAIXA — desbloqueio do cadastro (cliente em outro convênio) na fila da extensão (${por}): ${modo === 'enviar' ? 'ela clica "Enviar Token" — a CAIXA manda o código por SMS pro celular cadastrado do cliente' : modo === 'ate' ? 'ela responde SIM ao aviso, marca o celular na tela do token e PARA antes do "Enviar Token"' : 'ela abre o cadastro e para no aviso do outro convênio'}.` } }).catch(() => {});
   return null;
 }
 
@@ -67,7 +68,7 @@ export async function proximoDesbloqueio(accountId: string): Promise<any | null>
       continue;
     }
     await salvarDesbloqueio(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'desbloquear', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, modo: d.modo === 'enviar' ? 'enviar' : 'ver', finais: finaisDoCard(cf, [l!.contact?.whatsappPhone, l!.contact?.phone]) };
+    return { tipo: 'desbloquear', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, modo: d.modo === 'enviar' || d.modo === 'ver' ? d.modo : 'ate', finais: finaisDoCard(cf, [l!.contact?.whatsappPhone, l!.contact?.phone]) };
   }
   return null;
 }
@@ -93,4 +94,20 @@ export async function gravarDesbloqueio(accountId: string, leadId: string, body:
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(accountId, { title: `🔓 ${l.name}: desbloqueio CAIXA`, body: `${status}${telefones.length ? ` — ${telefones[0]}` : ''}`.slice(0, 180), leadId }).catch(() => {});
   }
+}
+
+/** Linha da IA do cliente (Fabio 18/11, Lucas: "perguntar ao cliente se ele se recorda dessa aprovação e se podemos seguir por aqui, para isso precisa encaminhar o
+ *  token"). Só com a consulta da CAIXA mostrando outro correspondente. Pura. */
+export function aiOutroCorrespondenteLinha(cf: Cf, temOutro: boolean): string | null {
+  if (!temOutro) return null;
+  const d = (cf._caixaDesbloqueio || {}) as Cf;
+  if (/^LIBERADO/.test(String(d.status || ''))) return 'CAIXA — o cadastro do cliente, que estava com outro correspondente, JÁ FOI LIBERADO pra gente: siga o processo da CAIXA normalmente, sem tocar mais no assunto.';
+  const final = ((d.telefones || []) as string[]).map((t) => String(t).replace(/\D/g, '').slice(-4)).find((x) => x.length === 4);
+  const cel = final ? `o celular dele cadastrado na CAIXA (final ${final})` : 'o celular dele cadastrado na CAIXA';
+  const enviado = d.enviadoEm ? new Date(String(d.enviadoEm)) : null;
+  const hora = enviado ? enviado.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }) : '';
+  const estado = enviado
+    ? `O CÓDIGO JÁ FOI ENVIADO pela CAIXA por SMS pra ${cel} às ${hora}. Peça que ele mande o código aqui assim que chegar (vale por pouco tempo). Se ele disser que não chegou, pergunte à equipe — não prometa reenvio.`
+    : `Se ainda não perguntou (veja o histórico), na sua PRÓXIMA resposta — depois de responder o que ele disse — pergunte se ele se lembra dessa análise/aprovação feita em outro correspondente e se pode seguir por aqui com a gente; explique em uma frase que, pra isso, a CAIXA manda um código por SMS pra ${cel} e ele repassa o código aqui. Se ele concordar, diga que o código chega em instantes por SMS e que é só mandar aqui (a equipe dispara o envio). Se ele já respondeu, não pergunte de novo.`;
+  return `CAIXA — CLIENTE EM OUTRO CORRESPONDENTE (Fabio 18/11): a consulta da CAIXA mostra uma avaliação de crédito/proposta dele feita por OUTRO correspondente. Pra seguir com a gente, essa análise antiga é cancelada A PEDIDO DELE: a CAIXA manda um código por SMS e, com o código, a gente libera o cadastro aqui. ${estado} Não diga o nome nem o número do outro correspondente, não use as palavras "convênio" ou "token" (diga "código por SMS da CAIXA"), não peça documento por causa disso. Se ele não quiser cancelar, disser que não fez análise em outro lugar ou tiver dúvida que você não sabe responder, pergunte à equipe.`;
 }

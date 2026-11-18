@@ -245,7 +245,7 @@ router.post('/:leadId/mapa', async (req: AuthRequest, res: Response) => {
 // Desbloqueio do cadastro CAIXA — cliente atendido por OUTRO convênio (Fabio 18/11, Lucas): a extensão abre o cadastro, responde SIM ao aviso e, com `enviar`,
 // clica "Enviar Token" (a CAIXA manda o SMS pro celular cadastrado do cliente). Quem pede fica na anotação.
 router.post('/:leadId/card/desbloqueio', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
-  const erro = await pedirDesbloqueio(req.user!.accountId, req.params.leadId, await nomeDe(req), { enviar: req.body?.enviar === true }).catch((e) => e?.message || 'erro');
+  const erro = await pedirDesbloqueio(req.user!.accountId, req.params.leadId, await nomeDe(req), { modo: req.body?.enviar === true ? 'enviar' : req.body?.modo }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true, mensagem: 'Desbloqueio na fila da extensão da CAIXA' });
 });
