@@ -122,7 +122,7 @@ export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { e
   const pendencias = [...marcas, ...(leitura?.pendencias || [])];
   const garantiaFinal = garantia ?? leitura?.garantiaAceita ?? null;
   const status = garantiaFinal === false ? 'REPROVADO' : pendencias.length ? 'PENDENCIA' : 'SALVO';
-  await salvarL(leadId, (x) => { x.status = status; x.situacao = b.situacao || null; x.laudoStatus = b.laudoStatus || null; x.os = b.os || x.os || null; x.laudo = { ...lau, garantiaValida: garantiaFinal }; x.pendencias = pendencias; x.ressalvas = leitura?.ressalvas || []; x.conclusao = leitura?.conclusao || null; x.pendOs = po; x.leuPdf = !!leitura; x.driveId = driveId; x.pdfNome = b.pdf?.nome || null; x.fim = new Date().toISOString(); delete x.inicio; delete x.proximaEm; });
+  await salvarL(leadId, (x) => { x.status = status; x.situacao = b.situacao || null; x.laudoStatus = b.laudoStatus || null; x.os = b.os || x.os || null; x.laudo = { ...lau, garantiaValida: garantiaFinal }; x.pendencias = pendencias; x.ressalvas = leitura?.ressalvas || []; x.conclusao = leitura?.conclusao || null; x.pendOs = po; x.leuPdf = !!leitura; x.driveId = driveId; x.pdfNome = b.pdf?.nome || null; x.erroPdf = pdfOk ? null : String(b.erroPdf || 'sem PDF').slice(0, 200); x.fim = new Date().toISOString(); delete x.inicio; delete x.proximaEm; delete x.erro; });
   // Valor do laudo no card (Fabio 18/11: "precisa preencher o valor do laudo no campo valor laudo") — campo "Valor de avaliação" (chave valor_de_avaliacao).
   const valorLaudo = Number(String(lau.valorAtribuido || '').replace(/[^\d,]/g, '').replace(',', '.'));
   const valorAntes = String(cf.valor_de_avaliacao ?? '').trim();
@@ -130,7 +130,7 @@ export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { e
     await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{valor_de_avaliacao}', to_jsonb(${String(valorLaudo)}::text), true) WHERE id = ${leadId}`;
     await note(leadId, `✏️ Valor de avaliação do card = ${brl(lau.valorAtribuido)} (valor atribuído no laudo da CAIXA)${valorAntes ? ` — era ${valorAntes}` : ''}.`);
   }
-  if (antes.status === status && antes.driveId) return; // já anotado
+  if (antes.status === status && antes.driveId && antes.leuPdf) return; // já anotado (com o PDF salvo e lido)
   const linhas = [
     `• Imóvel válido como garantia (engenheiro): ${garantiaFinal === true ? '✅ SIM' : garantiaFinal === false ? '❌ NÃO' : `— (${lau.garantia || 'não li'})`}`,
     `• Pendências: ${pendencias.length ? `⚠️ ${pendencias.length}\n${pendencias.map((p) => `   – ${p}`).join('\n')}` : `✅ nenhuma (OS: pendência ${po.existePendencia || lau.existePendencia || '—'}, validação CAIXA ${po.validacaoCaixa || '—'}, revisão ${po.revisaoLaudo || '—'}${leitura ? '; laudo lido' : '; o PDF não foi lido'})`}`,
