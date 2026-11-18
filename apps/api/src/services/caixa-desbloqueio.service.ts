@@ -188,7 +188,11 @@ async function avisarClienteDoCodigo(accountId: string, leadId: string): Promise
   const final = finalDoToken(d) || finaisDoCard(cf, [l.contact?.whatsappPhone, l.contact?.phone])[0] || null;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || '';
-  const texto = `Pronto${nome ? `, ${nome}` : ''}! A CAIXA acabou de mandar o código por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda o código aqui assim que chegar (ele vale por pouco tempo).`;
+  // Segundo envio (o código anterior expirou ou a CAIXA deu erro — Fabio 18/11): o cliente sabe que é um código NOVO.
+  const novo = ((d.historico || []) as Cf[]).filter((h) => /^TOKEN ENVIADO/.test(String(h.status || ''))).length > 1;
+  const texto = novo
+    ? `${nome ? `${nome}, o` : 'O'} código anterior expirou. A CAIXA acabou de mandar um código NOVO por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda esse código novo aqui assim que chegar.`
+    : `Pronto${nome ? `, ${nome}` : ''}! A CAIXA acabou de mandar o código por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda o código aqui assim que chegar (ele vale por pouco tempo).`;
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!(await whatsappWindowOpen(leadId))) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — o código foi enviado por SMS, mas a conversa está fechada: avise o cliente. Texto pronto:\n“${texto}”` } }).catch(() => {});
