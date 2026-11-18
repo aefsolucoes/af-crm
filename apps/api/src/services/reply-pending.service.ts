@@ -36,6 +36,11 @@ export async function releaseOnReply(db: Db, p: { accountId: string; leadId: str
   const sender: Sender = p.sender || (async (x) => (require('./message.service') as typeof import('./message.service')).sendOutboundWhatsApp({ accountId: x.accountId, leadId: x.leadId, content: x.content, io: x.io as any }) as any);
   let enviadas = 0; const falhas: ReplyPending[] = [];
   for (const item of fila) {
+    // A pergunta de quem acompanha a vistoria ficou guardada, mas a equipe já preencheu o "Contato vistoria" (Fabio 18/11, Lorena): não pergunta mais ao cliente.
+    if (item.label === 'contato da vistoria' && String(cf.contato_vistoria ?? '').trim()) {
+      await note(db, p.leadId, `🏠 O cliente respondeu, mas não mandei a pergunta guardada do contato da vistoria: o campo "Contato vistoria" já está preenchido (${String(cf.contato_vistoria).trim().slice(0, 80)}).`);
+      continue;
+    }
     const r = await sender({ accountId: p.accountId, leadId: p.leadId, content: item.text, io: p.io });
     if (r.success) {
       enviadas++;

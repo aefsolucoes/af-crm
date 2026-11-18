@@ -157,15 +157,15 @@ function cpfTomador(cf: Record<string, any>): string {
   return String(p1.cpf || '').replace(/\D/g, '');
 }
 
-/** "Contato vistoria" do card → { nome, telefone }. Sem telefone = incompleto. */
-function partirContato(texto: string): { nome: string; telefone: string } | null {
-  const t = String(texto || '').trim();
-  if (!t) return null;
-  const fone = (t.match(/\(?\d{2}\)?\s*9?\s*\d{4}[-\s.]?\d{4}/) || [])[0] || '';
-  const digitos = fone.replace(/\D/g, '');
-  const nome = t.replace(fone, '').replace(/[\-–—:|,;/()]+/g, ' ').replace(/\b(tel|telefone|cel|celular|whats(app)?|fone)\b\.?/gi, ' ').replace(/\s+/g, ' ').trim();
-  if (digitos.length < 10 || !nome) return null;
-  return { nome: nome.slice(0, 44), telefone: digitos };
+/** "Contato vistoria" do card → { nome, telefone }. Sem telefone = incompleto. Mesma leitura de todos os bancos (vistoria-contato.partirContato: "o próprio cliente" usa o
+ *  nome e o telefone do card) — aqui o nome vai sem parênteses e com até 44 letras (campo do SIOPI). */
+function partirContato(texto: string, cf?: Record<string, any> | null, cliente?: { nome?: string | null; telefone?: string | null } | null): { nome: string; telefone: string } | null {
+  const vc = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const c = vc.partirContato(texto, cf ? vc.clienteDoCard(cf, cliente) : cliente);
+  if (!c) return null;
+  const limpa = (s: string) => s.replace(/[\-–—:|,;/()]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const nome = limpa(c.nome.replace(/\([^)]*\)/g, ' ')) || limpa(c.nome); // "Lorena (o próprio cliente)" → "Lorena"; "(vendedor)" some
+  return nome ? { nome: nome.slice(0, 44), telefone: c.telefone } : null;
 }
 
 /** Lê a conversa antes de perguntar (Fabio 06/11: "o CRM também lê a conversa antes para verificar se já não foi pedido isso"). */
@@ -316,7 +316,7 @@ async function conferirContato(accountId: string, leadId: string, user: { id: st
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { phone: true } } } });
   if (!lead) return;
   const cf = (lead.customFields || {}) as Record<string, any>;
-  let contato = partirContato(cf.contato_vistoria);
+  let contato = partirContato(cf.contato_vistoria, cf, { nome: lead.name, telefone: lead.contact?.phone });
   if (!contato) {
     const nomeCliente = String(cf.participante_1 || lead.name || '').trim();
     const fone = String(cf.telefone_1 || lead.contact?.phone || '').replace(/\D/g, '').replace(/^55(?=\d{10,11}$)/, '');
@@ -354,7 +354,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
     try {
       if (r.status === 'AGUARDANDO_CONTATO') {
         const cf = ((await prisma.lead.findUnique({ where: { id: r.id }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
-        const contato = partirContato(cf.contato_vistoria);
+        const contato = partirContato(cf.contato_vistoria, cf);
         if (contato) { await gravar(r.id, { status: 'FILA', contato }); await nota(r.id, `🏠 Contato da vistoria preenchido (${cf.contato_vistoria}) — a vistoria CAIXA entrou na fila da extensão do SIOPI.`); }
         continue;
       }

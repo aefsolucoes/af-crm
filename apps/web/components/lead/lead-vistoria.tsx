@@ -316,12 +316,15 @@ export function LeadVistoriaCreditas({ leadId }: { leadId: string }) {
   async function abrir() {
     setLoading(true);
     try {
+      // Estado de AGORA (Fabio 18/11, Lorena): o campo pode ter sido preenchido depois que o card abriu — não pergunta ao cliente com o card já preenchido.
+      const agora = await api.get<CreditasStatus>('/api/vistorias/creditas/status', { params: { leadId } }).then((r) => r.data).catch(() => st);
+      if (agora) setSt(agora);
       // Sem "Contato vistoria" no card (Fabio 03/11): o CRM pergunta ao cliente quem acompanha a vistoria — sem citar o banco. Conversa fechada: template "Olá, tudo bem?" antes.
-      const perguntadoHa = st?.contatoPerguntadoEm ? Date.now() - new Date(st.contatoPerguntadoEm).getTime() : Infinity;
-      if (st?.contatoVazio && perguntadoHa > 3 * 86_400_000 && window.confirm('O card não tem o "Contato vistoria".\n\nO CRM vai perguntar ao cliente quem acompanha a vistoria do imóvel (nome e telefone) — se a conversa estiver fechada, manda antes o template "Olá, tudo bem?". A resposta vai pro card.\n\nPerguntar agora? (Cancelar = só abrir o e-mail)')) {
+      const perguntadoHa = agora?.contatoPerguntadoEm ? Date.now() - new Date(agora.contatoPerguntadoEm).getTime() : Infinity;
+      if (agora?.contatoVazio && perguntadoHa > 3 * 86_400_000 && window.confirm('O card não tem o "Contato vistoria".\n\nO CRM vai perguntar ao cliente quem acompanha a vistoria do imóvel (nome e telefone) — se a conversa estiver fechada, manda antes o template "Olá, tudo bem?". A resposta vai pro card.\n\nPerguntar agora? (Cancelar = só abrir o e-mail)')) {
         try {
           const { data } = await api.post<{ asked: string }>('/api/vistorias/creditas/ask-contato', { leadId });
-          toast(data.asked === 'template' ? 'Conversa fechada: mandei o template "Olá, tudo bem?". A pergunta do contato sai quando o cliente responder.' : data.asked === 'mensagem' ? 'Perguntei ao cliente o contato da vistoria.' : data.asked === 'aguardando' ? 'A pergunta do contato já está esperando o cliente.' : 'O card já tem o contato da vistoria.', 'success');
+          toast(data.asked === 'template' ? 'Conversa fechada: mandei o template "Olá, tudo bem?". A pergunta do contato sai quando o cliente responder.' : data.asked === 'mensagem' ? 'Perguntei ao cliente o contato da vistoria.' : data.asked === 'aguardando' ? 'A pergunta do contato já está esperando o cliente.' : data.asked === 'incompleto' ? 'O "Contato vistoria" do card está sem nome ou sem telefone: complete o campo (o CRM não pergunta ao cliente).' : 'O card já tem o contato da vistoria.', 'success');
           setSt((cur) => (cur ? { ...cur, contatoPerguntadoEm: new Date().toISOString() } : cur));
         } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao perguntar o contato da vistoria', 'error'); }
       }

@@ -32,7 +32,7 @@ export interface VistoriaCreditasPreview {
 
 /** Pergunta ao cliente quem acompanha a vistoria — hoje é a regra única de todos os bancos (vistoria-contato.service, Fabio 14/11): Financiamento = vendedor/corretor/outra pessoa;
  *  Home Equity = sugere o próprio cliente e confirma. Conversa fechada = template "Olá, tudo bem?" e a pergunta na resposta. Mantido aqui pros chamadores antigos (botão, CAIXA). */
-export async function pedirContatoVistoria(accountId: string, leadId: string, userId: string, io?: Io): Promise<'ja_tem' | 'mensagem' | 'template' | 'aguardando'> {
+export async function pedirContatoVistoria(accountId: string, leadId: string, userId: string, io?: Io): Promise<'ja_tem' | 'mensagem' | 'template' | 'aguardando' | 'incompleto'> {
   const { pedirContato } = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
   return pedirContato(accountId, leadId, { userId: userId || null, banco: 'Creditas', io: io as any });
 }
@@ -104,7 +104,9 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   const ccPai = ((pai?.ccList as unknown as { address?: string }[] | null) || []).map((c) => String(c?.address || '').toLowerCase()).filter((a) => CREDITAS_FROM.test(a) && a !== CREDITAS_VISTORIA_EMAIL);
 
   // Contato SÓ confirmado com o cliente (Fabio 14/11) — sem ele o e-mail não sai: o CRM pergunta e o pedido fica armado (vistoria-contato.service).
-  const contato = (require('./vistoria-contato.service') as typeof import('./vistoria-contato.service')).contatoConfirmado(cf);
+  const vcont = require('./vistoria-contato.service') as typeof import('./vistoria-contato.service');
+  const contato = vcont.contatoConfirmado(cf, { nome: lead.name, telefone: lead.contact?.phone });
+  const incompleto = contato ? null : vcont.contatoIncompleto(cf, { nome: lead.name, telefone: lead.contact?.phone });
   const endImovel = String(cf.endereco_imovel || cf.imovel_endereco || '').trim();
   const matricula = String(cf.numero_matricula || '').trim();
 
@@ -143,7 +145,8 @@ export async function vistoriaCreditasPreview(accountId: string, leadId: string)
   if (!onus) avisos.push('Faltou a CERTIDÃO DE ÔNUS (matrícula) na pasta IMOVEL do cliente — o e-mail sai sem ela se você não anexar.');
   if (!iptu) avisos.push('Faltou a CAPA DO IPTU na pasta IMOVEL do cliente — o e-mail sai sem ela se você não anexar.');
   else if (iptu.tipo === 'GUIA_IPTU') avisos.push('Não achei a capa do IPTU; marquei a GUIA do IPTU — confira se é do mesmo imóvel.');
-  if (!contato) avisos.push(`⚠️ O contato da vistoria ainda não foi confirmado com o cliente (campo "Contato vistoria" vazio ou sem nome e telefone). Ao enviar, o CRM pergunta a ele quem acompanha o engenheiro${cf._vistoriaContatoAsk?.at ? ` (já perguntado em ${new Date(cf._vistoriaContatoAsk.at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} — esperando a resposta)` : ''} e o pedido sai sozinho, com esse contato, quando ele responder. Se você já confirmou, preencha o campo antes de enviar.`);
+  if (incompleto) avisos.push(`⚠️ O campo "Contato vistoria" está com "${incompleto}" — falta ${vcont.faltaNoContato(incompleto)}. Complete o campo antes de enviar: como a equipe já preencheu, o CRM não pergunta ao cliente (o pedido fica esperando o campo completo).`);
+  else if (!contato) avisos.push(`⚠️ O contato da vistoria ainda não foi confirmado com o cliente (campo "Contato vistoria" vazio). Ao enviar, o CRM pergunta a ele quem acompanha o engenheiro${cf._vistoriaContatoAsk?.at ? ` (já perguntado em ${new Date(cf._vistoriaContatoAsk.at).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })} — esperando a resposta)` : ''} e o pedido sai sozinho, com esse contato, quando ele responder. Se você já confirmou, preencha o campo antes de enviar.`);
   if (!pai) avisos.push('Ainda não há conversa da Creditas sobre este cliente na caixa comercial: vai como e-mail novo ao Jonatas.');
 
   return {

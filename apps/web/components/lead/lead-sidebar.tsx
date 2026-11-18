@@ -261,7 +261,9 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
     setCustomValues(newValues);
     setEditingKey(null);
     try {
-      await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newValues });
+      // Só o que mudou (Fabio 18/11, Lorena): mandar o card inteiro, copiado de quando abriu, passava por cima do que o CRM gravou no meio tempo.
+      const mudou = Object.fromEntries(Object.entries(newValues).filter(([k, v]) => k === key || v !== customValues[k]));
+      await api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: mudou });
 
       // Sincroniza: valor do crédito → valor da venda
       if (key === 'valor_credito') {
@@ -296,7 +298,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
     setEditingValue(false);
     await Promise.all([
       api.put(`/api/leads/${lead.id}`, { value: numeric }),
-      api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: newCF }),
+      api.patch(`/api/leads/${lead.id}/custom-fields`, { customFields: { valor_credito: String(numeric) } }),
     ]);
     onRefresh();
   };

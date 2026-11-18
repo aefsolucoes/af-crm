@@ -1046,7 +1046,18 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
         trocoRecalculado = { total, antes: Number((before as any).valor_credito) || 0 };
       }
     }
-    const lead = await updateLead(req.params.id, req.user!.accountId, { customFields } as any);
+    // A tela mandava o card INTEIRO (cópia de quando abriu) e a gravação substituía o customFields: apagava o que o CRM gravou no meio tempo (Fabio 18/11, Lorena: a marca
+    // "já perguntei o contato da vistoria" sumiu e o CRM mandou o template de novo). Agora MESCLA no que está no banco, por SQL; chaves "_…" são do servidor e nunca vêm da tela.
+    if (!customFields || typeof customFields !== 'object' || Array.isArray(customFields)) return res.status(400).json({ error: 'customFields inválido' });
+    const atual = await prisma.lead.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { customFields: true } });
+    if (!atual) return res.status(404).json({ error: 'Card não encontrado' });
+    const atualCf = (atual.customFields || {}) as Record<string, unknown>;
+    const patchCf = Object.fromEntries(Object.entries(customFields as Record<string, unknown>).filter(([k]) => !k.startsWith('_')));
+    const contatoMudou = 'contato_vistoria' in patchCf && String(patchCf.contato_vistoria ?? '').trim() !== String(atualCf.contato_vistoria ?? '').trim();
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify(patchCf)}::jsonb, "updatedAt" = NOW() WHERE id = ${req.params.id} AND "accountId" = ${req.user!.accountId}`;
+    const lead = await prisma.lead.findUniqueOrThrow({ where: { id: req.params.id } });
+    // "Contato vistoria" preenchido pela equipe: a pergunta ao cliente para e o pedido de vistoria que esperava sai (vistoria-contato.contatoEditadoPelaEquipe).
+    if (contatoMudou) (require('../services/vistoria-contato.service') as typeof import('../services/vistoria-contato.service')).contatoEditadoPelaEquipe(req.user!.accountId, lead.id, req.app.get('io')).catch((e: any) => console.error('[Contato vistoria] edição da equipe:', e?.message));
     // A equipe mudou o saldo/troco e o valor do crédito mudou (Fabio 21/10): se a análise já rodou com o valor antigo, refaz sozinha.
     if (trocoRecalculado && Math.abs(trocoRecalculado.total - trocoRecalculado.antes) >= 1) {
       const { refazAnaliseComValorNovo } = require('../services/saldo-devedor.service') as typeof import('../services/saldo-devedor.service');
@@ -1056,7 +1067,8 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     // O nome que aparece na conversa/Inbox é o do CONTATO. Como o "Participante 1"
     // é o nome da pessoa, mantemos o contato em sincronia: renomear o Participante 1
     // renomeia o contato (e atualiza a lista de conversas ao vivo).
-    const p1 = customFields?.participante_1;
+    const cfGravado = (lead.customFields || {}) as Record<string, any>; // já mesclado: vale o que ficou no card (como quando a tela mandava o card inteiro)
+    const p1 = cfGravado.participante_1;
     if (typeof p1 === 'string' && p1.trim() && lead.contactId) {
       await prisma.contact.update({ where: { id: lead.contactId }, data: { name: normalizeClientName(p1) } }).catch(() => {});
       const io = req.app.get('io');
@@ -1070,7 +1082,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     // fluxo manual/importação). Preenche/cria os dois casos aqui — o campo
     // Telefone do card É onde se cadastra o telefone de verdade, não só
     // exibição. Nunca sobrescreve um Contact.phone real já confirmado.
-    const tel1 = customFields?.telefone_1;
+    const tel1 = cfGravado.telefone_1;
     if (typeof tel1 === 'string') {
       const digits = tel1.replace(/\D/g, '');
       if (digits.length >= 10) {
@@ -1100,7 +1112,7 @@ router.patch('/:id/custom-fields', async (req: AuthRequest, res: Response) => {
     // mesmo com o crédito preenchido. Sincroniza aqui, na escrita, pra
     // valer não importa qual tela mandou o campo.
     let updatedLead = lead;
-    const creditoRaw = customFields?.valor_credito;
+    const creditoRaw = cfGravado.valor_credito;
     if (creditoRaw !== undefined && creditoRaw !== null && String(creditoRaw).trim() !== '') {
       const creditoNum = Number(creditoRaw);
       if (!Number.isNaN(creditoNum) && creditoNum !== lead.value) {
