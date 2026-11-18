@@ -70,7 +70,8 @@ export async function proximoDesbloqueio(accountId: string): Promise<any | null>
       continue;
     }
     await salvarDesbloqueio(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'desbloquear', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, modo: d.modo === 'enviar' || d.modo === 'ver' ? d.modo : 'ate', finais: finaisDoCard(cf, [l!.contact?.whatsappPhone, l!.contact?.phone]) };
+    // Identificação Positiva da CAIXA (18/11, Gilvano): primeiro nome do pai + número da identidade, da ficha.
+    return { tipo: 'desbloquear', leadId: id, leadName: l!.name, ordem: 1, nome: p1.nome, cpf: p1.cpf, modo: d.modo === 'enviar' || d.modo === 'ver' ? d.modo : 'ate', finais: finaisDoCard(cf, [l!.contact?.whatsappPhone, l!.contact?.phone]), pai: p1.pai || null, identidade: p1.identidade?.numero || null };
   }
   return null;
 }
