@@ -15,6 +15,8 @@ type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => v
 
 export type SantManual = {
   proposta?: string; teamAt?: string; askedAt?: string; heldNoteFor?: string; itens?: string[]; via?: 'texto' | 'template';
+  /** Por que o pedido está segurado: 'ESPERA' = Financiamento esperando as outras propostas e o aviso das aprovadas (Fabio 18/11); 'outro' = IA desligada, STOP, fora do horário. */
+  heldMotivo?: 'ESPERA' | 'outro';
   /** Financiamento (CREDIMORAR_FH, Fabio 14/11: mesmo fluxo do HE, agora também com o Bradesco): produto e banco(s) em análise manual. Sem isso = Home Equity, Santander. */
   produto?: 'FH'; banco?: string;
   /** Lembrete da janela de 24 h (Fabio 14/11): a última mensagem do cliente (ISO) em cuja janela o CRM já perguntou "até quando manda" — uma vez por janela. */
@@ -85,17 +87,32 @@ export async function pedirDocumentosSantanderManual(p: { accountId: string; lea
   const extra: Partial<SantManual> = p.produto ? { produto: p.produto, banco: p.banco } : {};
   const rot = rotulo(p.produto ? p : st);
   const { santanderManualClientText: textoBase } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-  const santanderManualClientText = (n: string | null, saudar: boolean, its: string[]) => textoBase(n, saudar, its, { banco: p.banco || st.banco, fh: (p.produto || st.produto) === 'FH' });
+  // Financiamento (Fabio 18/11, Gilvano): o pedido vem DEPOIS do aviso das aprovadas e da linha das que não aprovaram. Com outra aprovação, é pra comparar; sem nenhuma (e sem aviso),
+  // as que não aprovaram vão no próprio pedido.
+  const fhPedido = (p.produto || st.produto) === 'FH';
+  const bancosManual = String(p.banco || st.banco || 'Santander').split(' e ');
+  let comparar: string[] = [], negadas: string[] = [];
+  if (fhPedido && cf._fhResumo) {
+    const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const { fhOptions, negadasFh } = require('./fh-approval.service') as typeof import('./fh-approval.service');
+    const resumo = parseBancosFinanciamento(cf._fhResumo);
+    comparar = fhOptions(resumo, '').aprovadas.map((o) => o.banco).filter((b) => !bancosManual.includes(b));
+    if (!comparar.length && !cf._fhNotice?.sentAt) negadas = negadasFh(resumo);
+  }
+  const santanderManualClientText = (n: string | null, saudar: boolean, its: string[]) => textoBase(n, saudar, its, { banco: p.banco || st.banco, fh: fhPedido, comparar, negadas });
   const { inNoticeWindow, whatsappWindowOpen, conversationActive } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name) || null;
   // Só com a IA do card ligada, sem STOP TOTAL e dentro das 07h–21h; senão fica o texto pronto na nota (uma vez por proposta).
-  const motivo = cf._autoPaused ? 'o card está em STOP TOTAL' : !lead.aiAutoReplyActive ? 'a IA deste card está desligada' : !inNoticeWindow() ? 'fora do horário dos avisos (07h–21h)' : '';
+  const espera = fhPedido && (await (require('./fh-approval.service') as typeof import('./fh-approval.service')).fhAvisoPendente(lead.id, bancosManual).catch(() => false));
+  const motivo = cf._autoPaused ? 'o card está em STOP TOTAL' : !lead.aiAutoReplyActive ? 'a IA deste card está desligada' : espera ? 'ESPERA' : !inNoticeWindow() ? 'fora do horário dos avisos (07h–21h)' : '';
   if (motivo) {
-    if (st.heldNoteFor !== p.numero) {
+    if (st.heldNoteFor !== p.numero || (st.heldMotivo === 'ESPERA') !== (motivo === 'ESPERA')) { // a espera do aviso acabou mas segue segurado por outro motivo: nova nota, com o texto pronto
       const texto = santanderManualClientText(nome, true, itens);
-      await note(lead.id, `⏳ ${rot} (análise manual): NÃO pedi os documentos ao cliente agora — ${motivo}. ${motivo.includes('IA') || motivo.includes('STOP') ? 'Chame o cliente e mande:' : 'Tento de novo dentro do horário; se preferir, mande você:'}\n\n${texto}`);
-      await salvar(lead.id, { ...extra, proposta: p.numero, heldNoteFor: p.numero });
+      await note(lead.id, motivo === 'ESPERA'
+        ? `⏳ ${rot} (análise manual): o pedido de documentos ao cliente ESPERA as outras propostas voltarem e o aviso das aprovadas sair. Sai sozinho logo depois dele, nesta ordem: aprovadas → as que não aprovaram → este pedido (Fabio 18/11).`
+        : `⏳ ${rot} (análise manual): NÃO pedi os documentos ao cliente agora — ${motivo}. ${motivo.includes('IA') || motivo.includes('STOP') ? 'Chame o cliente e mande:' : 'Tento de novo dentro do horário; se preferir, mande você:'}\n\n${texto}`);
+      await salvar(lead.id, { ...extra, proposta: p.numero, heldNoteFor: p.numero, heldMotivo: motivo === 'ESPERA' ? 'ESPERA' : 'outro' });
     }
     return 'nota';
   }
@@ -158,6 +175,24 @@ export function faltandoParaSantanderManual(itens: string[], tipos: string[], re
 type Anexo = { id: string; fileName: string; mimeType: string; createdAt: Date; driveFileId: string | null; data: Uint8Array | null };
 const filtroArquivo = (a: { mimeType: string; fileName?: string | null }) => !/^(audio|video)\//.test(a.mimeType);
 
+/** Financiamento: pedido de documentos da análise manual que ficou segurado (esperando o aviso das aprovadas, fora do horário, IA desligada…) sai agora, se o banco ainda está em
+ *  "Enviar Documentos". Chamado pelo tick e logo depois do aviso das aprovadas (sendFhNotice — Fabio 18/11: aprovadas → as que não aprovaram → este pedido → outro canal). */
+export async function pedirSeguradoFh(accountId: string, leadId: string, io?: Io): Promise<void> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Record<string, any>;
+  const st = (cf._santanderManual || {}) as SantManual;
+  if (st.produto !== 'FH' || !st.heldNoteFor || st.askedAt || st.templateFalhou) return;
+  if (st.teamAt && Date.now() - Date.parse(st.teamAt) > PEDIDO_PENDENTE_MAX_MS) return;
+  const { parseDocumentosExigidos, docDoPortal, parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  // A situação do banco na lista do Credimorar (_fhResumo) ainda é "Enviar Documentos"?
+  const bancos = String(st.banco || 'Santander').split(' e ');
+  if (!bancos.some((b) => /enviar documentos/i.test(parseBancosFinanciamento(cf._fhResumo)[b]?.status || ''))) return;
+  const lida = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'CREDIMORAR_FH', dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
+  let itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
+  if (!itens.length) itens = await itensRendaPerfilFh(accountId, cf);
+  await pedirDocumentosSantanderManual({ accountId, leadId, numero: st.heldNoteFor, itens, io, produto: 'FH', banco: st.banco });
+}
+
 /** Tick (a cada 5 min): pedidos segurados (fora do horário / janela fechada de antes desta regra) e encaminhamento à Letícia. */
 export async function processSantanderManual(io?: Io): Promise<void> {
   const { inNoticeWindow } = require('./approval-notice.service') as typeof import('./approval-notice.service');
@@ -169,20 +204,12 @@ export async function processSantanderManual(io?: Io): Promise<void> {
         const lead = await prisma.lead.findUnique({ where: { id: l.id }, select: { customFields: true, aiAutoReplyActive: true, stage: { select: { name: true } } } });
         const cf = (lead?.customFields || {}) as Record<string, any>;
         const st = (cf._santanderManual || {}) as SantManual;
-        if (!lead || !lead.aiAutoReplyActive || !/^pr[eé]-an/i.test(lead.stage?.name || '') || !st.heldNoteFor) continue;
+        // Financiamento: depois do aviso das aprovadas o card já está em Aguardando Documentação (Fabio 18/11: o pedido espera o aviso).
+        if (!lead || !lead.aiAutoReplyActive || !(st.produto === 'FH' ? /^pr[eé]-an|aguardando/i : /^pr[eé]-an/i).test(lead.stage?.name || '') || !st.heldNoteFor) continue;
+        if (st.produto === 'FH') { await pedirSeguradoFh(l.accountId, l.id, io); continue; }
         if (st.teamAt && Date.now() - Date.parse(st.teamAt) > PEDIDO_PENDENTE_MAX_MS) continue;
         // A proposta ainda está em análise manual (nada decidido depois)?
-        const { parseDocumentosExigidos, docDoPortal, parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
-        if (st.produto === 'FH') {
-          // Financiamento: a situação do banco na lista do Credimorar (_fhResumo) ainda é "Enviar Documentos"?
-          const bancos = String(st.banco || 'Santander').split(' e ');
-          if (!bancos.some((b) => /enviar documentos/i.test(parseBancosFinanciamento(cf._fhResumo)[b]?.status || ''))) continue;
-          const lida = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: 'CREDIMORAR_FH', dryRun: false, detail: { contains: 'MANUAL ABERTA' } }, orderBy: { createdAt: 'desc' }, select: { detail: true } });
-          let itens = (parseDocumentosExigidos(lida?.detail)?.itens || []).map(docDoPortal);
-          if (!itens.length) itens = await itensRendaPerfilFh(l.accountId, cf);
-          await pedirDocumentosSantanderManual({ accountId: l.accountId, leadId: l.id, numero: st.heldNoteFor, itens, io, produto: 'FH', banco: st.banco });
-          continue;
-        }
+        const { parseDocumentosExigidos, docDoPortal } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
         const ult = await prisma.creditAnalysis.findFirst({ where: { leadId: l.id, bank: 'CREDIMORAR', dryRun: false }, orderBy: { createdAt: 'desc' }, select: { status: true, detail: true, proposalNumber: true } });
         if (!ult || ['APPROVED', 'CONDITIONAL', 'REJECTED'].includes(ult.status) || !/AN[ÁA]LISE MANUAL ABERTA/i.test(ult.detail || '')) continue;
         const itens = (parseDocumentosExigidos(ult.detail)?.itens || []).map(docDoPortal);
@@ -222,6 +249,8 @@ async function janelaSantanderManual(accountId: string, leadId: string, io?: Io)
   const cf = (lead.customFields || {}) as Record<string, any>;
   const st = (cf._santanderManual || {}) as SantManual;
   if (!st.askedAt || st.forwardedAt || st.forwardSkip || st.prontoAt || st.portal || cf._autoPaused || (lead.tags || []).includes('Pediu pra parar lembretes')) return;
+  // Financiamento: o pedido era pra COMPARAR com outra aprovação (Fabio 18/11) — se ele já seguiu com outro banco, não cobra a renda da análise manual.
+  if (st.produto === 'FH' && cf._fhChosen?.bank && !String(st.banco || 'Santander').split(' e ').includes(String(cf._fhChosen.bank))) return;
   const ultimaIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
   if (!ultimaIn) return;
   const { podePerguntarDocs, clienteEsperandoResposta } = require('./docs-loop.service') as typeof import('./docs-loop.service');

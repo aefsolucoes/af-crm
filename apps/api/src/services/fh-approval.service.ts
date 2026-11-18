@@ -153,6 +153,40 @@ export function rodadaNovaPendente(desde: Date, linhas: { bank: string; kind: st
   return Array.from(ultimos.values()).some((run) => emAberto(run.status) && !(run.status === 'SENT' && linhas.some((r) => r.bank === run.bank && r.kind === 'CHECK' && r.createdAt >= run.createdAt && !emAberto(r.status))));
 }
 
+const NEG_FH = /reprov|rejeit|recus|negad|n[aã]o aprovad/i;
+/** Bancos do Financiamento que NÃO aprovaram (situação final de negativa no resumo), sem CAIXA/BRB. Pura. */
+export function negadasFh(resumo: Record<string, { status: string; texto: string }>): string[] {
+  return Object.entries(resumo).filter(([b, x]) => !/^(CAIXA|BRB)$/.test(b) && NEG_FH.test(x.status)).map(([b]) => b);
+}
+/** "No Inter e no Itaú a proposta não foi aprovada desta vez, então a aprovação que temos agora é essa do Bradesco." — vai logo depois das aprovadas (Fabio 18/11, Gilvano). Pura. */
+export function linhaNegadasFh(negadas: string[], aprovadas: string[]): string {
+  if (!negadas.length) return '';
+  const no = negadas.map((b) => `no ${b}`).join(', ').replace(/, ([^,]*)$/, ' e $1');
+  const fim = aprovadas.length > 1 ? 'as aprovações que temos agora são essas' : aprovadas.length ? `a aprovação que temos agora é essa do ${aprovadas[0]}` : '';
+  return `${no.charAt(0).toUpperCase()}${no.slice(1)} a proposta não foi aprovada desta vez${fim ? `, então ${fim}` : ''}.`;
+}
+
+/** Pedido de documentos da ANÁLISE MANUAL do Financiamento (Santander/Bradesco "Enviar Documentos") — Fabio 18/11, Gilvano: "ele primeiro espera as propostas que foram enviadas
+ *  voltarem. Em seguida manda as aprovadas, avisa sobre as que foram negativadas e depois solicita a documentação para o banco que aprovou condicional". O pedido saiu às 13:05 e o
+ *  aviso do Bradesco aprovado só às 13:18, sem falar do Inter e do Itaú. true = segurar o pedido: há aprovação de outro banco cujo aviso ainda não saiu (o aviso solta o pedido,
+ *  sendFhNotice), ou outro banco ainda analisa (no máximo 12 h desde que a análise manual abriu). */
+export async function fhAvisoPendente(leadId: string, bancosManual: string[]): Promise<boolean> {
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (lead?.customFields || {}) as Cf;
+  if (!cf._fhResumo || cf._fhNotice?.sentAt || cf._optouCaixa?.banco) return false;
+  const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  const op = fhOptions(parseBancosFinanciamento(cf._fhResumo), '');
+  if (op.aprovadas.some((o) => !bancosManual.includes(o.banco))) return true;
+  const desde = Date.parse(cf._santanderManual?.teamAt || '') || Date.now();
+  if (Date.now() - desde > MAX_WAIT_OTHERS_MS) return false;
+  if (op.emAnalise.some((b) => !bancosManual.includes(b))) return true;
+  // Inter/Itaú (nossos portais) ainda rodando ou com a proposta enviada sem leitura do resultado: a linha mais nova de cada um.
+  const linhas = await prisma.creditAnalysis.findMany({ where: { leadId, dryRun: false, bank: { in: Object.values(PORTAL_PROPRIO) }, createdAt: { gte: new Date(Date.now() - 3 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, select: { bank: true, status: true } });
+  const maisNova = new Map<string, string>();
+  for (const r of linhas) if (!maisNova.has(r.bank)) maisNova.set(r.bank, r.status);
+  return [...maisNova.values()].some((s) => ['REQUESTED', 'RUNNING', 'SENT'].includes(s));
+}
+
 /** Roda no ciclo da análise automática: manda o aviso de aprovação do Financiamento quando dá. */
 export async function processFhNotices(accountId: string, io?: any): Promise<void> {
   const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
@@ -324,6 +358,14 @@ async function sendFhNotice(accountId: string, leadId: string, leadName: string,
     if (!r.success) await sendOutboundWhatsApp({ ...base, content: `${fhOptionText(o)}\n\n👉 Para seguir com esta, é só me responder "${o.banco}".` });
   }
   if (emAnalise.length) { await pausa(); await sendOutboundWhatsApp({ ...base, content: `⏳ Ainda em análise: ${emAnalise.join(', ')}. Se aprovar, te aviso por aqui.` }); }
+  // Ordem do Fabio (18/11, Gilvano): aprovadas → as que não aprovaram → documentos do banco em análise manual (segurado até aqui) → aviso de outro canal.
+  {
+    const { parseBancosFinanciamento } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+    const linha = linhaNegadasFh(negadasFh(parseBancosFinanciamento(cf._fhResumo)), aprovadas.map((o) => o.banco));
+    if (linha) { await pausa(); await sendOutboundWhatsApp({ ...base, content: linha }); }
+    await pausa();
+    await (require('./santander-manual.service') as typeof import('./santander-manual.service')).pedirSeguradoFh(accountId, leadId, io).catch((e: any) => console.error('[Financiamento] pedido da análise manual depois do aviso:', e?.message));
+  }
   await (require('./approval-notice.service') as typeof import('./approval-notice.service')).sendOutroCanalAviso(base); // já tentou por outro meio? + não tentar em outro canal (Fabio 29/10)
   return true;
 }

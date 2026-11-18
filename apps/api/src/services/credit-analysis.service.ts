@@ -776,8 +776,23 @@ export const docDoPortal = (t: string): string => {
   if (/irpf|imposto de renda/i.test(x)) return 'Declaração de Imposto de Renda (IRPF) do último exercício + extrato da conta corrente dos últimos 3 meses';
   return x;
 };
-export function santanderManualClientText(nome: string | null, saudar: boolean, itens: string[], o: { banco?: string; fh?: boolean } = {}): string {
+/** "No Inter e no Itaú" / "o Bradesco e o Inter" — bancos do Financiamento (todos masculinos). Pura. */
+const listaBancos = (bancos: string[], prep: 'no' | 'o') => bancos.map((b) => `${prep} ${b}`).join(', ').replace(/, ([^,]*)$/, ' e $1');
+export function santanderManualClientText(nome: string | null, saudar: boolean, itens: string[], o: { banco?: string; fh?: boolean; comparar?: string[]; negadas?: string[] } = {}): string {
   const lista = itens.length ? itens : ['Os documentos de comprovação de renda'];
+  // Financiamento (Fabio 18/11, Gilvano): sai DEPOIS do aviso das aprovadas e da linha das que não aprovaram — sem "análise automática", em tom de conversa.
+  // Com outra aprovação na mão, o pedido é pra COMPARAR; sem nenhuma, as que não aprovaram vão aqui mesmo (não houve aviso antes).
+  if (o.fh) {
+    const bancos = String(o.banco || 'Santander').split(' e ');
+    const varios = bancos.length > 1;
+    const quem = listaBancos(bancos, 'o');
+    const Quem = quem.charAt(0).toUpperCase() + quem.slice(1);
+    const neg = o.negadas?.length ? `${(l => l.charAt(0).toUpperCase() + l.slice(1))(listaBancos(o.negadas, 'no'))} a proposta não foi aprovada desta vez. ` : '';
+    const abre = o.comparar?.length
+      ? `${Quem} também ${varios ? 'podem' : 'pode'} aprovar, mas ${varios ? 'querem' : 'quer'} que um analista olhe a sua renda. Se quiser comparar com ${listaBancos(o.comparar, 'o')}, me manda por aqui:`
+      : `${Quem} ${varios ? 'podem' : 'pode'} aprovar, mas ${varios ? 'querem' : 'quer'} que um analista olhe a sua renda antes. Pra eu encaminhar, me manda por aqui:`;
+    return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}${neg}${abre}\n${lista.map((i) => `• ${i}`).join('\n')}\n\nAssim que chegar, mando pro banco e te aviso o retorno.`;
+  }
   return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Sobre o seu ${o.fh ? 'financiamento' : 'crédito'}: a proposta não passou na análise automática do ${o.banco || 'Santander'}, mas o banco liberou a *análise manual* (feita por um analista), que é o caminho pra conseguir uma resposta. Pra encaminhar ao banco, preciso que você me envie por aqui:\n${lista.map((i) => `• ${i}`).join('\n')}\n\nAssim que eu receber, encaminho ao banco e te aviso o retorno. 😊`;
 }
 /** Financiamento (CREDIMORAR_FH — Fabio 14/11, Lucas Henrique: "o mesmo fluxo do HE para o FH, usa-se o mesmo sistema… a diferença é que agora tem Bradesco"): os bancos do Credimorar
@@ -818,11 +833,11 @@ async function santanderManualFlow(db: Db, row: { leadId: string; bank: string; 
   // Equipe: nota + push, uma vez por proposta.
   if (st.proposta !== numero || !st.teamAt) {
     const conteudo = fh.length
-      ? `🏦 ${banco} (Financiamento): a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente — Contatar consultor) e foi pra ANÁLISE MANUAL. ${abriu ? 'A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".' : 'A extensão NÃO conseguiu escolher "Análise manual" no portal: escolha no Credimorar.'}${itens.length ? ` Documentos pedidos ao cliente: ${itens.join('; ')}.` : ''} Com a documentação completa, a extensão anexa no portal, escreve o comentário de defesa e envia pra análise manual (IA ligada: sozinho; desligada: botão "Enviar documentos" no card) e eu aviso a Letícia.`
+      ? `🏦 ${banco} (Financiamento): a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente — Contatar consultor) e foi pra ANÁLISE MANUAL. ${abriu ? 'A extensão escolheu "Análise manual" no portal e NÃO clicou em "Enviar".' : 'A extensão NÃO conseguiu escolher "Análise manual" no portal: escolha no Credimorar.'}${itens.length ? ` Documentos que vou pedir ao cliente: ${itens.join('; ')}.` : ''} O pedido ao cliente sai DEPOIS que as outras propostas voltarem e o aviso das aprovadas sair (Fabio 18/11). Com a documentação completa, a extensão anexa no portal, escreve o comentário de defesa e envia pra análise manual (IA ligada: sozinho; desligada: botão "Enviar documentos" no card) e eu aviso a Letícia.`
       : `🏦 Santander: a proposta${numero !== 'sem-numero' ? ` ${numero}` : ''} NÃO passou na análise automática ("Enviar Documentos" / Ação pendente) e foi liberada pra ANÁLISE MANUAL. A extensão escolheu "Análise manual" no portal.${itens.length ? ` Documentos que o portal pede: ${itens.join('; ')}.` : ''} Com a documentação completa, a extensão anexa no portal, escreve o comentário de defesa e envia pra análise manual (IA ligada: sozinho; desligada: botão "Enviar documentos" no card) e eu aviso a Letícia.`;
     await db.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
-    sendPushToAccount(lead.accountId, { title: `🏦 ${banco}${fh.length ? ' (Financiamento)' : ''} pede análise manual`, body: `${lead.name}: não passou na análise automática — documentos pedidos ao cliente`, leadId: lead.id }).catch(() => {});
+    sendPushToAccount(lead.accountId, { title: `🏦 ${banco}${fh.length ? ' (Financiamento)' : ''} pede análise manual`, body: `${lead.name}: não passou na análise automática — ${fh.length ? 'documentos pedidos ao cliente depois do aviso das aprovadas' : 'documentos pedidos ao cliente'}`, leadId: lead.id }).catch(() => {});
     await salvar({ teamAt: new Date().toISOString() });
   }
   // Cliente (Fabio 13/11, Claudemir): conversa aberta → lista de documentos; janela de 24 h fechada → template de atualização + o pedido guardado pra quando ele responder.
