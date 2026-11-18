@@ -218,6 +218,8 @@ async function tratarCondicionada(accountId: string, leadId: string, nome: strin
   const parcela = Number(m[1].replace(/\./g, '').replace(',', '.'));
   const ant = cf._caixaResultado?.condicionada as Cf | undefined;
   if (ant?.proposta === proposta && ant?.parcela === parcela && ant?.status !== 'SO_EQUIPE') return; // a mesma resposta já foi tratada (consulta repetida)
+  // Fabio 18/11: "o CRM deve gravar a parcela condicionada no card do cliente também" — Primeira e Última parcela do card (Price: parcela fixa).
+  { const nao = await gravarParcelaNoCard(leadId, cf, parcela).catch((e) => e?.message || 'erro'); if (nao) await nota(`🟡 CAIXA condicionada: a parcela de ${brl(parcela)} NÃO foi gravada no card — ${nao}.`); }
   const av = (cf._caixaCadastro?.avaliacao || {}) as Cf;
   const he = /garantia|EGI/i.test(`${av.produto || ''} ${texto}`);
   const minimo = he ? 50_000 : 100_000;
@@ -261,6 +263,17 @@ async function tratarCondicionada(accountId: string, leadId: string, nome: strin
   await nota(`🟡 CAIXA condicionada (proposta ${proposta}): ${conta}. Refazendo na PRICE com essa prestação pra aprovar; o resultado sai na consulta.`);
 }
 
+/** Parcela da CAIXA nos campos do card (Primeira/Última parcela — Price, parcela fixa). Proposta de OUTRO banco escolhida no card (instituição) fica com as
+ *  parcelas dela: devolve o motivo e não grava. Só as duas chaves, por SQL (customfields-write-race). */
+async function gravarParcelaNoCard(leadId: string, cf: Cf, parcela: number): Promise<string | null> {
+  if (!(parcela > 0)) return 'parcela vazia';
+  const inst = String(cf.instituicao || '').trim();
+  if (inst && !/caixa/i.test(inst)) return `a proposta escolhida no card é do ${inst}, e as parcelas do card são as dela`;
+  const v = String(Math.round(parcela * 100) / 100);
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(jsonb_set(COALESCE("customFields", '{}'::jsonb), '{primeira_parcela}', to_jsonb(${v}::text), true), '{ultima_parcela}', to_jsonb(${v}::text), true) WHERE id = ${leadId}`;
+  return null;
+}
+
 /** Aprovada depois de refeita na PRICE com a prestação possível: guarda o valor liberado (simulação da Price com o prazo da tela, até o valor pedido) e o
  *  aviso ao cliente vai pra fila — só o valor, sem detalhes (Fabio 03/11). */
 async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: string, texto: string): Promise<void> {
@@ -282,6 +295,7 @@ async function tratarAprovadaNaPrice(accountId: string, leadId: string, nome: st
   // simulador do nosso site. Não é uma simulação oficial e também não precisa informar isso ao cliente." — o aviso vai pra fila (avisarCondicionadaCliente) com o
   // valor da conta do simulador do site, sem dizer que é estimativa.
   await salvar(leadId, (x) => { x.condicionada = { tipo: 'liberado', status: 'PENDING', proposta, parcela, valor, prazo, he, desejado: desejado || null, at: new Date().toISOString() }; });
+  if (parcela > 0) await gravarParcelaNoCard(leadId, cf, parcela).catch(() => null); // a mesma parcela, agora aprovada na Price (Fabio 18/11)
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ CAIXA APROVOU na PRICE com a prestação de ${brl(parcela)} (proposta ${proposta}). Pela conta do simulador do site (Price em ${prazo} meses, taxa da CAIXA${he ? ' e IOF' : ''}), libera uns ${brl(valor)}${desejado > valor ? ` — o pedido era ${brl(desejado)}` : ''}. O aviso de aprovação vai ao cliente com o PDF da simulação oficial da CAIXA e os números dela (Fabio 13/11); se a simulação não sair, vai só o resumo com os números do simulador do site (Fabio 11/11, sem dizer que é estimativa). Se ele disser que simulou no site e deu valor ou parcela maior, a IA não responde e você recebe um push.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `✅ ${nome}: CAIXA aprovou na PRICE`, body: `Uns ${brl(valor)} pelo simulador do site · aviso ao cliente na fila`, leadId }, lead?.userId ? [lead.userId] : undefined).catch(() => {});
