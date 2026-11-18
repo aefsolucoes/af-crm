@@ -23,6 +23,28 @@ const push = (accountId: string, title: string, body: string, leadId: string) =>
 };
 const brl = (v: unknown) => { const n = Number(String(v ?? '').replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.')); return n > 0 ? n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) : String(v || '—'); };
 
+/** O laudo em PDF lido pela IA (Fabio 18/11: "ou se deu alguma pendência — isso é essencial para prosseguir com a proposta"): conclusão, garantia e TODA pendência/
+ *  ressalva que o engenheiro apontou (documentação, área, habite-se/averbação, construção irregular, condicionantes). Só o que está escrito. null = não leu. */
+async function lerLaudoPdf(base64: string): Promise<{ garantiaAceita: boolean | null; conclusao: string; pendencias: string[]; ressalvas: string[]; observacoes: string } | null> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey || !base64 || base64.length > 27_000_000) return null;
+  const system = `Você lê um LAUDO DE AVALIAÇÃO DE IMÓVEL da CAIXA (engenharia credenciada) pra um correspondente bancário que vai seguir com a contratação do financiamento. Extraia SÓ o que está escrito. Responda SOMENTE com JSON:
+{"garantiaAceita":true|false|null,"conclusao":"<a conclusão do laudo, curta>","pendencias":["<cada PENDÊNCIA, exigência, condicionante ou impedimento que precisa ser resolvido antes da contratação — documental (matrícula/averbação/habite-se/área divergente), construção irregular/ampliação não averbada, ocupação, risco, etc.>"],"ressalvas":["<observações/ressalvas que não impedem, mas o colaborador deve saber>"],"observacoes":"<algo importante que não coube acima, ou vazio>"}
+"garantiaAceita" = o laudo diz que o imóvel é aceito/válido como garantia (true), recusado/inaceitável (false), ou não diz (null). Sem pendência escrita → "pendencias": [].`;
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({ model: 'claude-sonnet-5', max_tokens: 2500, system, messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } }, { type: 'text', text: 'Leia o laudo e responda o JSON.' }] }] }),
+  }).catch(() => null);
+  if (!res || !res.ok) return null;
+  try {
+    const data = (await res.json()) as { content: { type: string; text?: string }[] };
+    const j = JSON.parse((data.content?.find((b) => b.type === 'text')?.text || '').match(/\{[\s\S]*\}/)?.[0] || '');
+    const lista = (v: unknown) => (Array.isArray(v) ? v.map((x) => String(x || '').trim()).filter(Boolean).slice(0, 15) : []);
+    return { garantiaAceita: typeof j.garantiaAceita === 'boolean' ? j.garantiaAceita : null, conclusao: String(j.conclusao || '').slice(0, 600), pendencias: lista(j.pendencias), ressalvas: lista(j.ressalvas), observacoes: String(j.observacoes || '').slice(0, 600) };
+  } catch { return null; }
+}
+
 /** A equipe pede a conferência do laudo agora (botão/rota). */
 export async function pedirLaudoCaixa(accountId: string, leadId: string, por: string): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
@@ -59,7 +81,7 @@ export async function proximoLaudoCaixa(accountId: string): Promise<any | null> 
 }
 
 /** Retorno da extensão. */
-export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { etapa?: string; erro?: string; situacao?: string; laudoStatus?: string; os?: string; laudo?: Cf; pdf?: { nome?: string; base64?: string } }): Promise<void> {
+export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { etapa?: string; erro?: string; situacao?: string; laudoStatus?: string; os?: string; laudo?: Cf; pdf?: { nome?: string; base64?: string }; pendOs?: Cf | null; blocoPend?: string; dadosEng?: string; erroPdf?: string }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const cf = (l.customFields || {}) as Cf;
@@ -92,15 +114,26 @@ export async function gravarLaudoCaixa(accountId: string, leadId: string, b: { e
     } catch (e: any) { console.error('[Laudo CAIXA] Drive', e?.message); }
   }
   const garantia = /^s(im)?$/i.test(String(lau.garantia || '').trim()) ? true : /^n(ao|ão)?$/i.test(String(lau.garantia || '').trim()) ? false : null;
-  const status = garantia === false ? 'REPROVADO' : 'SALVO';
-  await salvarL(leadId, (x) => { x.status = status; x.situacao = b.situacao || null; x.laudoStatus = b.laudoStatus || null; x.os = b.os || x.os || null; x.laudo = { ...lau, garantiaValida: garantia }; x.driveId = driveId; x.pdfNome = b.pdf?.nome || null; x.fim = new Date().toISOString(); delete x.inicio; delete x.proximaEm; });
+  // Pendências (Fabio 18/11: "isso é essencial para prosseguir com a proposta"): as marcas da OS + o que o engenheiro escreveu no laudo (lido pela IA).
+  const sim = (v: unknown) => /^s(im)?\b/i.test(String(v || '').trim());
+  const po = (b.pendOs || {}) as Cf;
+  const leitura = pdfOk ? await lerLaudoPdf(String(b.pdf?.base64 || '')).catch(() => null) : null;
+  const marcas = [sim(po.existePendencia) || sim(lau.existePendencia) ? `a OS diz "Existe Pendência: Sim"${b.blocoPend ? ` — ${String(b.blocoPend).replace(/\s+/g, ' ').slice(0, 300)}` : ''}` : '', sim(po.validacaoCaixa) ? 'a OS "Necessita de Validação CAIXA"' : '', sim(po.revisaoLaudo) ? 'o laudo está em "Revisão do Laudo"' : '', /inv[áa]lid|vencid/i.test(String(b.laudoStatus || '')) ? `o laudo está "${b.laudoStatus}"` : ''].filter(Boolean);
+  const pendencias = [...marcas, ...(leitura?.pendencias || [])];
+  const garantiaFinal = garantia ?? leitura?.garantiaAceita ?? null;
+  const status = garantiaFinal === false ? 'REPROVADO' : pendencias.length ? 'PENDENCIA' : 'SALVO';
+  await salvarL(leadId, (x) => { x.status = status; x.situacao = b.situacao || null; x.laudoStatus = b.laudoStatus || null; x.os = b.os || x.os || null; x.laudo = { ...lau, garantiaValida: garantiaFinal }; x.pendencias = pendencias; x.ressalvas = leitura?.ressalvas || []; x.conclusao = leitura?.conclusao || null; x.pendOs = po; x.leuPdf = !!leitura; x.driveId = driveId; x.pdfNome = b.pdf?.nome || null; x.fim = new Date().toISOString(); delete x.inicio; delete x.proximaEm; });
   if (antes.status === status && antes.driveId) return; // já anotado
   const linhas = [
-    `• Imóvel válido como garantia (engenheiro): ${garantia === true ? '✅ SIM' : garantia === false ? '❌ NÃO' : `— (${lau.garantia || 'não li'})`}`,
+    `• Imóvel válido como garantia (engenheiro): ${garantiaFinal === true ? '✅ SIM' : garantiaFinal === false ? '❌ NÃO' : `— (${lau.garantia || 'não li'})`}`,
+    `• Pendências: ${pendencias.length ? `⚠️ ${pendencias.length}\n${pendencias.map((p) => `   – ${p}`).join('\n')}` : `✅ nenhuma (OS: pendência ${po.existePendencia || lau.existePendencia || '—'}, validação CAIXA ${po.validacaoCaixa || '—'}, revisão ${po.revisaoLaudo || '—'}${leitura ? '; laudo lido' : '; o PDF não foi lido'})`}`,
+    leitura?.ressalvas?.length ? `• Ressalvas do laudo:\n${leitura.ressalvas.map((r) => `   – ${r}`).join('\n')}` : '',
+    leitura?.conclusao ? `• Conclusão: ${leitura.conclusao}` : '',
     `• Valor atribuído: ${brl(lau.valorAtribuido)} · compra e venda: ${brl(lau.compraVenda)}`,
     `• Laudo de ${lau.dataPeca || '—'}, válido até ${lau.validade || '—'}${lau.prazo ? ` (${lau.prazo})` : ''}`,
     lau.empresa ? `• Engenharia: ${lau.empresa}` : '',
   ].filter(Boolean);
-  await note(leadId, `🏠 LAUDO DA CAIXA — OS${b.os ? ` ${b.os}` : ''} ${b.situacao || ''}${b.laudoStatus ? ` (laudo ${b.laudoStatus})` : ''}\n${linhas.join('\n')}\n${driveId ? '📄 PDF do laudo salvo na pasta IMOVEL do Drive (LAUDO VISTORIA CAIXA.pdf).' : pdfOk ? '⚠️ Não consegui salvar o PDF no Drive (o card tem a pasta?).' : '⚠️ A extensão não conseguiu baixar o PDF do laudo do SIOPI.'}`);
-  push(accountId, garantia === false ? `❌ ${l.name}: laudo NÃO aceitou a garantia` : `🏠 ${l.name}: laudo da CAIXA pronto`, garantia === false ? 'O engenheiro não validou o imóvel como garantia — confira o laudo.' : `Garantia ${garantia ? 'aceita' : '?'} · valor atribuído ${brl(lau.valorAtribuido)}`, leadId);
+  const veredito = status === 'SALVO' ? '✅ Laudo sem pendência — pode seguir com a proposta no SIOPI.' : status === 'PENDENCIA' ? '⚠️ Laudo COM PENDÊNCIA — resolver antes de seguir com a proposta.' : '❌ O engenheiro NÃO aceitou o imóvel como garantia — não seguir com a proposta.';
+  await note(leadId, `🏠 LAUDO DA CAIXA — OS${b.os ? ` ${b.os}` : ''} ${b.situacao || ''}${b.laudoStatus ? ` (laudo ${b.laudoStatus})` : ''}\n${veredito}\n${linhas.join('\n')}\n${driveId ? '📄 PDF do laudo salvo na pasta IMOVEL do Drive (LAUDO VISTORIA CAIXA.pdf).' : pdfOk ? '⚠️ Não consegui salvar o PDF no Drive (o card tem a pasta?).' : '⚠️ A extensão não conseguiu baixar o PDF do laudo do SIOPI.'}`);
+  push(accountId, status === 'REPROVADO' ? `❌ ${l.name}: laudo NÃO aceitou a garantia` : status === 'PENDENCIA' ? `⚠️ ${l.name}: laudo com pendência` : `🏠 ${l.name}: laudo sem pendência`, status === 'REPROVADO' ? 'O engenheiro não validou o imóvel como garantia — confira o laudo.' : status === 'PENDENCIA' ? pendencias.join(' · ') : `Garantia aceita · valor atribuído ${brl(lau.valorAtribuido)} — pode seguir com a proposta`, leadId);
 }
