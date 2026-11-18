@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi } from '../services/siopi-proposta.service';
+import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi } from '../services/siopi-proposta.service';
 
 // Proposta da contratação da CAIXA no SIOPI (Fabio 16/11 e 18/11) — usada pela extensão "SIOPI (A&F)".
 const router = Router();
@@ -21,6 +21,14 @@ router.get('/:leadId', async (req: AuthRequest, res: Response) => {
 router.post('/:leadId/pedir', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const erro = await pedirPropostaSiopi(req.user!.accountId, req.params.leadId, quem, req.user!.id).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+router.post('/:leadId/complementar', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const b = req.body || {};
+  const erro = await pedirComplementarSiopi(req.user!.accountId, req.params.leadId, quem, { primeiraAquisicao: b.primeiraAquisicao === 'S' || b.primeiraAquisicao === 'N' ? b.primeiraAquisicao : undefined, agendamento: b.agendamento, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, salvar: b.salvar === true }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
