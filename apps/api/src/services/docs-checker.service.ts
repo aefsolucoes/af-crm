@@ -606,7 +606,7 @@ Participantes:
 ${participants}
 
 BANCOS EM JOGO: ${bancosTxt}
-${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor.\n` : ''}Comprovação de renda: ${rendaNecessaria ? `necessária (${jogo.rendaMotivo})` : `NÃO é necessária (${jogo.rendaMotivo} — Fabio 14/11: renda só na CAIXA/BRB ou quando a aprovação do banco pede)`}
+${vendedoresOnus.length ? `VENDEDORES (proprietários atuais na certidão de ônus/matrícula — Fabio 11/11): ${vendedoresOnus.join('; ')}. Os documentos do VENDEDOR têm que ser DESSAS pessoas (de cada uma); documento pessoal de quem não é comprador nem está na ônus NÃO conta como do vendedor. COMPROVANTE DE RESIDÊNCIA do vendedor NÃO é cobrado (Fabio 18/11): do vendedor bastam telefone, e-mail e endereço INFORMADOS (sem endereço, vale o do imóvel vendido); se ele mandar o comprovante, vale sem prazo de validade.\n` : ''}Comprovação de renda: ${rendaNecessaria ? `necessária (${jogo.rendaMotivo})` : `NÃO é necessária (${jogo.rendaMotivo} — Fabio 14/11: renda só na CAIXA/BRB ou quando a aprovação do banco pede)`}
 CPF (Fabio 14/11, regra geral): o número do CPF JÁ ESTÁ num documento de identificação recebido (CNH, CIN ou RG/carteira com o CPF impresso) de: ${cpfJa.length ? cpfJa.join('; ') : 'ninguém ainda'} — NUNCA coloque o CPF dessas pessoas em "faltando"; o CPF à parte só é cobrado de quem não tem o número em nenhum documento recebido.
 Documentos da PREFEITURA recebidos que MOSTRAM as metragens do imóvel: ${comMetragens.length ? comMetragens.join(', ') : 'nenhum'}
 ${precisaDescritivo ? `Imóvel com FINANCIAMENTO ATIVO: o banco pede o DESCRITIVO DA PARCELA (PDF do app do banco do financiamento, com as últimas prestações) — ${temDescritivo ? 'JÁ RECEBIDO: não cobre.' : `NÃO recebido: ponha em "faltando" o item "${ITEM_DESCRITIVO}".`}
@@ -671,7 +671,7 @@ ${history}`;
     const nomeBonito = (v: string) => v.toLowerCase().replace(/(^|\s)(\p{L})/gu, (_m, e, l) => e + l.toUpperCase()).replace(/\s(Da|De|Do|Das|Dos|E)(?=\s)/g, (m) => m.toLowerCase());
     for (const v of semDoc) {
       if ((verdict.faltando || []).some((f) => /VENDEDOR/.test(semAc(f)) && semAc(f).includes(semAc(v).split(' ')[0]))) continue; // o modelo já cobrou essa pessoa
-      verdict.faltando = [...(verdict.faltando || []), `Documentos do vendedor ${nomeBonito(v)} (está na certidão de ônus): documento de identificação (RG ou CNH), comprovante de residência e certidão de estado civil`];
+      verdict.faltando = [...(verdict.faltando || []), `Documentos do vendedor ${nomeBonito(v)} (está na certidão de ônus): documento de identificação (RG ou CNH) e certidão de estado civil`];
     }
     if (semDoc.length) verdict.complete = false;
   }

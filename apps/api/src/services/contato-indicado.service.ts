@@ -112,7 +112,8 @@ export async function listasDoPedido(accountId: string): Promise<ListasPedido> {
   const vendBase = await itensDaResposta(accountId, 'Documentos vendedor do imóvel');
   return {
     imovel: imovelBase.length ? imovelBase : ['Certidão de ônus', 'CND de IPTU'],
-    vendedor: [...(vendBase.length ? vendBase : ['Documento de identificação', 'Comprovante de residência', 'Estado civil', 'Conta para crédito']), 'E-mail e telefone'],
+    // Comprovante de residência do vendedor não se pede (Fabio 18/11): o endereço dele é o do imóvel vendido.
+    vendedor: [...(vendBase.length ? vendBase : ['Documento de identificação', 'Estado civil', 'Conta para crédito']).filter((x) => !/resid[eê]ncia|comprovante de endere/i.test(x)), 'E-mail, telefone e endereço'],
   };
 }
 
@@ -143,6 +144,7 @@ export function itemNoCard(item: string, cf: Cf, compradores: string[]): boolean
   if (/IPTU/.test(i)) return arqs.some((a) => /IPTU/.test(a.tipo));
   if (/ESCRITURA/.test(i)) return arqs.some((a) => /ESCRITURA/.test(a.tipo));
   if (/IDENTIFICA|\bRG\b|\bCNH\b/.test(i)) return doVendedor(ID_RX, true);
+  if (/E-?MAIL|TELEFONE/.test(i)) return null; // "E-mail, telefone e endereço" do vendedor: a conversa decide (informado, sem comprovante — Fabio 18/11)
   if (/RESIDENCIA|ENDERECO/.test(i)) return doVendedor(RESID_RX, false);
   if (/ESTADO CIVIL|CASAMENTO|NASCIMENTO/.test(i)) return doVendedor(CIVIL_RX, true);
   return null;

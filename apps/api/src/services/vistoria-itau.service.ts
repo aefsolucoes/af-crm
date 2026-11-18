@@ -167,6 +167,8 @@ export async function montarDadosItau(accountId: string, leadId: string): Promis
   if (!pessoasV.length) {
     try { pessoasV = (await (require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).lerVendedores(accountId, leadId)) || []; } catch { pessoasV = []; }
   }
+  // Vendedor sem comprovante de residência = endereço do imóvel vendido (Fabio 18/11).
+  pessoasV = await (require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).vendedoresComEndereco(leadId, cf, pessoasV).catch(() => pessoasV);
   const dv = (cf._dadosVistoriaFh || {}) as Cf;
   const vendedores: VendedorItau[] = [];
   const cpfsConjuge = new Set(pessoasV.map((p) => dig(p.conjuge?.cpf)).filter(Boolean));
@@ -183,7 +185,7 @@ export async function montarDadosItau(accountId: string, leadId: string): Promis
   const daOnus = (require('./received-docs.service') as typeof import('./received-docs.service')).vendedoresDoImovel(cf);
   const { mesmaPessoa } = require('./received-docs.service') as typeof import('./received-docs.service');
   const semDocOnus = daOnus.filter((n) => !pessoasV.some((p) => mesmaPessoa(p.nome, n)));
-  if (!vendedores.length || semDocOnus.length) faltando.push(`documentos do vendedor${semDocOnus.length ? ` ${semDocOnus.join(' e ')} (está na certidão de ônus)` : ''} (RG/CNH, certidão de estado civil e comprovante de residência na pasta VENDEDOR)`);
+  if (!vendedores.length || semDocOnus.length) faltando.push(`documentos do vendedor${semDocOnus.length ? ` ${semDocOnus.join(' e ')} (está na certidão de ônus)` : ''} (RG/CNH e certidão de estado civil na pasta VENDEDOR)`);
   vendedores.forEach((v, i) => {
     faltando.push(...faltasPessoa(v, vendedores.length > 1 ? `do ${i + 1}º vendedor` : 'do vendedor'));
     if (v.conjuge) faltando.push(...faltasPessoa(v.conjuge, 'do cônjuge do vendedor', false));

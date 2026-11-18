@@ -1130,8 +1130,8 @@ async function docsBancoEscolhido(accountId: string, cf: Cf, banco: string): Pro
 
 async function blocoImovelVendedor(accountId: string): Promise<string> {
   const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
-  const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
-  return `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}\n\n*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone`;
+  const vendedor = semComprovanteVendedor(itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Estado civil\n• Conta para crédito'));
+  return `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}\n\n*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail, telefone e endereço`;
 }
 
 /** Fecho da lista de documentos do Financiamento (Fabio 14/11): a vistoria não espera o vendedor. */
@@ -1154,10 +1154,10 @@ export async function pedidoDocsImovelVendedor(accountId: string, cf: Cf): Promi
   }
   if (temImovel && temVendedor) return '';
   const imovel = itens((await template(accountId, 'Documentos imóvel para vistoria')) || '• Certidão de ônus\n• CND de IPTU');
-  const vendedor = itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Comprovante de residência\n• Estado civil\n• Conta para crédito');
+  const vendedor = semComprovanteVendedor(itens((await template(accountId, 'Documentos vendedor do imóvel')) || '• Documento de identificação\n• Estado civil\n• Conta para crédito'));
   const partes = [
     !temImovel ? `*Imóvel:*\n${imovel.map((x) => `• ${x}`).join('\n')}` : '',
-    !temVendedor ? `*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail e telefone` : '',
+    !temVendedor ? `*Vendedor:*\n${vendedor.map((x) => `• ${x}`).join('\n')}\n• E-mail, telefone e endereço` : '',
   ].filter(Boolean);
   const abre = !temImovel ? 'Pra eu solicitar a vistoria do imóvel, preciso da documentação abaixo:' : 'Pra contratação, que vem depois da vistoria, vou precisar da documentação do vendedor:';
   return `${abre}\n\n${partes.join('\n\n')}${!temImovel ? `\n\n${temVendedor ? 'Assim que chegar a documentação do imóvel, já peço a vistoria 🏠' : FECHO_VISTORIA_SEM_VENDEDOR}` : ''}`;
@@ -1172,6 +1172,8 @@ export function perfilTemplate(cf: Cf): string {
   return 'Documentos comprador setor privado';
 }
 
+/** Comprovante de residência do VENDEDOR não se pede (Fabio 18/11): o endereço dele é o do imóvel vendido — tira o item da resposta rápida "Documentos vendedor do imóvel". */
+const semComprovanteVendedor = (l: string[]) => l.filter((x) => !/resid[eê]ncia|comprovante de endere/i.test(x));
 const itens = (body: string) => body.split('\n').map((l) => l.trim()).filter((l) => /^[•\-–]/.test(l)).map((l) => l.replace(/^[•\-–]\s*/, '').trim()).filter((l) => l && !/^(e-?mail|telefone):?$/i.test(l));
 
 async function template(accountId: string, nome: string): Promise<string | null> {

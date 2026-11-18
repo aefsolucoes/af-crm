@@ -419,6 +419,8 @@ export async function processVistoriaSantanderFh(accountId: string, leadId: stri
     numero: endImovel?.endereco.numero || im.numero, complemento: endImovel?.endereco.complemento || im.complemento, bairro: endImovel?.endereco.bairro || im.bairro,
     cidade: endImovel?.cidade || im.cidade, uf: endImovel?.uf || im.uf, tipo: String(fresh.imovel_tipo || im.tipo || ''),
   };
+  // Vendedor sem comprovante de residência = endereço do imóvel vendido (Fabio 18/11).
+  vendedores = await (require('./ficha-cadastral.service') as typeof import('./ficha-cadastral.service')).vendedoresComEndereco(leadId, fresh, vendedores, imovel);
   const ficha = dadosFichaFh({ compradores: compradoresDe(fresh, lead.name).map((c) => ({ ...c, sexo: sexoParaFormulario(fresh, c.nome, c.sexo) || c.sexo })), // "Gênero" do card (Fabio 06/11)
     vendedores, conta: dados.conta || null, contaDebito: dados.contaComprador || null, imovel, contato, usaFgts: /^(s|sim|true|1)/i.test(String(fresh.usa_fgts ?? '').trim()) });
   const docx = await preencherFichaFh(ficha.ops);

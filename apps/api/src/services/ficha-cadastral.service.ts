@@ -765,6 +765,9 @@ export async function lerVendedores(accountId: string, leadId: string): Promise<
     if (typeof a === 'object' && !Array.isArray(a) && b && typeof b === 'object') { const o = { ...a }; for (const k of Object.keys(b)) o[k] = funde(a[k], b[k]); return o; }
     return a;
   };
+  // Endereço do vendedor (Fabio 18/11): o do COMPROVANTE DE RESIDÊNCIA, se mandaram; senão o que ele INFORMOU (print/ficha com telefone, e-mail e endereço);
+  // senão o do imóvel vendido (`vendedoresComEndereco`). O comprovante entra primeiro na fusão (vale o 1º valor preenchido).
+  leituras.sort((a, b) => Number(String(b.tipo || '').toUpperCase() === 'COMPROVANTE DE RESIDENCIA') - Number(String(a.tipo || '').toUpperCase() === 'COMPROVANTE DE RESIDENCIA'));
   for (const l of leituras) {
     for (const p of l.pessoas) {
       const chave = String(p.cpf || '').replace(/\D/g, '') || norm(String(p.nome || ''));
@@ -778,4 +781,20 @@ export async function lerVendedores(accountId: string, leadId: string): Promise<
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaVendedor: { at: new Date().toISOString(), pessoas, arquivos: arquivos.map((f) => f.name) } } as any } });
   return pessoas;
+}
+
+/** Vendedor sem endereço (nem comprovante de residência nem endereço informado): vale o do IMÓVEL vendido (Fabio 18/11: "o endereço pode sempre colocar o endereço do imóvel
+ *  que está sendo vendido, a não ser que tenham encaminhado o comprovante de residência"; "só iremos pegar telefone, e-mail e endereço"). `imovel` = endereço já montado por quem chama; sem ele, o do card/proposta (`enderecoDoImovel`). */
+export async function vendedoresComEndereco<T extends Record<string, any>>(leadId: string, cf: Record<string, any>, pessoas: T[],
+  imovel?: { cep?: string | null; logradouro?: string | null; numero?: string | null; complemento?: string | null; bairro?: string | null; cidade?: string | null; uf?: string | null } | null): Promise<T[]> {
+  const semEnd = (p: T) => !String(p?.endereco?.cep || '').replace(/\D/g, '') && !String(p?.endereco?.logradouro || '').trim();
+  if (!pessoas.some(semEnd)) return pessoas;
+  let end = imovel && (imovel.cep || imovel.logradouro) ? imovel : null;
+  if (!end) {
+    const { enderecoDoImovel } = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+    const im = await enderecoDoImovel(leadId, cf).catch(() => null);
+    if (im) end = { cep: im.endereco.cep, logradouro: `${im.endereco.tipoLogradouro || ''} ${im.endereco.logradouro || ''}`.trim(), numero: im.endereco.numero, complemento: im.endereco.complemento || null, bairro: im.endereco.bairro || null, cidade: im.cidade, uf: im.uf };
+  }
+  if (!end) return pessoas;
+  return pessoas.map((p) => (semEnd(p) ? { ...p, endereco: { ...end, doImovel: true } } : p));
 }
