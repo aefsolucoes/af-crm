@@ -436,7 +436,7 @@ export function propostaDoCard(cf: Record<string, any>): { bank: string; numero:
   return hits.length === 1 ? { bank: hits[0], numero } : null;
 }
 
-/** Terreno no Home Equity só roda no Santander pelo Credimorar (Fabio 08/11: "terreno a gente só roda na Credimorar pelo Santander… não precisa rodar em todos"). Lê o "Tipo do imóvel"
+/** Terreno no Home Equity roda só na Creditas e no Santander pelo Credimorar (Fabio 18/11: "HE somente Creditas e Santander… isso é para terreno"; antes, 08/11, era só o Santander). Lê o "Tipo do imóvel"
  *  da proposta (o mesmo que as extensões usam) e, sem ele, o do card. */
 export async function imovelTerreno(db: Db, leadId: string, cf: Record<string, any>): Promise<boolean> {
   const prop = await db.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Tipo do im', mode: 'insensitive' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
@@ -536,11 +536,11 @@ export async function createRequests(db: Db, p: { accountId: string; userId?: st
           continue;
         }
       }
-      // Terreno: só o Santander (Fabio 08/11). Inter e Creditas nem abrem — "NÃO RODEI" na hora, e o resultado do Santander já vai pro cliente sem esperar os outros dois.
-      if ((bank === 'INTER' || bank === 'CREDITAS') && kind === 'RUN' && !p.dryRun && (await imovelTerreno(db, l.id, cfPedido).catch(() => false))) {
-        const detail = 'NÃO RODEI: terreno a gente só roda no Santander (Credimorar).';
+      // Terreno: só Creditas e Santander (Fabio 18/11; de 08/11 a 18/11 era só o Santander). O Inter nem abre — "NÃO RODEI" na hora, e o aviso não espera por ele.
+      if (bank === 'INTER' && kind === 'RUN' && !p.dryRun && (await imovelTerreno(db, l.id, cfPedido).catch(() => false))) {
+        const detail = 'NÃO RODEI: terreno no Home Equity a gente roda só na Creditas e no Santander (Credimorar).';
         await db.creditAnalysis.create({ data: { accountId: p.accountId, leadId: l.id, bank, status: 'FAILED', kind, requestedValue: pedidoNaRodada, detail, dryRun: false, source: p.source || 'EXTENSION', requestedById: p.userId || null, finishedAt: new Date() } });
-        const conteudo = '🚫 Terreno: só roda no Santander (Credimorar) — Inter e Creditas ficam de fora.';
+        const conteudo = '🚫 Terreno: roda só na Creditas e no Santander (Credimorar) — o Inter fica de fora.';
         const ja = await db.note.findFirst({ where: { leadId: l.id, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
         if (!ja) await db.note.create({ data: { leadId: l.id, type: 'COMMENT', content: conteudo } }).catch(() => {});
         created++;
