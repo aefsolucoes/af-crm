@@ -157,7 +157,9 @@ export async function pedirComplementarSiopi(accountId: string, leadId: string, 
   const cv = d.compraVenda || num(cf.valor_imovel);
   if (!(fin > 0) || !(cv > 0)) return 'Falta o valor do financiamento ou do imóvel no card';
   const br = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  const ag = d.agendamento && /^\d{2}\/\d{2}\/\d{4}$/.test(d.agendamento) ? d.agendamento : new Date(Date.now() + 15 * 86400_000).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  // Assinatura: o Fabio pediu 15 dias, mas o SIOPI só aceita até 10 ("DATA DE AGENDAMENTO DA ASSINATURA SUPERA LIMITE DE 10 DIAS", 18/11) → o último dia útil em até 10 dias.
+  const limite10 = (): string => { const x = new Date(Date.now() + 10 * 86400_000); const dow = () => new Date(x.toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' })).getDay(); while ([0, 6].includes(dow())) x.setTime(x.getTime() - 86400_000); return x.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }); };
+  const ag = d.agendamento && /^\d{2}\/\d{2}\/\d{4}$/.test(d.agendamento) ? d.agendamento : limite10();
   // 1º encargo = 30 dias depois da assinatura (Fabio 18/11); unidade de cobrança = agência + dígito pela lupa (padrão: 3444 Planaltina de Goiás, SR 2639 Brasília Norte/DF);
   // UF/município do imóvel = os do laudo/imóvel (DF → Brasília); situações especiais 117, 132 e 791 (Fabio 18/11).
   const [dd0, mm0, aa0] = ag.split('/').map(Number);
