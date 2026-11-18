@@ -1908,6 +1908,8 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
         }
       }
     } catch (e: any) { console.error('[IA] conferência por "já enviei" falhou:', e?.message); }
+    // Código do SMS da CAIXA (desbloqueio do outro correspondente, Fabio 18/11): o número que o cliente manda depois do "Enviar Token" vai pro card + push pra equipe.
+    await (require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service')).guardarCodigoDoCliente(accountId, leadId, textToAnswer).catch(() => false);
     const genResult = await generateAiAutoReply(accountId, leadId, textToAnswer, images, retomada ? { retomada } : {});
     if (!genResult) return;
     // Chegou outra mensagem enquanto a resposta era gerada (leva alguns

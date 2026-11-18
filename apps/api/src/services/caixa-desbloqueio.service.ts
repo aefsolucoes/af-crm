@@ -86,7 +86,7 @@ export async function gravarDesbloqueio(accountId: string, leadId: string, body:
     d.status = status;
     d.atualizadoEm = new Date().toISOString();
     if (telefones.length) d.telefones = telefones;
-    if (/^TOKEN ENVIADO/.test(status)) d.enviadoEm = d.atualizadoEm;
+    if (/^TOKEN ENVIADO/.test(status)) { d.enviadoEm = d.atualizadoEm; delete d.tokenRecebido; delete d.tokenRecebidoEm; } // código novo: o anterior não vale mais
     if (body.final !== false) d.fim = d.atualizadoEm;
     d.historico = [...(d.historico || []), { at: d.atualizadoEm, status }].slice(-12);
   });
@@ -108,7 +108,10 @@ export function aiOutroCorrespondenteLinha(cf: Cf, temOutro: boolean): string | 
   const cel = final ? `o celular dele cadastrado na CAIXA (final ${final})` : 'o celular dele cadastrado na CAIXA';
   const enviado = d.enviadoEm ? new Date(String(d.enviadoEm)) : null;
   const hora = enviado ? enviado.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' }) : '';
-  const estado = enviado
+  const recebido = d.tokenRecebidoEm ? new Date(String(d.tokenRecebidoEm)) : null;
+  const estado = recebido
+    ? `O cliente JÁ MANDOU o código do SMS às ${recebido.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' })}: agradeça, diga que a gente já vai liberar o cadastro aqui e seguir com a CAIXA, não peça o código de novo e não repita o número.`
+    : enviado
     ? `O CÓDIGO JÁ FOI ENVIADO pela CAIXA por SMS pra ${cel} às ${hora}. Peça que ele mande o código aqui assim que chegar (vale por pouco tempo). Se ele disser que não chegou, pergunte à equipe — não prometa reenvio.`
     : `Se ainda não perguntou (veja o histórico), na sua PRÓXIMA resposta — depois de responder o que ele disse — pergunte se ele se lembra dessa análise/aprovação feita em outro correspondente e se pode seguir por aqui com a gente; explique em uma frase que, pra isso, a CAIXA manda um código por SMS pra ${cel} e ele repassa o código aqui. Se ele CONCORDAR em seguir com a gente (agora, respondendo a essa pergunta), ponha "caixaToken": true no JSON e diga que o código chega em instantes por SMS e que é só mandar aqui. Se ele já respondeu, não pergunte de novo.`;
   return `CAIXA — CLIENTE EM OUTRO CORRESPONDENTE (Fabio 18/11): a consulta da CAIXA mostra uma avaliação de crédito/proposta dele feita por OUTRO correspondente. Pra seguir com a gente, essa análise antiga é cancelada A PEDIDO DELE: a CAIXA manda um código por SMS e, com o código, a gente libera o cadastro aqui. ${estado} Não diga o nome nem o número do outro correspondente, não use as palavras "convênio" ou "token" (diga "código por SMS da CAIXA"), não peça documento por causa disso. Se ele não quiser cancelar, disser que não fez análise em outro lugar ou tiver dúvida que você não sabe responder, pergunte à equipe.`;
@@ -146,4 +149,27 @@ export async function perguntarAoCliente(accountId: string, leadId: string, por:
   await salvarDesbloqueio(leadId, (x) => { x.perguntadoEm = new Date().toISOString(); x.perguntadoPor = por; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📨 CAIXA — outro correspondente (${por}): perguntei ao cliente se ele se lembra da análise feita em outro correspondente e se pode seguir com a gente, explicando o código por SMS${final ? ` (celular final ${final})` : ''}. O "sim" dele faz a extensão clicar "Enviar Token".` } }).catch(() => {});
   return null;
+}
+
+/** Código do SMS no texto do cliente: um número só, de 4 a 8 dígitos (espaços entre os dígitos contam como o mesmo número). Pura. */
+export function codigoNoTexto(texto: string): string | null {
+  const t = String(texto || '');
+  if (t.length > 120) return null;
+  const junto = t.replace(/(\d)[\s.\-]+(?=\d)/g, '$1');
+  const achados = junto.match(/(?<!\d)\d{4,8}(?!\d)/g) || [];
+  return achados.length === 1 ? achados[0] : null;
+}
+
+/** Depois do "Enviar Token" (até 60 min): o número que o cliente manda é o código da CAIXA → card + anotação + push pra equipe digitar na tela do token. */
+export async function guardarCodigoDoCliente(accountId: string, leadId: string, texto: string): Promise<boolean> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+  const d = (((l?.customFields || {}) as Cf)._caixaDesbloqueio || {}) as Cf;
+  if (!d.enviadoEm || Date.now() - Date.parse(d.enviadoEm) > 60 * 60_000) return false;
+  const codigo = codigoNoTexto(texto);
+  if (!codigo || d.tokenRecebido === codigo) return false;
+  await salvarDesbloqueio(leadId, (x) => { x.tokenRecebido = codigo; x.tokenRecebidoEm = new Date().toISOString(); });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔑 CAIXA — o cliente mandou o código do SMS: ${codigo}. Digite na tela do token do Caixa Aqui pra liberar o cadastro (cancela a análise do outro correspondente).` } }).catch(() => {});
+  const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
+  sendPushToAccount(accountId, { title: `🔑 ${l!.name}: código da CAIXA`, body: `Código ${codigo} — digite na tela do token do Caixa Aqui.`, leadId }).catch(() => {});
+  return true;
 }
