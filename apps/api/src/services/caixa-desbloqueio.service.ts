@@ -86,13 +86,17 @@ export async function gravarDesbloqueio(accountId: string, leadId: string, body:
     d.status = status;
     d.atualizadoEm = new Date().toISOString();
     if (telefones.length) d.telefones = telefones;
-    if (/^TOKEN ENVIADO/.test(status)) { d.enviadoEm = d.atualizadoEm; delete d.tokenRecebido; delete d.tokenRecebidoEm; } // código novo: o anterior não vale mais
+    if (/^TOKEN ENVIADO/.test(status)) { d.enviadoEm = d.atualizadoEm; for (const k of ['tokenRecebido', 'tokenRecebidoEm', 'tokenEntregue', 'tokenEntregueEm', 'avisoTokenEm']) delete d[k]; } // código novo: o anterior não vale mais
+    if (/^LIBERADO/.test(status)) d.liberadoEm = d.atualizadoEm;
     if (body.final !== false) d.fim = d.atualizadoEm;
     d.historico = [...(d.historico || []), { at: d.atualizadoEm, status }].slice(-12);
   });
   const campos = (body.campos || []).slice(0, 30).join(' · ');
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔓 CAIXA — desbloqueio do cadastro: ${status}${telefones.length ? `\nCelular(es) da CAIXA pro token: ${telefones.join('; ')}` : ''}\n\nTela do Caixa Aqui:\n${texto}${campos ? `\n\nBotões/campos: ${mascaraCpf(campos)}` : ''}` } }).catch(() => {});
-  if (/^(TOKEN ENVIADO|LIBERADO|SEM OUTRO CONVÊNIO|PAROU|ERRO)/.test(status)) {
+  if (/^TOKEN ENVIADO/.test(status)) await avisarClienteDoCodigo(accountId, leadId).catch((e) => console.error('[CAIXA desbloqueio] aviso do código:', e?.message));
+  // Fabio 18/11: "e cancela, roda o cadastro pelo nosso e faz o crédito" — liberado → cadastro pela ficha na fila (a análise de crédito continua só com o OK da equipe).
+  if (/^LIBERADO/.test(status)) await cadastroDepoisDeLiberar(accountId, leadId).catch((e) => console.error('[CAIXA desbloqueio] cadastro depois de liberar:', e?.message));
+  if (/^(TOKEN ENVIADO|TOKEN RECUSADO|TOKEN DIGITADO|LIBERADO|SEM OUTRO CONVÊNIO|PAROU|ERRO)/.test(status)) {
     const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
     sendPushToAccount(accountId, { title: `🔓 ${l.name}: desbloqueio CAIXA`, body: `${status}${telefones.length ? ` — ${telefones[0]}` : ''}`.slice(0, 180), leadId }).catch(() => {});
   }
@@ -113,7 +117,7 @@ export function aiOutroCorrespondenteLinha(cf: Cf, temOutro: boolean): string | 
     ? `O cliente JÁ MANDOU o código do SMS às ${recebido.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' })}: agradeça, diga que a gente já vai liberar o cadastro aqui e seguir com a CAIXA, não peça o código de novo e não repita o número.`
     : enviado
     ? `O CÓDIGO JÁ FOI ENVIADO pela CAIXA por SMS pra ${cel} às ${hora}. Peça que ele mande o código aqui assim que chegar (vale por pouco tempo). Se ele disser que não chegou, pergunte à equipe — não prometa reenvio.`
-    : `Se ainda não perguntou (veja o histórico), na sua PRÓXIMA resposta — depois de responder o que ele disse — pergunte se ele se lembra dessa análise/aprovação feita em outro correspondente e se pode seguir por aqui com a gente; explique em uma frase que, pra isso, a CAIXA manda um código por SMS pra ${cel} e ele repassa o código aqui. Se ele CONCORDAR em seguir com a gente (agora, respondendo a essa pergunta), ponha "caixaToken": true no JSON e diga que o código chega em instantes por SMS e que é só mandar aqui. Se ele já respondeu, não pergunte de novo.`;
+    : `Se ainda não perguntou (veja o histórico), na sua PRÓXIMA resposta — depois de responder o que ele disse — pergunte se ele se lembra dessa análise/aprovação feita em outro correspondente e se pode seguir por aqui com a gente; explique em uma frase que, pra isso, a CAIXA manda um código por SMS pra ${cel} e ele repassa o código aqui. Se ele CONCORDAR em seguir com a gente (agora, respondendo a essa pergunta), ponha "caixaToken": true no JSON e responda curto que você vai pedir o código à CAIXA agora (o aviso de que o SMS saiu vai logo em seguida, pelo sistema). Se ele já respondeu, não pergunte de novo.`;
   return `CAIXA — CLIENTE EM OUTRO CORRESPONDENTE (Fabio 18/11): a consulta da CAIXA mostra uma avaliação de crédito/proposta dele feita por OUTRO correspondente. Pra seguir com a gente, essa análise antiga é cancelada A PEDIDO DELE: a CAIXA manda um código por SMS e, com o código, a gente libera o cadastro aqui. ${estado} Não diga o nome nem o número do outro correspondente, não use as palavras "convênio" ou "token" (diga "código por SMS da CAIXA"), não peça documento por causa disso. Se ele não quiser cancelar, disser que não fez análise em outro lugar ou tiver dúvida que você não sabe responder, pergunte à equipe.`;
 }
 
@@ -172,4 +176,44 @@ export async function guardarCodigoDoCliente(accountId: string, leadId: string, 
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `🔑 ${l!.name}: código da CAIXA`, body: `Código ${codigo} — digite na tela do token do Caixa Aqui.`, leadId }).catch(() => {});
   return true;
+}
+
+/** Fabio 18/11: "ele encaminha o token, avisa o cliente sobre o token, ele informa o token, a extensão digita o token". Assim que a CAIXA envia o SMS, o cliente é
+ *  avisado (conversa aberta; uma vez por envio). */
+async function avisarClienteDoCodigo(accountId: string, leadId: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true, contact: { select: { phone: true, whatsappPhone: true } } } });
+  const cf = (l?.customFields || {}) as Cf;
+  const d = (cf._caixaDesbloqueio || {}) as Cf;
+  if (!l || d.avisoTokenEm || cf._autoPaused) return;
+  const final = finalDoToken(d) || finaisDoCard(cf, [l.contact?.whatsappPhone, l.contact?.phone])[0] || null;
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || '';
+  const texto = `Pronto${nome ? `, ${nome}` : ''}! A CAIXA acabou de mandar o código por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda o código aqui assim que chegar (ele vale por pouco tempo).`;
+  const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!(await whatsappWindowOpen(leadId))) {
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — o código foi enviado por SMS, mas a conversa está fechada: avise o cliente. Texto pronto:\n“${texto}”` } }).catch(() => {});
+    return;
+  }
+  const msg = require('./message.service') as typeof import('./message.service');
+  const env = await msg.sendOutboundWhatsApp({ accountId, leadId, content: texto });
+  if (!env.success) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — não consegui avisar o cliente do código (${env.error || 'erro'}). Texto pronto:\n“${texto}”` } }).catch(() => {}); return; }
+  await salvarDesbloqueio(leadId, (x) => { x.avisoTokenEm = new Date().toISOString(); });
+}
+
+/** A extensão (parada na tela do token) pergunta se o código chegou: entrega uma vez por código (até 60 min do envio). */
+export async function entregarCodigo(accountId: string, leadId: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  const d = (((l?.customFields || {}) as Cf)._caixaDesbloqueio || {}) as Cf;
+  if (!d.tokenRecebido || d.tokenEntregue === d.tokenRecebido) return null;
+  if (!d.enviadoEm || Date.now() - Date.parse(d.enviadoEm) > 60 * 60_000) return null;
+  await salvarDesbloqueio(leadId, (x) => { x.tokenEntregue = d.tokenRecebido; x.tokenEntregueEm = new Date().toISOString(); });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔑 CAIXA — a extensão pegou o código ${d.tokenRecebido} e vai digitar na tela do token.` } }).catch(() => {});
+  return String(d.tokenRecebido);
+}
+
+async function cadastroDepoisDeLiberar(accountId: string, leadId: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } });
+  const { cadastroCaixaPeloCard } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  const r = await cadastroCaixaPeloCard(accountId, leadId, { id: l?.userId || '', nome: 'CRM (cadastro liberado do outro correspondente)' }, undefined, { analise: false });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: 'erro' in r ? `⚠️ CAIXA — cadastro liberado do outro correspondente, mas o cadastro pelo nosso convênio não foi pra fila: ${r.erro}` : `🏦 CAIXA — cadastro liberado do outro correspondente: ${r.mensagem} A análise de crédito sai só com o OK da equipe (botão "Análise CAIXA").` } }).catch(() => {});
 }

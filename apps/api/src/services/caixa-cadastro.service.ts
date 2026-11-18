@@ -281,7 +281,12 @@ export function outrosCorrespondentes(textos: string[]): { codigo: string; tipo:
   return out;
 }
 /** O que a consulta ATUAL do card mostra em outro correspondente (lido do texto: vale também pras consultas de antes desta regra). Pura. */
-export const outroCcaDe = (cf: Cf) => outrosCorrespondentes(Object.values(((cf?._caixaCadastro || {}) as Cf).consultas || {}).map((x: any) => String(x?.texto || '')));
+// Cadastro liberado pelo código do cliente DEPOIS da consulta (caixa-desbloqueio, Fabio 18/11): a análise do outro correspondente foi cancelada — não segura mais.
+export const outroCcaDe = (cf: Cf) => {
+  const lib = String((cf?._caixaDesbloqueio as Cf | undefined)?.liberadoEm || '');
+  if (lib && lib > String(((cf?._caixaCadastro || {}) as Cf).consultadoEm || '')) return [];
+  return outrosCorrespondentes(Object.values(((cf?._caixaCadastro || {}) as Cf).consultas || {}).map((x: any) => String(x?.texto || '')));
+};
 const descreveOutroCca = (cods: { codigo: string; tipo: string }[]) => cods.map((x) => `${x.tipo} (convênio ${x.codigo})`).join('; ');
 async function avisarOutroCorrespondente(accountId: string, leadId: string, nome: string, c: Cf, todos: boolean): Promise<void> {
   const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')));

@@ -5,7 +5,7 @@ import { requirePermission } from '../middleware/permission';
 import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResultado, informarEstadoCivil, informarDadosRenda, prontosParaCadastro, conferirCadastro, pedirCadastroParticipantes, gravarCadastro, salvarFormularioCaixa, pedirAvaliacao, gravarAvaliacao, marcarConferido, fazerCadastroManual, painelCaixa, semCadastroCaixa, AVALIACAO_APOS_CONFERENCIA, estadoCaixaDoCard, cadastroCaixaPeloCard, analiseCaixaPeloCard } from '../services/caixa-cadastro.service';
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
-import { pedirDesbloqueio, proximoDesbloqueio, gravarDesbloqueio, perguntarAoCliente } from '../services/caixa-desbloqueio.service';
+import { pedirDesbloqueio, proximoDesbloqueio, gravarDesbloqueio, perguntarAoCliente, entregarCodigo } from '../services/caixa-desbloqueio.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -254,6 +254,10 @@ router.post('/:leadId/card/desbloqueio/perguntar', requirePermission('funnel_man
   const erro = await perguntarAoCliente(req.user!.accountId, req.params.leadId, await nomeDe(req), req.app.get('io')).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true, mensagem: 'Pergunta enviada ao cliente' });
+});
+// A extensão, parada na tela do token, pergunta se o cliente já mandou o código (entregue uma vez por código).
+router.get('/:leadId/desbloqueio/token', async (req: AuthRequest, res: Response) => {
+  try { res.json({ token: await entregarCodigo(req.user!.accountId, req.params.leadId) }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 router.post('/:leadId/desbloqueio', async (req: AuthRequest, res: Response) => {
   const b = (req.body || {}) as { status?: string; texto?: string; telefones?: string[]; campos?: string[]; final?: boolean };
