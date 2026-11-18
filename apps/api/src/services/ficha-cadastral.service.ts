@@ -555,6 +555,8 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     await (require('./renda-comprovante.service') as typeof import('./renda-comprovante.service')).atualizarRendaPeloComprovante(leadId).catch((e: any) => console.error('[Renda comprovante]', e?.message || e));
     // Nome certo pelos documentos (Fabio 13/11): participantes, card e pasta do Drive com o nome completo do documento — só quando é a mesma pessoa (CPF ou nome que contém o do card).
     await (require('./nome-pelo-documento.service') as typeof import('./nome-pelo-documento.service')).renomearPelosDocumentos(accountId, leadId).catch((e: any) => console.error('[Nome pelo documento]', e?.message || e));
+    // Desbloqueio CAIXA parado na Identificação Positiva por falta de ficha (18/11, Gilvano): com a ficha pronta (nome do pai + identidade), volta sozinho.
+    await (require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service')).retomarDepoisDaFicha(accountId, leadId).catch((e: any) => console.error('[CAIXA desbloqueio] retomar:', e?.message || e));
 
     const quando = agora.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }).slice(0, 17);
     const blocos = ficha.participantes.map((p: any, i: number) => {

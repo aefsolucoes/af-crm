@@ -280,3 +280,17 @@ export function textoAvisoCodigo(nome: string, final: string | null, envio: numb
   if (envio === 2) return `${voc}aquele primeiro código não serviu, então pedi outro à CAIXA e ele já foi enviado ${cel}. Consegue me repassar esse novo número?`;
   return `${voc}fiz mais uma solicitação e a CAIXA mandou um novo código ${cel}. Me envia esse último que eu libero por aqui na hora.`;
 }
+
+/** Ficha de cadastro nova: o desbloqueio que parou na Identificação Positiva sem os dados (nome do pai + identidade) volta pra fila do mesmo jeito (até a tela do
+ *  código, perguntando ao cliente se era o automático). */
+export async function retomarDepoisDaFicha(accountId: string, leadId: string): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const cf = (l?.customFields || {}) as Cf;
+  const d = (cf._caixaDesbloqueio || {}) as Cf;
+  if (!/^PAROU: a CAIXA pede a Identifica/.test(String(d.status || ''))) return;
+  const p1 = participantesDa(cf).find((x) => x.ordem === 1);
+  if (!p1?.pai || !p1?.identidade?.numero) return;
+  const { outroCcaDe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
+  if (!outroCcaDe(cf).length) return;
+  await pedirDesbloqueio(accountId, leadId, 'CRM (automático: a ficha ficou pronta, com o nome do pai e a identidade)', { modo: d.modo === 'enviar' ? 'enviar' : 'ate', perguntar: !!d.perguntarAuto });
+}
