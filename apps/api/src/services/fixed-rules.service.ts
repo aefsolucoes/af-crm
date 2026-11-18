@@ -29,6 +29,7 @@ export const FIXED_RULE_TITLES: Record<string, string> = {
   CREDIT_ANALYSIS_RULES: '[REGRA FIXA] IA do cliente — análise de crédito (CREDIT_ANALYSIS_RULES)',
   NO_RECEIPT_LIST_RULES: '[REGRA FIXA] IA do cliente — não listar o que recebeu (NO_RECEIPT_LIST_RULES)',
   NO_REPLY_RULES: '[REGRA FIXA] IA do cliente — quando não responder (NO_REPLY_RULES)',
+  REPLY_QUOTE_RULES: '[REGRA FIXA] IA do cliente — responder em cima de uma mensagem / citar (REPLY_QUOTE_RULES)',
   DOCS_ARRIVING_RULES: '[REGRA FIXA] IA do cliente — documentos chegando (DOCS_ARRIVING_RULES)',
   EMAIL_RELAY_RULES: '[REGRA FIXA] IA — e-mails do processo (EMAIL_RELAY_RULES)',
   DOCS_CHECKER_RULES: '[REGRA FIXA] Conferência de documentos (DOCS_CHECKER_RULES) — não mude o formato JSON',

@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { getOrCreateInboxPipeline } from './department.service';
 import { generateAiAutoReply } from './ai-auto-reply.service';
 import { applyAiExtractedActions } from './ai-shared.service';
+import { paramsCitacao } from './ai-citacao';
 import { logActivity } from './activity.service';
 import { normalizeClientName, splitAiReply, isCallableName } from '../lib/text';
 // runAutomations/maybeMessageReceivedAutomations: require()
@@ -357,7 +358,7 @@ export async function sendWhatsAppMessage(
   accountId: string,
   departmentId?: string | null,
   replyToWamid?: string | null
-): Promise<{ success: boolean; externalId?: string; error?: string; transitorio?: boolean }> {
+): Promise<{ success: boolean; externalId?: string; error?: string; transitorio?: boolean; semCitacao?: boolean }> {
   const config = await getWhatsAppConfig(accountId, departmentId);
   console.log(`[WA Send] accountId=${accountId} config exists=${!!config} active=${config?.active} phoneNumberId=${config?.phoneNumberId}`);
 
@@ -373,34 +374,45 @@ export async function sendWhatsAppMessage(
   const url = `https://graph.facebook.com/v19.0/${config.phoneNumberId}/messages`;
 
   try {
-    const res = await fetchGraph(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to: phone,
-        type: 'text',
-        text: { body: message },
-        // Citação: a Meta só aceita responder a uma mensagem que também tenha
-        // vindo/ido por este mesmo canal (id no formato "wamid...").
-        ...(replyToWamid?.startsWith('wamid') ? { context: { message_id: replyToWamid } } : {}),
-      }),
-    });
-
-    const json = await res.json() as {
-      messages?: { id: string }[];
-      error?: { message: string; code: number };
+    const enviar = async (citar: boolean) => {
+      const res = await fetchGraph(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          messaging_product: 'whatsapp',
+          to: phone,
+          type: 'text',
+          text: { body: message },
+          // Citação: a Meta só aceita responder a uma mensagem que também tenha
+          // vindo/ido por este mesmo canal (id no formato "wamid...").
+          ...(citar ? { context: { message_id: replyToWamid } } : {}),
+        }),
+      });
+      const json = await res.json() as {
+        messages?: { id: string }[];
+        error?: { message: string; code: number };
+      };
+      return { res, json };
     };
+    const comCitacao = !!replyToWamid?.startsWith('wamid');
+    let { res, json } = await enviar(comCitacao);
+    let semCitacao = false;
+    // A Meta recusou a mensagem COM citação (mensagem citada que ela não acha mais, id inválido): manda de novo sem citar — a citação nunca segura a resposta (Fabio 18/11).
+    if (comCitacao && (!res.ok || json.error) && !erroGraphPassageiro(res, json)) {
+      console.warn(`[WhatsApp] envio citando ${replyToWamid} recusado (${json.error?.code}: ${json.error?.message}) — mandando sem citação`);
+      ({ res, json } = await enviar(false));
+      semCitacao = true;
+    }
 
     if (!res.ok || json.error) {
       console.error(`[WhatsApp] Send error para "${phone}":`, json.error);
       return { success: false, error: parseGraphError(json, res, phone, accountId), transitorio: erroGraphPassageiro(res, json) };
     }
 
-    return { success: true, externalId: json.messages?.[0]?.id };
+    return { success: true, externalId: json.messages?.[0]?.id, ...(semCitacao ? { semCitacao: true } : {}) };
   } catch (err) {
     console.error('[WhatsApp] Fetch error:', err);
     return { success: false, error: 'Falha na conexão com a API do WhatsApp', transitorio: !!(err as any)?.redeGraph };
@@ -1746,7 +1758,7 @@ export async function retomarComIa(accountId: string, leadId: string, io: any): 
     if (!lista && (!texto || /^nada[.!]?$/i.test(texto))) { /* sem pendência e nada a dizer: segue quieta */ }
     else if (texto && !/^nada[.!]?$/i.test(texto)) {
       const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
-      const env = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io });
+      const env = await sendOutboundWhatsApp({ accountId, leadId, content: texto, io, ...paramsCitacao(r?.citar) });
       await nota(env.success ? `🤖 IA ligada: retomou o que tinha ficado parado — "${texto}"` : `🤖 IA ligada: a mensagem retomando as pendências não saiu (${(env as any).error || 'erro'}). Pendências: ${lista}`);
       if (!env.success) return; // ficam pra próxima vez
     } else await nota(`🤖 IA ligada: as pendências de quando ela estava desligada já tinham sido tratadas na conversa — nada a dizer.\n${lista}`);
@@ -1946,9 +1958,11 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
       const ehUltima = i === partes.length - 1;
       if (i > 0) await new Promise((r) => setTimeout(r, 1500));
       const comBotoes = withOptionButtons && ehUltima;
+      // Responder EM CIMA (Fabio 18/11): a 1ª parte sai citando a mensagem que a IA escolheu (só texto; a com botões vai sem citação).
+      const citaAqui = i === 0 && !comBotoes ? genResult.citar || null : null;
       const result = comBotoes
         ? await sendWhatsAppButtonsMessage(phone, partes[i], INTEREST_OPTION_BUTTONS, accountId, departmentId)
-        : await sendWhatsAppMessage(phone, partes[i], accountId, departmentId);
+        : await sendWhatsAppMessage(phone, partes[i], accountId, departmentId, citaAqui?.externalId);
       if (!result.success) {
         console.error('[WhatsApp] Resposta de IA falhou ao enviar:', result.error);
         // Nada chegou ao cliente e a falha passa sozinha (rede, instabilidade/limite da Meta): o card fica marcado e a resposta sai na retomada (retomarRespostasSemApi,
@@ -1962,8 +1976,9 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
       }
       enviadas++;
       const savedReply = comBotoes ? `${partes[i]}\n\n${INTEREST_OPTION_BUTTONS.map((b) => `[${b}]`).join('  ')}` : partes[i];
+      const citou = citaAqui && !(result as { semCitacao?: boolean }).semCitacao ? citaAqui : null;
       const sent = await prisma.message.create({
-        data: { content: savedReply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT' },
+        data: { content: savedReply, direction: 'OUTBOUND', channel: 'WHATSAPP', leadId, read: true, externalId: result.externalId, status: 'SENT', ...(citou ? { replyToExternalId: citou.externalId, replyToContent: citou.content, replyToSender: citou.sender } : {}) },
       });
       if (io) io.to(`lead:${leadId}`).emit('new_message', sent);
     }

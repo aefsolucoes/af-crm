@@ -106,7 +106,9 @@ export async function processAiPromises(accountId: string, io?: Io): Promise<voi
     const texto = (r?.reply || '').trim();
     if (!texto) { await avisaEquipe('a IA não conseguiu escrever a mensagem'); continue; }
     await gravar(id, null);
-    const sent = await sendOutboundWhatsApp({ accountId, leadId: id, content: texto, io: io || undefined });
+    // Pode sair EM CIMA da mensagem do combinado, se a IA citar (Fabio 18/11, "responder em cima da msg").
+    const { paramsCitacao } = require('./ai-citacao') as typeof import('./ai-citacao');
+    const sent = await sendOutboundWhatsApp({ accountId, leadId: id, content: texto, io: io || undefined, ...paramsCitacao(r?.citar) });
     await prisma.note.create({ data: { leadId: id, type: 'COMMENT', content: sent.success ? `⏰ Combinado cumprido: ${quem}. A IA chamou o cliente: "${texto}"` : `⏰ Hora de chamar o cliente: ${quem} — o envio falhou (${(sent as any).error || 'erro'}). Chame o cliente.` } }).catch(() => {});
   }
 }

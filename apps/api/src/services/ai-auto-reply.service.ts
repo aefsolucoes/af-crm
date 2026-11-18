@@ -3,6 +3,7 @@ import { prisma } from '../lib/prisma';
 import { fixedRule, fixedRules } from './fixed-rules.service';
 import { cachedSystem } from '../lib/anthropic-usage';
 import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
+import { type AlvoCitacao, normalizarRefCitacao, resolverCitacao, semRefsNoTexto } from './ai-citacao';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
 import { callSummaryContext } from './call-recording.service';
@@ -435,6 +436,13 @@ const NO_REPLY_RULES = `NÃO RESPONDER ("noReply": true) — quando a mensagem d
 - Se o "ok" responder uma pergunta sua de sim/não (ex.: "posso te mandar a lista de documentos?"), trate como "sim" e siga normalmente, com noReply false.
 - Nunca repita uma confirmação que você já deu na conversa (ex.: dizer de novo "vou seguir com a análise e te retorno").`;
 
+// Responder EM CIMA de uma mensagem (Fabio 18/11: "preciso que a IA no whatsapp tbm possa responder em cima da msg de um cliente ou nossa, quando queira se referir a algum documento
+// ou msg"). Semente: o texto vigente fica na Base de Conhecimento (fixedKey REPLY_QUOTE_RULES), criada sozinha na 1ª vez.
+export const REPLY_QUOTE_RULES = `RESPONDER EM CIMA DE UMA MENSAGEM ("replyTo") — igual ao "responder" do WhatsApp: no HISTÓRICO, as mensagens que dá pra citar levam um número logo depois da hora (ex.: "[14:32] #57 Cliente: …"). Com "replyTo": "#57", a sua resposta sai EM CIMA daquela mensagem — o cliente vê a mensagem citada logo acima da sua. Pode ser mensagem do cliente ou nossa.
+- Use quando a sua resposta se refere a uma mensagem ou documento ESPECÍFICO que não é a última mensagem dele: um documento/foto que ele mandou antes ("sobre esse RG…"), uma pergunta dele que ficou pra trás, a proposta, a simulação ou a lista de documentos que a gente mandou acima, ou quando ele mandou várias coisas seguidas e você responde uma delas em particular. Citando, o texto pode dizer "esse documento", "essa proposta", sem descrever tudo de novo.
+- Na maioria das respostas é null: NÃO cite a última mensagem do cliente quando você só está respondendo a ela (já fica claro do que você fala), e nunca cite em toda mensagem.
+- Só números que aparecem no histórico; mensagem sem número não dá pra citar. NUNCA escreva o número (#57) no "reply" — ele é só pro CRM.`;
+
 function buildFillFieldsRules(camposTexto: string): string {
   return `PREENCHER DADOS DO CARD ("extractedFields") — um objeto com os campos abaixo que o cliente mencionar CLARAMENTE na conversa (nunca invente, deduza ou arredonde um valor que ele não disse). Use só chaves desta lista, ou {} se nada novo foi mencionado:
 ${camposTexto}`;
@@ -453,7 +461,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com UM banco ("SANTANDER" ou "INTER"; no Financiamento Habitacional também "BRADESCO" ou "ITAU"), ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF (e a linha SIMULAÇÃO EM PDF NO FINANCIAMENTO, quando houver)>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "pushColaborador": "<o que o cliente disse, ou null — só conforme a regra SIMULOU NO SITE do bloco CAIXA APROVOU; com ele preenchido NADA vai ao cliente>", "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>, "certidaoPorEndereco": <"TEM_MATRICULA", "NAO_SABE" ou null — só conforme a regra 3c dos documentos do imóvel (PELO ENDEREÇO DO IMÓVEL — SÓ EM ÚLTIMO CASO)>, "imovelSemRegistro": <true ou false — só conforme a regra 4 dos documentos do imóvel (o cliente disse que o imóvel NÃO é registrado em cartório)>}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com UM banco ("SANTANDER" ou "INTER"; no Financiamento Habitacional também "BRADESCO" ou "ITAU"), ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF (e a linha SIMULAÇÃO EM PDF NO FINANCIAMENTO, quando houver)>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "pushColaborador": "<o que o cliente disse, ou null — só conforme a regra SIMULOU NO SITE do bloco CAIXA APROVOU; com ele preenchido NADA vai ao cliente>", "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>, "certidaoPorEndereco": <"TEM_MATRICULA", "NAO_SABE" ou null — só conforme a regra 3c dos documentos do imóvel (PELO ENDEREÇO DO IMÓVEL — SÓ EM ÚLTIMO CASO)>, "imovelSemRegistro": <true ou false — só conforme a regra 4 dos documentos do imóvel (o cliente disse que o imóvel NÃO é registrado em cartório)>, "replyTo": "<#número da mensagem do histórico que a sua resposta cita (responder em cima), ou null — só conforme a regra RESPONDER EM CIMA DE UMA MENSAGEM>"}`;
 
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
 function parseSimulate(raw: unknown): { prazo?: number; valor?: number } | null {
@@ -552,6 +560,10 @@ export interface AiAutoReplyResult {
   certidaoPorEndereco?: 'TEM_MATRICULA' | 'NAO_SABE' | null;
   /** Fabio 14/11: o cliente disse que o imóvel NÃO é registrado — o CRM pergunta se ele tem outro imóvel pra garantia (não tem → Perdidos). */
   imovelSemRegistro?: boolean;
+  /** Número (#57 → "57") da mensagem do histórico que a resposta cita — "responder em cima" (Fabio 18/11). Cru, como a IA mandou; o resolvido vai em `citar`. */
+  replyTo?: string | null;
+  /** Mensagem que a resposta CITA (wamid + o que a Inbox mostra) — quem envia passa pro WhatsApp (context.message_id) e grava replyTo* na Message. null = sem citação. */
+  citar?: AlvoCitacao | null;
 }
 
 /** "certidaoPorEndereco" vindo do JSON da IA (regra 3c): TEM_MATRICULA | NAO_SABE; true sem dizer qual vale como NAO_SABE (não pula a pergunta de área irregular). */
@@ -713,6 +725,7 @@ export async function generateAiAutoReply(
     const [ctx, camposTexto, duvidasEquipe, ligacao, conversasPorTelefone] = await Promise.all([
       medir('contexto', buildSharedAiContext(accountId, leadId, incomingText, {
         fullHistory: true,
+        citaveis: true,
         historyRoleLabels: { inbound: 'Cliente', outbound: 'Atendente' },
       })),
       medir('campos', buildFillableFieldsText(accountId)),
@@ -750,7 +763,7 @@ export async function generateAiAutoReply(
     // As regras condicionais (venda futura, documentos chegando/lidos, campos do card) e o formato de saída ficam na parte que muda, logo antes do contexto.
     const coreRules = await medir('regras', fixedRule(accountId, 'CORE_RULES', CORE_RULES));
     // Regras de negócio vivem na Base de Conhecimento (fonte única, Fabio 29/10); o texto do código abaixo é só a semente/plano B. OUTPUT_FORMAT e SAFETY_RULES ficam no código (estrutura/segurança).
-    const R = await medir('regras2', fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, UNSURE_FUTURE_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES }));
+    const R = await medir('regras2', fixedRules(accountId, { ROLE_FRAMING, HANDOFF_RULES, ASK_TEAM_RULES, MOVE_STAGE_RULES, NEW_VALUE_RULES, PROPERTY_DOCS_RULES, RETENTION_RULES, UNSURE_FUTURE_RULES, OUTRO_CANAL_RULES, APARTMENT_APPRAISAL_RULES, MARK_LOST_RULES, STOP_FOLLOWUP_RULES, FORM_FIRST_RULES, CONVERSE_BEFORE_LINK_RULES, PROPOSAL_REVIEW_RULES, CREDIT_ANALYSIS_RULES, NO_RECEIPT_LIST_RULES, NO_REPLY_RULES, REPLY_QUOTE_RULES, DOCS_ARRIVING_RULES, EMAIL_RELAY_RULES }));
     const systemFixed = `${R.ROLE_FRAMING}
 
 ${coreRules}
@@ -785,7 +798,9 @@ ${R.CREDIT_ANALYSIS_RULES}
 
 ${R.NO_RECEIPT_LIST_RULES}
 
-${R.NO_REPLY_RULES}`;
+${R.NO_REPLY_RULES}
+
+${R.REPLY_QUOTE_RULES}`;
     const systemDynamic = `${opts.retomada ? `${opts.retomada}\n\n` : opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado, String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaDe || '') || null)}
 
 ${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
@@ -905,6 +920,10 @@ ${conversasPorTelefone}` : ''}`;
       } catch { /* aviso */ }
       return null;
     }
+    // Responder EM CIMA de uma mensagem (Fabio 18/11): o número que a IA devolveu vira a mensagem citada; inválido, sem wamid ou a própria última mensagem → sem citação.
+    // O número (#57) nunca vai no texto ao cliente.
+    result.citar = result.reply ? resolverCitacao(result.replyTo, ctx.citaveis, ctx.ultimaRef) : null;
+    if (result.reply) result.reply = semRefsNoTexto(result.reply, ctx.citaveis);
     // Tom (Fabio 23/10, caso Pedro Luis): com o cliente de ficar de mandar a documentação, "Alguma dificuldade pra enviar?" é rude — o filtro tira essa pergunta (o prompt sozinho não segurava).
     if (result.reply) {
       const limpo = semCobrancaRude(result.reply);
@@ -1157,6 +1176,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         caixaConcorrente: parsed.caixaConcorrente === true,
         certidaoPorEndereco: parseCertidaoPorEndereco(parsed.certidaoPorEndereco),
         imovelSemRegistro: parsed.imovelSemRegistro === true,
+        replyTo: normalizarRefCitacao(parsed.replyTo),
       };
     }
   } catch {

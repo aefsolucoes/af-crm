@@ -5,6 +5,7 @@ import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
 import { logActivity } from './activity.service';
 import { callableFirstName, isCallableName, normalizeClientName, nomeSocialNota } from '../lib/text';
+import { type AlvoCitacao, ehCitavel, previewCitacao, rotuloCitacao } from './ai-citacao';
 
 
 /**
@@ -115,6 +116,10 @@ export interface SharedAiContext {
   nomeTexto: string;
   /** Estado real do card no CRM (análise de crédito, documentos, contratação, agenda) — '' se não há nada a mostrar. */
   creditoTexto: string;
+  /** Com `opts.citaveis`: número da conversa (#57 → "57") → mensagem que a IA pode citar ao responder (ai-citacao.ts). */
+  citaveis?: Map<string, AlvoCitacao>;
+  /** Com `opts.citaveis`: número da ÚLTIMA mensagem da conversa (citar ela é redundante). */
+  ultimaRef?: string;
 }
 
 /**
@@ -128,7 +133,7 @@ export async function buildSharedAiContext(
   accountId: string,
   leadId: string,
   focusText: string,
-  opts: { historyTake?: number; fullHistory?: boolean; historyRoleLabels?: { inbound: string; outbound: string } } = {}
+  opts: { historyTake?: number; fullHistory?: boolean; historyRoleLabels?: { inbound: string; outbound: string }; citaveis?: boolean } = {}
 ): Promise<SharedAiContext | null> {
   const lead = await prisma.lead.findFirst({
     where: { id: leadId, accountId },
@@ -149,9 +154,27 @@ export async function buildSharedAiContext(
     where: { leadId, channel: { not: 'EMAIL' } },
     orderBy: { createdAt: 'desc' },
     take: opts.fullHistory ? 1500 : historyTake,
-    ...(opts.fullHistory ? { include: { sentBy: { select: { name: true } } } } : {}),
+    ...(opts.fullHistory || opts.citaveis ? { include: { sentBy: { select: { name: true } } } } : {}),
   });
   const ordered = recent.reverse();
+  // Mensagens que a IA pode CITAR ao responder (Fabio 18/11, "responder em cima da msg"): cada uma que veio/foi pela API Oficial ganha um número curto (#57) na linha; a IA devolve
+  // "replyTo": "#57" e o CRM manda a resposta citando ela. Número = posição na conversa (1, 2, 3…), estável dentro desta leitura.
+  const citaveis = new Map<string, AlvoCitacao>();
+  const refDe = new Map<string, string>();
+  if (opts.citaveis) {
+    (ordered as Array<(typeof ordered)[number] & { sentBy?: { name: string } | null }>).forEach((m, i) => {
+      if (!ehCitavel(m)) return;
+      const n = String(i + 1);
+      refDe.set(m.id, n);
+      citaveis.set(n, {
+        externalId: m.externalId as string,
+        fromMe: m.direction === 'OUTBOUND',
+        content: previewCitacao(m.content),
+        sender: m.direction === 'OUTBOUND' ? m.sentBy?.name || 'Você' : m.senderName || lead.name || 'Cliente',
+      });
+    });
+  }
+  const ref = (m: { id: string }): string => { const n = refDe.get(m.id); return n ? `${rotuloCitacao(Number(n))} ` : ''; };
   // Mensagem MARCADA (resposta citando outra no WhatsApp — Fabio 11/11, Marcos marcou o resumo do Santander e escreveu só "Pode antecipar?"; a IA não sabia do
   // que ele falava e perguntou "antecipar o quê?"): a linha leva a mensagem citada, com quem escreveu e a hora quando ela está na conversa.
   const porWamid = new Map(ordered.filter((m) => m.externalId).map((m) => [m.externalId as string, m] as const));
@@ -177,14 +200,14 @@ export async function buildSharedAiContext(
       let texto = voiceNoteForAi(m.content);
       if (texto.length > 1800) texto = `${texto.slice(0, 1500)} …[mensagem longa, cortada]`;
       const quem = m.direction === 'INBOUND' ? inboundLabel : m.sentBy?.name ? `${outboundLabel} (equipe: ${m.sentBy.name})` : outboundLabel;
-      linhas.push(`[${hora}] ${quem}:${citou(m)} ${texto}`);
+      linhas.push(`[${hora}] ${ref(m)}${quem}:${citou(m)} ${texto}`);
     }
     let total = 0;
     let corte = linhas.length;
     for (let i = linhas.length - 1; i >= 0; i--) { total += linhas[i].length + 1; if (total > TETO) break; corte = i; }
     historicoTexto = `${corte > 0 ? `(conversa muito longa: as mensagens mais antigas ficaram de fora; abaixo, do dia ${(linhas.slice(corte).find((l) => l.startsWith('— ')) || '').replace(/— /g, '').trim() || 'mais antigo que coube'} em diante)\n` : `(conversa COMPLETA, do começo — ${ordered.length} mensagens; leia tudo antes de responder: o que a equipe já disse e o que o cliente já respondeu valem)\n`}${linhas.slice(corte).join('\n')}`;
   } else if (ordered.length) {
-    historicoTexto = ordered.map((m) => `${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}:${citou(m)} ${voiceNoteForAi(m.content)}`).join('\n');
+    historicoTexto = ordered.map((m) => `${ref(m)}${m.direction === 'INBOUND' ? inboundLabel : outboundLabel}:${citou(m)} ${voiceNoteForAi(m.content)}`).join('\n');
   }
 
   // Escopo de produtos deste setor — trata o setor do CARD como o produto
@@ -274,6 +297,7 @@ export async function buildSharedAiContext(
     bancoTexto: String(((lead.customFields as any) || {}).instituicao || '').trim() || null,
     perdidoTexto: lead.status === 'LOST' ? await lostCardContext(lead.id, lead.lostReason) : null,
     creditoTexto: await aiCardState(lead.id).catch(() => ''),
+    ...(opts.citaveis ? { citaveis, ultimaRef: String(ordered.length) } : {}),
     nomeTexto: (() => {
       const cf = (lead.customFields || {}) as Record<string, unknown>;
       const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, lead.name);

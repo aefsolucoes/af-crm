@@ -7,6 +7,7 @@ import { createKnowledgeEntry, deleteKnowledgeEntry, searchKnowledge } from './k
 import { sendPushToAccount } from './push.service';
 import { isVoyageConfigured } from './voyage.service';
 import { logActivity } from './activity.service';
+import { type AlvoCitacao, ehCitavel, paramsCitacao, previewCitacao } from './ai-citacao';
 
 /**
  * Balão "Dúvidas da IA" (pedido do Fabio, 2026-09-25): quando a IA que
@@ -720,6 +721,25 @@ export async function answerAiTeamQuestion(params: {
 
 const answering = new Set<string>();
 
+/** Resposta da equipe que vai ao cliente pelo balão (Fabio 18/11, "responder em cima da msg"): sai EM CIMA da mensagem do cliente que levantou a dúvida, se a conversa já
+ *  andou depois dela (senão a resposta vem logo abaixo e a citação sobra). Acha a mensagem pelo texto guardado na dúvida (clientMessage) entre as dele até a hora da dúvida;
+ *  sem achar pelo texto, a última dele antes da dúvida. Sem wamid (não dá pra citar) → null, a resposta sai sem citação. */
+async function citacaoDaPergunta(q: { leadId: string; createdAt: Date; clientMessage: string | null }): Promise<AlvoCitacao | null> {
+  const doCliente = await prisma.message.findMany({
+    where: { leadId: q.leadId, direction: 'INBOUND', channel: 'WHATSAPP', deleted: false, createdAt: { lte: new Date(q.createdAt.getTime() + 5_000) } },
+    orderBy: { createdAt: 'desc' }, take: 10,
+    select: { id: true, externalId: true, deleted: true, content: true, senderName: true, createdAt: true, lead: { select: { name: true } } },
+  });
+  if (!doCliente.length) return null;
+  const guardado = String(q.clientMessage || '').replace(/\s+/g, ' ').trim();
+  const pelo = guardado ? doCliente.find((m) => { const t = String(m.content || '').replace(/\s+/g, ' ').trim(); return t.length >= 3 && guardado.includes(t); }) : undefined;
+  const alvo = pelo || doCliente[0];
+  if (!ehCitavel(alvo)) return null;
+  const andou = await prisma.message.findFirst({ where: { leadId: q.leadId, channel: 'WHATSAPP', deleted: false, createdAt: { gt: alvo.createdAt } }, select: { id: true } });
+  if (!andou) return null;
+  return { externalId: alvo.externalId as string, fromMe: false, content: previewCitacao(alvo.content), sender: alvo.senderName || alvo.lead?.name || 'Cliente' };
+}
+
 async function answerLocked(accountId: string, questionId: string, userId: string, answer: string, io: Io) {
   const q = await prisma.aiTeamQuestion.findFirst({ where: { id: questionId, accountId } });
   if (!q) throw new Error('Dúvida não encontrada');
@@ -790,7 +810,8 @@ async function answerLocked(accountId: string, questionId: string, userId: strin
     return updated;
   }
 
-  const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined });
+  const citar = await citacaoDaPergunta(q).catch(() => null);
+  const sent = await sendOutboundWhatsApp({ accountId, leadId: q.leadId, content: reply, io: io || undefined, ...paramsCitacao(citar) });
   if (!sent.success) {
     const updated = await prisma.aiTeamQuestion.update({
       where: { id: q.id },

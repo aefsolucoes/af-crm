@@ -285,6 +285,8 @@ export async function sendOutboundWhatsApp(params: {
   }
 
   let externalId: string | undefined;
+  // A Meta recusou a citação e a mensagem saiu sem ela (sendWhatsAppMessage manda de novo sem citar): não grava a citação na Inbox.
+  let citou = !!replyToExternalId;
   // O que fica gravado na Inbox como o texto da mensagem — igual a `content`,
   // exceto quando há botões: eles são um elemento à parte na API Oficial,
   // então anexamos só como registro legível do que foi oferecido.
@@ -297,6 +299,7 @@ export async function sendOutboundWhatsApp(params: {
     : await sendWhatsAppMessage(cloudPhone, content, accountId, lead.pipeline.departmentId, replyToExternalId);
   if (result.success) {
     externalId = result.externalId;
+    if ((result as { semCitacao?: boolean }).semCitacao) citou = false;
     if (buttons?.length) savedContent = `${content}\n\n${buttons.map((b) => `[${b}]`).join('  ')}`;
     else if (ctaButton) savedContent = `${content}\n\n[${ctaButton.text} → ${ctaButton.url}]`;
   } else {
@@ -311,9 +314,9 @@ export async function sendOutboundWhatsApp(params: {
     sentByUserId: userId,
     externalId,
     status: 'SENT',
-    replyToExternalId: replyToExternalId || undefined,
-    replyToContent: replyToContent || undefined,
-    replyToSender: replyToSender || undefined,
+    replyToExternalId: (citou && replyToExternalId) || undefined,
+    replyToContent: (citou && replyToContent) || undefined,
+    replyToSender: (citou && replyToSender) || undefined,
   });
 
   if (io) {
