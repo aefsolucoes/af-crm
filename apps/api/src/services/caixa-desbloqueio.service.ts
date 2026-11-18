@@ -122,7 +122,7 @@ export function aiOutroCorrespondenteLinha(cf: Cf, temOutro: boolean): string | 
   const estado = recebido
     ? `O cliente JÁ MANDOU o código do SMS às ${recebido.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' })}: agradeça, diga que a gente já vai liberar o cadastro aqui e seguir com a CAIXA, não peça o código de novo e não repita o número.`
     : enviado
-    ? `O CÓDIGO JÁ FOI ENVIADO pela CAIXA por SMS pra ${cel} às ${hora}. Peça que ele mande o código aqui assim que chegar (vale por pouco tempo). Se ele disser que não chegou, pergunte à equipe — não prometa reenvio.`
+    ? `O CÓDIGO JÁ FOI ENVIADO pela CAIXA por SMS pra ${cel} às ${hora}. Peça, com palavras suas (sem repetir o aviso do sistema), que ele mande o código aqui assim que chegar. Se ele disser que não chegou, pergunte à equipe — não prometa reenvio.`
     : `Se ainda não perguntou (veja o histórico), na sua PRÓXIMA resposta — depois de responder o que ele disse — pergunte se ele se lembra dessa análise/aprovação feita em outro correspondente e se pode seguir por aqui com a gente; explique em uma frase que, pra isso, a CAIXA manda um código por SMS pra ${cel} e ele repassa o código aqui. Se ele CONCORDAR em seguir com a gente (agora, respondendo a essa pergunta), ponha "caixaToken": true no JSON e responda curto que você vai pedir o código à CAIXA agora (o aviso de que o SMS saiu vai logo em seguida, pelo sistema). Se ele já respondeu, não pergunte de novo.`;
   return `CAIXA — CLIENTE EM OUTRO CORRESPONDENTE (Fabio 18/11): a consulta da CAIXA mostra uma avaliação de crédito/proposta dele feita por OUTRO correspondente. Pra seguir com a gente, essa análise antiga é cancelada A PEDIDO DELE: a CAIXA manda um código por SMS e, com o código, a gente libera o cadastro aqui. ${estado} Não diga o nome nem o número do outro correspondente, não use as palavras "convênio" ou "token" (diga "código por SMS da CAIXA"), não peça documento por causa disso. Se ele não quiser cancelar, disser que não fez análise em outro lugar ou tiver dúvida que você não sabe responder, pergunte à equipe.`;
 }
@@ -196,11 +196,10 @@ async function avisarClienteDoCodigo(accountId: string, leadId: string): Promise
   const final = finalDoToken(d) || finaisDoCard(cf, [l.contact?.whatsappPhone, l.contact?.phone])[0] || null;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
   const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, l.name) || '';
-  // Segundo envio (o código anterior expirou ou a CAIXA deu erro — Fabio 18/11): o cliente sabe que é um código NOVO.
-  const novo = ((d.historico || []) as Cf[]).filter((h) => /^TOKEN ENVIADO/.test(String(h.status || ''))).length > 1;
-  const texto = novo
-    ? `${nome ? `${nome}, o` : 'O'} código anterior expirou. A CAIXA acabou de mandar um código NOVO por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda esse código novo aqui assim que chegar.`
-    : `Pronto${nome ? `, ${nome}` : ''}! A CAIXA acabou de mandar o código por SMS pro seu celular${final ? ` final ${final}` : ''}. Me manda o código aqui assim que chegar (ele vale por pouco tempo).`;
+  // Cada envio com OUTRAS palavras (Fabio 18/11, print do Lucas: o aviso saiu igual às 13:27 e às 14:07 — "sempre repetir a mesma frase", "precisa alterar as palavras",
+  // "tbm retira isso" = o "(ele vale por pouco tempo)"). 2º e 3º diferentes entre si e do 1º; sem parênteses.
+  const envios = ((d.historico || []) as Cf[]).filter((h) => /^TOKEN ENVIADO/.test(String(h.status || ''))).length;
+  const texto = textoAvisoCodigo(nome, final, envios);
   const { whatsappWindowOpen } = require('./approval-notice.service') as typeof import('./approval-notice.service');
   if (!(await whatsappWindowOpen(leadId))) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — o código foi enviado por SMS, mas a conversa está fechada: avise o cliente. Texto pronto:\n“${texto}”` } }).catch(() => {});
@@ -267,4 +266,13 @@ export async function aoReceberDoCliente(accountId: string, leadId: string, text
     return;
   }
   if (SIM_RX.test(t) && !/\bn[aã]o\b/i.test(t)) await pedirDesbloqueio(accountId, leadId, `cliente respondeu "${t.slice(0, 40)}" (automático)`, { modo: 'enviar', seNaoEnviado: true }).catch(() => {});
+}
+
+/** Aviso de que a CAIXA mandou o código — texto diferente a cada envio (1º, 2º, 3º+). Pura. */
+export function textoAvisoCodigo(nome: string, final: string | null, envio: number): string {
+  const cel = final ? `no seu celular com final ${final}` : 'no seu celular cadastrado na CAIXA';
+  const voc = nome ? `${nome}, ` : '';
+  if (envio <= 1) return `${voc}a CAIXA enviou agora um código por SMS ${cel}. Assim que ele chegar, é só me mandar o número por aqui.`;
+  if (envio === 2) return `${voc}aquele primeiro código não serviu, então pedi outro à CAIXA e ele já foi enviado ${cel}. Consegue me repassar esse novo número?`;
+  return `${voc}fiz mais uma solicitação e a CAIXA mandou um novo código ${cel}. Me envia esse último que eu libero por aqui na hora.`;
 }
