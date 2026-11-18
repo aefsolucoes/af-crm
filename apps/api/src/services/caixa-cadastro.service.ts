@@ -1041,6 +1041,14 @@ export async function fazerCadastroManual(accountId: string, leadId: string, por
 
 /** Resumo da consulta em Oportunidades de Negócios pra coluna CAIXA do HE (Fabio 10/11): "Pesquisa Cadastral" (Nada consta / Constam ocorrências), CPF fora do
  *  regular na Receita e o que trava (consultaSegura). Sem CPF nem texto da tela. Pura. */
+/** Papel no card: o 1º é o proponente; quem é o cônjuge de outro participante (nome/CPF do "conjuge" da ficha) é o cônjuge; os demais, "Nº proponente". Pura. */
+export function papelDoParticipante(ps: any[], p: any): string {
+  if (Number(p.ordem) === 1) return 'proponente';
+  const prim = (v: unknown) => String(v || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim().split(/\s+/)[0] || '';
+  const cpf = String(p.cpf || '').replace(/\D/g, '');
+  const ehConjuge = ps.some((o) => o !== p && o.conjuge && ((cpf.length === 11 && String(o.conjuge.cpf || '').replace(/\D/g, '') === cpf) || (prim(o.conjuge.nome) && prim(o.conjuge.nome) === prim(p.nome))));
+  return ehConjuge ? 'cônjuge' : `${p.ordem}º proponente`;
+}
 export function resumoConsulta(texto: unknown): { consulta: string | null; alerta: string | null } {
   const t = String(texto || '').replace(/\s+/g, ' ');
   if (!t) return { consulta: null, alerta: null };
@@ -1250,7 +1258,8 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
     temFicha: ficha,
     rotaCaixa: !!cf._caixaRota,
     avaliacaoFeita: avaliacaoFeita(cf),
-    participantes: ps.map((p) => ({ ordem: p.ordem, nome: p.nome || '', semRenda: p.semRenda === true, consultado: !!c.consultas?.[p.ordem], cadastro: c.cadastros?.[p.ordem]?.status ? String(c.cadastros[p.ordem].status).slice(0, 90) : null, falta: ficha ? faltaParaCadastro(p) : [] })),
+    // Quem tem restrição (Fabio 18/11, Gilvano/Pablyne: "mostre no CRM qual cadastro, cônjuge ou proponente tem restrição"): papel + resultado da consulta de cada um.
+    participantes: ps.map((p) => ({ ordem: p.ordem, nome: p.nome || '', papel: papelDoParticipante(ps, p), semRenda: p.semRenda === true, consultado: !!c.consultas?.[p.ordem], ...((r) => ({ consulta: r.consulta, alertaConsulta: r.alerta }))(resumoConsulta(c.consultas?.[p.ordem]?.texto)), cadastro: c.cadastros?.[p.ordem]?.status ? String(c.cadastros[p.ordem].status).slice(0, 90) : null, falta: ficha ? faltaParaCadastro(p) : [] })),
     cadastro: { trava: travaCadastroCaixa(cf) },
     analise: {
       trava: travaAnaliseCaixa(cf, !he),

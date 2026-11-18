@@ -15,7 +15,7 @@ import { VistoriaCaixaButton } from './vistoria-caixa-button';
  * CAIXA de novo" (Jézer/Fernanda depois da autorização do PV): a extensão reabre a avaliação que deu erro e clica em Avançar lá, sem preencher outra. */
 /** 'cadastro' (Fabio 11/11): só falta o cadastro gravado — não trava; o CRM faz o cadastro e a análise sai sozinha depois. */
 type Trava = { tipo: 'andamento' | 'feito' | 'falta' | 'cadastro'; msg: string } | null;
-interface Part { ordem: number; nome: string; semRenda: boolean; consultado: boolean; cadastro: string | null; falta: string[] }
+interface Part { ordem: number; nome: string; papel?: string; semRenda: boolean; consultado: boolean; consulta?: string | null; alertaConsulta?: string | null; cadastro: string | null; falta: string[] }
 interface Refazer { proposta: string | null; data: string | null; produto: string | null; resultado: string | null }
 interface Estado {
   mostrar: boolean;
@@ -257,6 +257,22 @@ export function CaixaCardButtons({ leadId, onDone }: { leadId: string; /** Recar
             <span className="text-slate-400">Consulta do nome:</span>{' '}
             {estado.pedido.resultado === 'limpo' ? 'sem restrição ✓' : estado.pedido.resultado === 'ocorrencia' ? 'com restrição ⚠️' : 'em andamento'} · {quando(estado.pedido.em)}
           </p>
+        )}
+        {/* Quem tem restrição (Fabio 18/11): uma linha por pessoa consultada — proponente, cônjuge ou outro proponente. */}
+        {estado.participantes.some((p) => p.consultado) && (
+          <ul className="space-y-0.5 pl-2">
+            {estado.participantes.filter((p) => p.consultado).map((p) => {
+              const restricao = p.consulta === 'Constam ocorrências';
+              const limpo = p.consulta === 'Nada consta';
+              return (
+                <li key={p.ordem} className={cn('truncate', restricao || p.alertaConsulta ? 'font-medium text-amber-700' : 'text-slate-600')} title={p.alertaConsulta || p.consulta || undefined}>
+                  {p.nome.split(' ')[0] || `${p.ordem}º`} <span className="text-slate-400">({p.papel || `${p.ordem}º participante`})</span>:{' '}
+                  {restricao ? 'com restrição ⚠️' : limpo ? 'sem restrição ✓' : p.consulta || 'consultado'}
+                  {p.alertaConsulta ? ` · ${p.alertaConsulta}` : ''}
+                </li>
+              );
+            })}
+          </ul>
         )}
         <p className="truncate text-slate-600" title={linhaCadastro}><span className="text-slate-400">Cadastro:</span> {linhaCadastro}</p>
         <p className="truncate text-slate-600" title={linhaAnalise}><span className="text-slate-400">Análise:</span> {linhaAnalise}</p>
