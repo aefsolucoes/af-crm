@@ -347,10 +347,12 @@ router.post('/send-media', async (req: AuthRequest, res: Response) => {
 });
 
 // Recado pra quando o cliente responder (Fabio 14/11, Cleci): conversa de 24 h fechada → o texto fica guardado no card e sai sozinho quando ele responder
-// (recado-ao-abrir.service). Reabrir a conversa (template de atualização) continua sendo um envio à parte.
+// (recado-ao-abrir.service). Reabrir a conversa (template de atualização) continua sendo um envio à parte. `iaDepois` ('ligada' | 'desligada'): como a IA do card
+// fica depois que o recado sai (Fabio 18/11). Gravar de novo = editar; DELETE cancela.
 router.post('/recado-ao-abrir', async (req: AuthRequest, res: Response) => {
-  const { leadId, content, docsSemRespostaHoras } = (req.body || {}) as { leadId?: string; content?: string; docsSemRespostaHoras?: number };
+  const { leadId, content, docsSemRespostaHoras, iaDepois } = (req.body || {}) as { leadId?: string; content?: string; docsSemRespostaHoras?: number; iaDepois?: string };
   if (!leadId || !String(content || '').trim()) return res.status(400).json({ error: 'leadId e content são obrigatórios' });
+  if (iaDepois !== undefined && iaDepois !== 'ligada' && iaDepois !== 'desligada') return res.status(400).json({ error: 'iaDepois deve ser "ligada" ou "desligada"' });
   try {
     const perms = await loadPerms(req);
     if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
@@ -358,9 +360,22 @@ router.post('/recado-ao-abrir', async (req: AuthRequest, res: Response) => {
     if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
     const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
     const { guardarRecadoAoAbrir } = require('../services/recado-ao-abrir.service') as typeof import('../services/recado-ao-abrir.service');
-    await guardarRecadoAoAbrir(lead.id, String(content), u?.name || 'equipe', { docsSemRespostaHoras: Number(docsSemRespostaHoras) || 0 });
+    await guardarRecadoAoAbrir(lead.id, String(content), u?.name || 'equipe', { docsSemRespostaHoras: Number(docsSemRespostaHoras) || 0, ia: iaDepois as any });
     res.json({ ok: true });
   } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao guardar o recado' }); }
+});
+
+router.delete('/recado-ao-abrir/:leadId', async (req: AuthRequest, res: Response) => {
+  try {
+    const perms = await loadPerms(req);
+    if (!perms.inbox_reply) return res.status(403).json({ error: 'Você não tem permissão para enviar mensagens.' });
+    const lead = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { id: true } });
+    if (!lead) return res.status(404).json({ error: 'Card não encontrado' });
+    const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } });
+    const { cancelarRecadoAoAbrir } = require('../services/recado-ao-abrir.service') as typeof import('../services/recado-ao-abrir.service');
+    const ok = await cancelarRecadoAoAbrir(lead.id, u?.name || 'equipe');
+    res.json({ ok });
+  } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao cancelar o recado' }); }
 });
 
 // Envia um template aprovado pela Meta (API oficial) — único jeito de reabrir

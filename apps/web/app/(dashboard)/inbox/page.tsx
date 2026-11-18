@@ -303,6 +303,7 @@ function InboxPageInner() {
               messages={allMessages}
               notes={lead.notes}
               aiAutoReplyActive={(lead as any).aiAutoReplyActive}
+              recadoAoAbrir={(lead as any).customFields?._recadoAoAbrir || null}
               starred={(lead as any).starred}
               departmentId={(lead as any).pipeline?.department?.id}
               onNewMessage={handleNewMessage}

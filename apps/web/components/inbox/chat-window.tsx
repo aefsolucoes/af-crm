@@ -67,6 +67,8 @@ interface ChatWindowProps {
   notes?: Note[];
   /** true = a IA responde esse cliente SOZINHA no WhatsApp, sem revisão humana. */
   aiAutoReplyActive?: boolean;
+  /** Recado guardado com a janela de 24 h fechada (`_recadoAoAbrir` do card): sai sozinho quando o cliente responder; `ia` = como a IA fica depois. */
+  recadoAoAbrir?: RecadoAoAbrir | null;
   /** Lead marcado como importante/prioridade — mesma estrela do Kanban. */
   starred?: boolean;
   onNewMessage: (msg: Message) => void;
@@ -92,6 +94,7 @@ interface ChatWindowProps {
 }
 
 type AIMode = 'ajuste' | 'grammar';
+type RecadoAoAbrir = { texto?: string; por?: string; at?: string; ia?: 'ligada' | 'desligada' };
 
 // Um botão só na barra ("Ajustar com IA") abre estas opções em cima do campo (Fabio 12/11: dois botões na barra espremiam o campo de digitar).
 const AI_BUTTONS: { mode: AIMode; label: string; emoji: string }[] = [
@@ -281,7 +284,7 @@ export function nomeDeOutraPessoa(texto: string, nomesDaConversa: (string | unde
   return conhecidos.has(cand) ? null : m[1];
 }
 
-export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messages, notes = [], aiAutoReplyActive, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
+export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messages, notes = [], aiAutoReplyActive, recadoAoAbrir, starred: starredProp, onNewMessage, onClose, onOpenInfo, departmentId, hasOlderMessages, loadingOlderMessages, onLoadOlderMessages }: ChatWindowProps) {
   const router = useRouter();
   // O listener de socket que atualiza o card de ligação (mais abaixo) roda
   // dentro de um useEffect que só depende de [leadId, onNewMessage] (não
@@ -327,6 +330,47 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
   const [aiActive, setAiActive] = useState(!!aiAutoReplyActive);
   const [togglingAi, setTogglingAi] = useState(false);
   useEffect(() => { setAiActive(!!aiAutoReplyActive); }, [leadId, aiAutoReplyActive]);
+
+  // Recado com a janela de 24 h fechada (Fabio 18/11): o texto do campo fica guardado e o CRM manda sozinho quando o cliente responder;
+  // na hora de guardar, a equipe escolhe se a IA fica ligada ou desligada depois do envio.
+  const recado = recadoAoAbrir?.texto ? recadoAoAbrir : null;
+  const [recadoPanel, setRecadoPanel] = useState(false);
+  const [recadoIa, setRecadoIa] = useState<'ligada' | 'desligada'>('desligada');
+  const [savingRecado, setSavingRecado] = useState(false);
+  function abrirRecado(editando?: boolean) {
+    if (editando && recado?.texto) setContent(recado.texto);
+    setRecadoIa(editando && recado?.ia ? recado.ia : aiActive ? 'ligada' : 'desligada');
+    setRecadoPanel(true);
+    setShowTemplates(false); setShowAI(false);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+  async function guardarRecado() {
+    const text = content.trim();
+    if (!text || savingRecado) return;
+    setSavingRecado(true);
+    try {
+      await api.post('/api/messages/recado-ao-abrir', { leadId, content: text, iaDepois: recadoIa });
+      setContent('');
+      setRecadoPanel(false);
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      toast('Recado guardado — sai sozinho quando o cliente responder', 'success');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao guardar o recado', 'error');
+    } finally {
+      setSavingRecado(false);
+    }
+  }
+  async function cancelarRecado() {
+    if (!window.confirm('Cancelar o recado guardado? Ele não vai ser enviado ao cliente.')) return;
+    try {
+      await api.delete(`/api/messages/recado-ao-abrir/${leadId}`);
+      setRecadoPanel(false);
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      toast('Recado cancelado', 'success');
+    } catch (err: any) {
+      toast(err?.response?.data?.error || 'Erro ao cancelar o recado', 'error');
+    }
+  }
 
   // Marcar como importante/prioridade — mesma estrela do Kanban, botão aqui
   // no cabeçalho da Inbox (pedido do usuário: quem trabalha pela Inbox não
@@ -1111,9 +1155,8 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
     // Cumprimento com o nome de OUTRA pessoa (27/10: "Bom dia Rosana" saiu na conversa do Reginaldo): confirma antes de mandar.
     const outroNome = nomeDeOutraPessoa(text, [leadName, greetingName, speakerLabel]);
     if (outroNome && !window.confirm(`A mensagem cumprimenta "${outroNome}", mas esta conversa é de ${leadName}. Enviar mesmo assim?`)) return;
-    if (windowClosedForApi) {
-      toast('Janela de 24h fechada — use um template aprovado para reabrir a conversa.', 'error');
-      setShowTemplates(true);
+    if (windowClosedForApi) { // texto livre não sai: vira recado guardado (escolhe a IA e confirma no painel em cima do campo)
+      if (recadoPanel) await guardarRecado(); else abrirRecado();
       return;
     }
     const quotedMsg = replyingTo;     // guarda pra restaurar se o envio falhar
@@ -2656,7 +2699,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
       {/* Aviso: janela de 24h fechada na API Oficial — só template reabre */}
       {windowClosedForApi && (
         <div className="relative z-10 flex items-center justify-between gap-3 px-4 py-2 bg-amber-900/40 border-t border-amber-700/40">
-          <span className="text-xs text-amber-300">Janela de 24h fechada — a API Oficial só deixa reabrir com um template aprovado.</span>
+          <span className="text-xs text-amber-300">Janela de 24h fechada — só um template aprovado reabre. Ou escreva abaixo e guarde: sai sozinho quando o cliente responder.</span>
           <button
             type="button"
             onClick={handleOpenTemplates}
@@ -2664,6 +2707,63 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
           >
             Usar template
           </button>
+        </div>
+      )}
+
+      {/* Recado guardado (Fabio 18/11): o que está esperando o cliente responder — editar ou cancelar */}
+      {recado && !recadoPanel && (
+        <div className="relative z-10 px-4 py-2 bg-[#1f2c34] border-t border-[#2a3942]">
+          <div className="flex items-start gap-2">
+            <Clock size={14} className="flex-shrink-0 mt-0.5 text-[#53bdeb]" />
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-medium text-[#53bdeb]">
+                Recado guardado — sai sozinho quando o cliente responder{recado.ia ? ` · depois, IA ${recado.ia}` : ''}
+              </p>
+              <p className="text-xs text-[#d1d7db] line-clamp-2 whitespace-pre-line break-words">{recado.texto}</p>
+              {recado.por && <p className="text-[11px] text-[#8696a0]">por {recado.por}{recado.at ? ` · ${formatDateTime(recado.at)}` : ''}</p>}
+            </div>
+            <div className="flex flex-shrink-0 gap-1.5">
+              <button type="button" onClick={() => abrirRecado(true)} className="text-xs font-medium text-[#e9edef] bg-[#2a3942] hover:bg-[#33434c] px-2.5 py-1.5 rounded-lg transition-colors">Editar</button>
+              <button type="button" onClick={cancelarRecado} className="text-xs font-medium text-red-300 bg-red-900/30 hover:bg-red-900/50 px-2.5 py-1.5 rounded-lg transition-colors">Cancelar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Guardar o recado: escolhe como a IA fica depois do envio e confirma */}
+      {recadoPanel && (
+        <div className="relative z-10 px-4 py-2.5 bg-[#1f2c34] border-t border-[#2a3942] space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs font-medium text-[#53bdeb] flex items-center gap-1.5">
+              <Clock size={14} /> {recado ? 'Editar o recado guardado' : 'Guardar pra enviar quando o cliente responder'}
+            </p>
+            <button type="button" onClick={() => setRecadoPanel(false)} title="Fechar" className="text-[#8696a0] hover:text-[#e9edef]"><X size={16} /></button>
+          </div>
+          <p className="text-[11px] text-[#8696a0]">Escreva no campo abaixo. O CRM manda sozinho assim que o cliente responder (entre 07h e 21h).{recado ? ' Substitui o recado guardado.' : ''}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-[#d1d7db]">Depois de enviar, a IA fica:</span>
+            {(['ligada', 'desligada'] as const).map((op) => (
+              <button
+                key={op}
+                type="button"
+                onClick={() => setRecadoIa(op)}
+                className={cn(
+                  'flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium transition-colors',
+                  recadoIa === op ? 'bg-[#00a884] text-[#111b21]' : 'bg-[#2a3942] text-[#8696a0] hover:bg-[#33434c] hover:text-[#e9edef]'
+                )}
+              >
+                <Bot size={13} /> {op === 'ligada' ? 'Ligada' : 'Desligada'}
+              </button>
+            ))}
+            <button
+              type="button"
+              onClick={guardarRecado}
+              disabled={!content.trim() || savingRecado}
+              className="ml-auto flex items-center gap-1.5 text-xs font-medium bg-[#00a884] text-[#111b21] px-3 py-1.5 rounded-lg hover:bg-[#02c99b] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {savingRecado ? <Loader2 size={13} className="animate-spin" /> : <Clock size={13} />} Guardar recado
+            </button>
+          </div>
         </div>
       )}
 
@@ -2790,7 +2890,7 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
                 onChange={(e) => setContent(e.target.value)}
                 onKeyDown={handleKeyDown}
                 onPaste={(e) => { const fs = Array.from(e.clipboardData?.files || []); if (fs.length) { e.preventDefault(); stageFiles(fs); } }}
-                placeholder={windowClosedForApi ? 'Janela fechada — use um template acima' : destinoNome ? `Mensagem para ${destinoNome}` : 'Digite uma mensagem'}
+                placeholder={windowClosedForApi ? 'Janela fechada — escreva o recado pra quando o cliente responder' : destinoNome ? `Mensagem para ${destinoNome}` : 'Digite uma mensagem'}
                 rows={1}
                 spellCheck
                 lang="pt-BR"
@@ -2838,12 +2938,12 @@ export function ChatWindow({ leadId, leadName, greetingName, speakerLabel, messa
         ) : content.trim() || stagedFiles.length ? (
           <button
             type="submit"
-            disabled={sending || uploadingFile}
-            title={stagedFiles.length ? 'Enviar o anexo' : 'Enviar'}
+            disabled={sending || uploadingFile || savingRecado}
+            title={stagedFiles.length ? 'Enviar o anexo' : windowClosedForApi ? 'Guardar pra enviar quando o cliente responder' : 'Enviar'}
             className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center text-white transition-all opacity-100 scale-100"
             style={{ backgroundColor: '#00a884' }}
           >
-            <Send size={18} />
+            {windowClosedForApi && !stagedFiles.length ? <Clock size={18} /> : <Send size={18} />}
           </button>
         ) : (
           <button
