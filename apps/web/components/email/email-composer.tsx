@@ -91,6 +91,8 @@ export interface MailboxOption {
   shared: boolean;
   /** Assinatura que vai no fim do e-mail (a da caixa ou a padrão). */
   signature?: string;
+  /** Caixa pessoal de OUTRO usuário (só o admin manda por ela): o nome do dono. */
+  ownerName?: string | null;
 }
 
 /**
@@ -117,6 +119,19 @@ export function EmailComposer({
   onSent?: () => void;
 }) {
   const [mailboxId, setMailboxId] = useState(defaultMailboxId || mailboxes.find((m) => !m.shared)?.id || mailboxes[0]?.id || '');
+  // Responder por qualquer caixa (Fabio 18/11): o "De" lista as caixas pelas quais a pessoa manda — a da empresa e a própria; o admin, todas as ligadas ao CRM.
+  const [boxes, setBoxes] = useState<MailboxOption[]>(mailboxes);
+  useEffect(() => {
+    let vivo = true;
+    api.get('/api/email/send-accounts')
+      .then(({ data }) => {
+        if (!vivo || !Array.isArray(data) || !data.length) return;
+        setBoxes(data.map((b: any) => ({ id: b.id, address: b.address, displayName: b.displayName, shared: b.shared, signature: b.signature, ownerName: b.ownerName })));
+        setMailboxId((atual) => (data.some((b: any) => b.id === atual) ? atual : data.find((b: any) => !b.shared && !b.ownerName)?.id || data[0].id));
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
   // Vários destinatários em chips, como no Outlook (Fabio 18/11) — Para, Cc e Cco.
   const [toList, setToList] = useState<string[]>(() => splitAddresses(to));
   const [ccList, setCcList] = useState<string[]>(() => splitAddresses(initialCc));
@@ -131,7 +146,7 @@ export function EmailComposer({
     if (!replyToId) return;
     let vivo = true;
     setThreadLoading(true);
-    api.get(`/api/email/thread/${replyToId}`)
+    api.get(`/api/email/thread/${replyToId}`, { params: leadId ? { leadId } : undefined })
       .then(({ data }) => {
         if (!vivo) return;
         setThread(data.messages || []);
@@ -145,7 +160,7 @@ export function EmailComposer({
       .catch(() => { if (vivo) setThread([]); })
       .finally(() => { if (vivo) setThreadLoading(false); });
     return () => { vivo = false; };
-  }, [replyToId, draftId]);
+  }, [replyToId, draftId, leadId]);
   const [subjectValue, setSubjectValue] = useState(subject);
   const [body, setBody] = useState(initialBody);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -321,7 +336,7 @@ export function EmailComposer({
     if (!mailboxId) return;
     setSavingDraft(true);
     try {
-      await api.post(`/api/email/accounts/${mailboxId}/drafts`, { to: toList, cc: ccList, subject: subjectValue, body, draftId, replyToId });
+      await api.post(`/api/email/accounts/${mailboxId}/drafts`, { to: toList, cc: ccList, subject: subjectValue, body, draftId, replyToId, leadId });
       toast(bccList.length ? 'Rascunho salvo (o Cco não fica no rascunho)' : 'Rascunho salvo');
       onSent?.();
       if (closeAfter) onClose();
@@ -347,8 +362,8 @@ export function EmailComposer({
         <div className="flex items-center gap-2">
           <label className="w-14 text-xs text-slate-500 flex-shrink-0">De</label>
           <select value={mailboxId} onChange={(e) => setMailboxId(e.target.value)} className={field}>
-            {mailboxes.map((m) => (
-              <option key={m.id} value={m.id}>{m.shared ? `${m.displayName || 'Comercial'} — ` : ''}{m.address}</option>
+            {boxes.map((m) => (
+              <option key={m.id} value={m.id}>{m.shared ? `${m.displayName || 'Comercial'} — ` : ''}{m.address}{m.ownerName ? ` (caixa de ${m.ownerName})` : ''}</option>
             ))}
           </select>
         </div>
@@ -523,7 +538,7 @@ export function EmailComposer({
           </div>
         )}
         {(() => {
-          const sig = mailboxes.find((m) => m.id === mailboxId)?.signature;
+          const sig = boxes.find((m) => m.id === mailboxId)?.signature;
           return sig ? (
             <div className="border-l-[3px] border-blue-500/70 pl-3 py-0.5">
               {sig.split('\n').map((l) => l.trim()).filter(Boolean).map((l, i) => (

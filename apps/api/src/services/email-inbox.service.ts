@@ -199,6 +199,32 @@ export async function getVisibleEmailAccount(accountId: string, userId: string, 
   return prisma.emailAccount.findFirst({ where: { id, accountId, OR: [{ userId: null }, { userId }] } });
 }
 
+/** Caixas pelas quais a pessoa pode MANDAR/responder (Fabio 18/11: "preciso que o CRM consiga responder e-mails por qualquer caixa de e-mail"):
+ *  a da empresa e a própria; o administrador, qualquer caixa ligada ao CRM (inclusive a pessoal de outro usuário). Ler a caixa (página E-mail)
+ *  continua só em listVisibleEmailAccounts. */
+export async function listSendableEmailAccounts(accountId: string, user: { id: string; role: string }) {
+  if (user.role !== 'ADMIN') return (await listVisibleEmailAccounts(accountId, user.id)).map((a) => ({ ...a, ownerName: null as string | null }));
+  await ensureCompanyMailbox(accountId);
+  const accounts = await prisma.emailAccount.findMany({
+    where: { accountId },
+    orderBy: [{ userId: 'asc' }, { createdAt: 'asc' }],
+    select: { id: true, userId: true, address: true, displayName: true, smtpHost: true, smtpPort: true, lastSyncAt: true, lastError: true, signature: true, user: { select: { name: true } } },
+  });
+  const me = await prisma.user.findUnique({ where: { id: user.id }, select: { name: true } });
+  return accounts.map(({ user: dono, ...a }) => ({
+    ...a,
+    shared: !a.userId,
+    ownerName: a.userId && a.userId !== user.id ? dono?.name || null : null,
+    // Quem escreve é quem está logado: sem assinatura gravada na caixa, vai o nome dele.
+    defaultSignature: defaultSignature(a, me?.name),
+  }));
+}
+
+export async function getSendableEmailAccount(accountId: string, user: { id: string; role: string }, id: string) {
+  if (user.role === 'ADMIN') return prisma.emailAccount.findFirst({ where: { id, accountId } });
+  return getVisibleEmailAccount(accountId, user.id, id);
+}
+
 /** Conecta (ou reconecta) a caixa pessoal do usuário — testa IMAP e SMTP
  *  antes de salvar, pra não guardar senha errada. */
 export async function connectPersonalMailbox(params: {
@@ -808,11 +834,18 @@ function escapeHtml(s: string) {
 
 /** Envia pela caixa escolhida. Resposta (replyToId) mantém a conversa no
  *  mesmo fio (In-Reply-To/References) e herda o card do e-mail original. */
-/** O e-mail sendo respondido. Pode estar em outra caixa que a pessoa enxerga (Fabio 09/11: responder pelo fabio@ o que chegou no comercial@). */
-function emailRespondido(acc: EmailAccount, replyToId: string | null | undefined, userId: string | null | undefined) {
+/** O e-mail sendo respondido. Pode estar em outra caixa que a pessoa enxerga (Fabio 09/11: responder pelo fabio@ o que chegou no comercial@),
+ *  em qualquer caixa quando é o e-mail da conversa do card respondido (leadId), ou em qualquer caixa da conta pro administrador (Fabio 18/11). */
+function emailRespondido(acc: EmailAccount, replyToId: string | null | undefined, userId: string | null | undefined, opts: { leadId?: string | null; admin?: boolean } = {}) {
   if (!replyToId) return Promise.resolve(null);
   return prisma.emailMessage.findFirst({
-    where: { id: replyToId, emailAccount: { accountId: acc.accountId, OR: [{ id: acc.id }, { userId: null }, ...(userId ? [{ userId }] : [])] } },
+    where: {
+      id: replyToId, emailAccount: { accountId: acc.accountId },
+      ...(opts.admin ? {} : { OR: [
+        { emailAccount: { OR: [{ id: acc.id }, { userId: null }, ...(userId ? [{ userId }] : [])] } },
+        ...(opts.leadId ? [{ leadId: opts.leadId }] : []),
+      ] }),
+    },
   });
 }
 
@@ -821,6 +854,8 @@ export async function sendEmailFrom(params: {
   /** Cópia oculta (Cco): vai no envio e na cópia em Enviados do servidor; o CRM não guarda (Fabio 18/11, vários em cópia como no Outlook). */
   bcc?: string[];
   replyToId?: string | null; leadId?: string | null; io: Io;
+  /** Administrador: responde e-mail de qualquer caixa da conta, mantendo o fio. */
+  admin?: boolean;
   /** Enviando um rascunho: ele sai da pasta Rascunhos depois do envio. */
   draftId?: string | null;
   attachments?: { filename: string; contentType: string; content: Buffer }[];
@@ -847,7 +882,7 @@ export async function sendEmailFrom(params: {
   if (!body.trim()) throw new Error('Escreva a mensagem');
 
   const user = params.userId ? await prisma.user.findUnique({ where: { id: params.userId }, select: { name: true } }) : null;
-  const parent = await emailRespondido(acc, params.replyToId, params.userId);
+  const parent = await emailRespondido(acc, params.replyToId, params.userId, { leadId: params.leadId, admin: params.admin });
 
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
@@ -1155,6 +1190,7 @@ async function removeDraft(acc: EmailAccount, draftId: string) {
  *  também no webmail. Atualizar = grava o novo e apaga o anterior. */
 export async function saveDraft(params: {
   acc: EmailAccount; to: string[]; cc?: string[]; subject: string; body: string; draftId?: string | null; replyToId?: string | null; userId?: string | null;
+  leadId?: string | null; admin?: boolean;
 }) {
   const { acc } = params;
   const to = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
@@ -1164,7 +1200,7 @@ export async function saveDraft(params: {
   if (!to.length && !subject && !body.trim()) throw new Error('Rascunho vazio');
   const domain = acc.address.split('@')[1] || 'af-crm.local';
   const messageId = `<${crypto.randomUUID()}@${domain}>`;
-  const parent = await emailRespondido(acc, params.replyToId, params.userId);
+  const parent = await emailRespondido(acc, params.replyToId, params.userId, { leadId: params.leadId, admin: params.admin });
   const mail = {
     from: acc.address, to: to.length ? to : undefined, cc: cc.length ? cc : undefined, subject, text: body, messageId,
     ...(parent?.messageId ? { inReplyTo: parent.messageId, references: [parent.references, parent.messageId].filter(Boolean).join(' ') } : {}),

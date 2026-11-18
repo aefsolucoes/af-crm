@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import {
-  listVisibleEmailAccounts, getVisibleEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
+  listVisibleEmailAccounts, getVisibleEmailAccount, listSendableEmailAccounts, getSendableEmailAccount, connectPersonalMailbox, disconnectPersonalMailbox,
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
   updateMailboxSignature, searchLeadsForEmail, linkEmailToLead, moveConversationEmail,
   moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder, conversationEmailAttachment,
@@ -20,9 +20,23 @@ router.use(requirePermission('inbox_view'));
 
 const io = (req: AuthRequest) => (req as any).app.get('io');
 const fail = (res: Response, err: any, fallback: string) => res.status(400).json({ error: err?.message || fallback });
+const usuario = (req: AuthRequest) => ({ id: req.user!.id, role: req.user!.role });
+const enderecos = (v: unknown) => (Array.isArray(v) ? (v as any[]) : []).map((a) => String(a?.address || '').trim().toLowerCase()).filter(Boolean);
+
+/** Pode responder este e-mail? Está numa caixa pela qual a pessoa manda (admin: qualquer uma), ou é o e-mail da conversa do card que ela está respondendo. */
+async function podeResponder(req: AuthRequest, msg: { emailAccountId: string; leadId: string | null }, leadId?: string | null) {
+  if (await getSendableEmailAccount(req.user!.accountId, usuario(req), msg.emailAccountId)) return true;
+  return !!leadId && msg.leadId === leadId && !!(await prisma.emailAccount.findFirst({ where: { id: msg.emailAccountId, accountId: req.user!.accountId }, select: { id: true } }));
+}
 
 router.get('/accounts', async (req: AuthRequest, res: Response) => {
   res.json(await listVisibleEmailAccounts(req.user!.accountId, req.user!.id));
+});
+
+// Caixas do "De" na janela de escrever/responder (Fabio 18/11: "responder e-mails por qualquer caixa de e-mail"): a da empresa + a própria; admin, todas.
+router.get('/send-accounts', async (req: AuthRequest, res: Response) => {
+  const caixas = await listSendableEmailAccounts(req.user!.accountId, usuario(req));
+  res.json(caixas.map((c: any) => ({ id: c.id, address: c.address, displayName: c.displayName, shared: c.shared, ownerName: c.ownerName || null, signature: c.signature || c.defaultSignature, lastError: c.lastError || null })));
 });
 
 // "Responder e-mail" direto da conversa do cliente (Fabio 26/10): acha o e-mail original (pelo Message-ID que a conversa guarda) numa caixa que esta pessoa pode ver,
@@ -31,19 +45,37 @@ router.get('/reply-target', async (req: AuthRequest, res: Response) => {
   const externalId = String(req.query.externalId || '');
   const leadId = String(req.query.leadId || '');
   if (!externalId) return res.status(400).json({ error: 'sem e-mail de origem' });
-  const caixas = await listVisibleEmailAccounts(req.user!.accountId, req.user!.id);
-  const ids = (caixas as any[]).map((c) => c.id);
-  const msg = await prisma.emailMessage.findFirst({
-    where: { messageId: externalId, emailAccountId: { in: ids }, ...(leadId ? { OR: [{ leadId }, { leadId: null }] } : {}) },
-    orderBy: { date: 'desc' },
-    select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, folder: true, toList: true },
+  // Responder por qualquer caixa (Fabio 18/11): o e-mail pode ter chegado em qualquer caixa ligada ao CRM. Vale a cópia numa caixa pela qual a pessoa
+  // manda, ou em QUALQUER caixa quando é o e-mail da conversa deste card. O "De" já vem na caixa onde ele chegou (a do Para antes da do Cc);
+  // se a pessoa não pode mandar por ela (caixa pessoal de outro usuário), vem a da empresa.
+  const envio = await listSendableEmailAccounts(req.user!.accountId, usuario(req));
+  const podeEnviar = new Set((envio as any[]).map((c) => c.id as string));
+  const todas = await prisma.emailAccount.findMany({ where: { accountId: req.user!.accountId }, select: { id: true, address: true } });
+  const enderecoDa = new Map(todas.map((c) => [c.id, c.address.toLowerCase()]));
+  const copias = await prisma.emailMessage.findMany({
+    where: {
+      messageId: externalId, emailAccountId: { in: [...enderecoDa.keys()] },
+      OR: [{ emailAccountId: { in: [...podeEnviar] }, ...(leadId ? { OR: [{ leadId }, { leadId: null }] } : {}) }, ...(leadId ? [{ leadId }] : [])],
+    },
+    orderBy: { date: 'desc' }, take: 10,
+    select: { id: true, emailAccountId: true, fromAddress: true, fromName: true, subject: true, folder: true, toList: true, ccList: true },
   });
-  if (!msg) return res.status(404).json({ error: 'Não achei esse e-mail numa caixa que você vê — responda pela página E-mail.' });
+  const chegada = (c: (typeof copias)[number]) => {
+    const caixa = enderecoDa.get(c.emailAccountId) || '';
+    const pasta = c.folder === 'INBOX' || c.folder === 'SENT' ? 4 : 0;
+    const dela = c.folder === 'SENT' ? (String(c.fromAddress || '').toLowerCase() === caixa ? 2 : 0) : (enderecos(c.toList).includes(caixa) ? 2 : enderecos(c.ccList).includes(caixa) ? 1 : 0);
+    return pasta + dela;
+  };
+  const ordem = [...copias].sort((a, b) => chegada(b) - chegada(a) || Number(podeEnviar.has(b.emailAccountId)) - Number(podeEnviar.has(a.emailAccountId)));
+  const msg = ordem[0];
+  if (!msg) return res.status(404).json({ error: 'Não achei esse e-mail numa caixa ligada ao CRM — responda pela página E-mail.' });
+  const mailboxId = podeEnviar.has(msg.emailAccountId) ? msg.emailAccountId
+    : ordem.find((c) => podeEnviar.has(c.emailAccountId))?.emailAccountId || (envio as any[]).find((c) => c.shared)?.id || (envio as any[])[0]?.id || null;
   // E-mail que NÓS mandamos (Enviados): a resposta vai pro mesmo destinatário; o que o cliente mandou: responde pro remetente.
   const enviado = msg.folder === 'SENT';
   const to = enviado ? ((Array.isArray(msg.toList) ? (msg.toList as any[]) : []).map((t) => t?.address).filter(Boolean).join(', ')) : (msg.fromAddress || '');
   const subject = /^re:/i.test(String(msg.subject || '')) ? String(msg.subject) : `Re: ${msg.subject || ''}`.trim();
-  res.json({ id: msg.id, mailboxId: msg.emailAccountId, to, subject });
+  res.json({ id: msg.id, mailboxId, chegouEm: enderecoDa.get(msg.emailAccountId) || null, to, subject });
 });
 
 /** Assunto sem "Re:/RES:/Fwd:/ENC:" na frente, pra achar o mesmo fio pelo assunto. */
@@ -54,12 +86,17 @@ const assuntoBase = (s: string | null | undefined) => String(s || '').replace(/^
 // - messages: os e-mails do mesmo fio (Message-ID / In-Reply-To / References; com card, também o mesmo assunto no mesmo card), mais novo primeiro,
 //   só das caixas que a pessoa vê. "text" é a parte nova de cada um; "full" o texto inteiro com o histórico citado (quando tem).
 router.get('/thread/:id', async (req: AuthRequest, res: Response) => {
-  const caixas = await listVisibleEmailAccounts(req.user!.accountId, req.user!.id);
-  const ids = (caixas as any[]).map((c) => c.id);
-  const parent = await prisma.emailMessage.findFirst({ where: { id: req.params.id, emailAccountId: { in: ids } } });
+  // Caixas pelas quais a pessoa manda (admin: todas) + o e-mail da conversa do card respondido (?leadId), em qualquer caixa da conta.
+  const caixas = await listSendableEmailAccounts(req.user!.accountId, usuario(req));
+  const ids = (caixas as any[]).map((c) => c.id as string);
+  const leadId = String(req.query.leadId || '');
+  const parent = await prisma.emailMessage.findFirst({
+    where: { id: req.params.id, emailAccount: { accountId: req.user!.accountId }, OR: [{ emailAccountId: { in: ids } }, ...(leadId ? [{ leadId }] : [])] },
+  });
   if (!parent) return res.status(404).json({ error: 'E-mail não encontrado' });
+  const doCard = leadId && parent.leadId === leadId ? leadId : null;
+  const escopo = { OR: [{ emailAccountId: { in: ids } }, ...(doCard ? [{ leadId: doCard, emailAccount: { accountId: req.user!.accountId } }] : [])] };
   const nossas = new Set((await prisma.emailAccount.findMany({ where: { accountId: req.user!.accountId }, select: { address: true } })).map((a) => a.address.toLowerCase()));
-  const enderecos = (v: unknown) => (Array.isArray(v) ? (v as any[]) : []).map((a) => String(a?.address || '').trim().toLowerCase()).filter(Boolean);
   const unicos = (l: string[]) => [...new Set(l)];
   const remetente = String(parent.fromAddress || '').toLowerCase();
   const nosso = parent.folder === 'SENT' || nossas.has(remetente);
@@ -77,7 +114,7 @@ router.get('/thread/:id', async (req: AuthRequest, res: Response) => {
     const lista = [...conhecidos].slice(0, 300);
     if (!lista.length) break;
     const rows = await prisma.emailMessage.findMany({
-      where: { emailAccountId: { in: ids }, folder: { in: ['INBOX', 'SENT'] }, OR: [{ messageId: { in: lista } }, { inReplyTo: { in: lista } }] },
+      where: { AND: [escopo, { folder: { in: ['INBOX', 'SENT'] } }, { OR: [{ messageId: { in: lista } }, { inReplyTo: { in: lista } }] }] },
       orderBy: { date: 'desc' }, take: 80,
     });
     let novos = 0;
@@ -88,7 +125,7 @@ router.get('/thread/:id', async (req: AuthRequest, res: Response) => {
   const base = assuntoBase(parent.subject);
   if (parent.leadId && base.length >= 4) {
     const mesmos = await prisma.emailMessage.findMany({
-      where: { emailAccountId: { in: ids }, folder: { in: ['INBOX', 'SENT'] }, leadId: parent.leadId, subject: { contains: base, mode: 'insensitive' } },
+      where: { AND: [escopo, { folder: { in: ['INBOX', 'SENT'] }, leadId: parent.leadId, subject: { contains: base, mode: 'insensitive' } }] },
       orderBy: { date: 'desc' }, take: 60,
     });
     for (const r of mesmos) if (!achados.has(r.id) && assuntoBase(r.subject).toLowerCase() === base.toLowerCase()) achados.set(r.id, r);
@@ -200,12 +237,12 @@ router.delete('/accounts/:id/messages/:msgId', async (req: AuthRequest, res: Res
 });
 
 router.post('/accounts/:id/drafts', async (req: AuthRequest, res: Response) => {
-  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  const acc = await getSendableEmailAccount(req.user!.accountId, usuario(req), req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
   const b = req.body || {};
   const list = (v: unknown) => (Array.isArray(v) ? v : String(v || '').split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
   try {
-    res.json(await saveDraft({ acc, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''), draftId: b.draftId || null, replyToId: b.replyToId || null, userId: req.user!.id }));
+    res.json(await saveDraft({ acc, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''), draftId: b.draftId || null, replyToId: b.replyToId || null, userId: req.user!.id, leadId: b.leadId || null, admin: req.user!.role === 'ADMIN' }));
   } catch (err) {
     fail(res, err, 'Não consegui salvar o rascunho');
   }
@@ -290,7 +327,7 @@ router.post('/suggest-reply', async (req: AuthRequest, res: Response) => {
       where: { id: replyToId },
       select: { emailAccountId: true, fromName: true, fromAddress: true, subject: true, date: true, textBody: true, htmlBody: true, leadId: true },
     });
-    if (!replyTo || !(await getVisibleEmailAccount(req.user!.accountId, req.user!.id, replyTo.emailAccountId))) {
+    if (!replyTo || !(await podeResponder(req, replyTo, leadId))) {
       return res.status(404).json({ error: 'E-mail não encontrado' });
     }
   }
@@ -329,7 +366,7 @@ router.post('/compose-ai', async (req: AuthRequest, res: Response) => {
       where: { id: replyToId },
       select: { emailAccountId: true, fromName: true, fromAddress: true, subject: true, date: true, textBody: true, htmlBody: true, leadId: true },
     });
-    if (!replyTo || !(await getVisibleEmailAccount(req.user!.accountId, req.user!.id, replyTo.emailAccountId))) return res.status(404).json({ error: 'E-mail não encontrado' });
+    if (!replyTo || !(await podeResponder(req, replyTo, leadId))) return res.status(404).json({ error: 'E-mail não encontrado' });
   }
   if (leadId && !(await prisma.lead.findFirst({ where: { id: leadId, accountId: req.user!.accountId }, select: { id: true } }))) return res.status(404).json({ error: 'Card não encontrado' });
   if (!leadId && !replyTo && !String(instruction || '').trim() && !(Array.isArray(docs) && docs.length)) return res.status(400).json({ error: 'Escreva o que o e-mail precisa dizer ou escolha um documento pra IA ler' });
@@ -443,7 +480,7 @@ export function ehEmailDeVistoria(subject: string, body: string, destinos: strin
 }
 
 router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: AuthRequest, res: Response) => {
-  const acc = await getVisibleEmailAccount(req.user!.accountId, req.user!.id, req.params.id);
+  const acc = await getSendableEmailAccount(req.user!.accountId, usuario(req), req.params.id);
   if (!acc) return res.status(404).json({ error: 'Caixa não encontrada' });
   const b = req.body || {};
   const list = (v: unknown) => (Array.isArray(v) ? v : String(v || '').split(/[,;]/)).map((x) => String(x).trim()).filter(Boolean);
@@ -461,7 +498,7 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
     if (attachments.reduce((t, a) => t + a.content.length, 0) > 20 * 1024 * 1024) return res.status(400).json({ error: 'Os anexos passam de 20 MB — mande em mais de um e-mail' });
     const saved = await sendEmailFrom({
       acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), bcc: list(b.bcc), subject: String(b.subject || ''), body: String(b.body || ''),
-      replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req), draftId: b.draftId || null,
+      replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req), draftId: b.draftId || null, admin: req.user!.role === 'ADMIN',
       attachments,
     });
     res.json(saved);
