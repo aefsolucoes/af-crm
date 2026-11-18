@@ -228,7 +228,9 @@ export async function generateTemplateSuggestion(accountId: string, leadId: stri
       ? sentTpl.map((m) => `- ${m.templateName} [${categoryLabel(catOf.get(m.templateName || '') || '')}] há ${dias(m.createdAt)} dia(s)${m.status === 'FAILED' ? ` — FALHOU${/131049/.test(m.statusError || '') || /engajamento saudável/i.test(m.statusError || '') ? ' (limite de engajamento saudável da Meta)' : ''}` : ''}`).join('\n')
       : '(nenhum template foi enviado a este cliente nos últimos 30 dias)';
     const lastIn = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', channel: 'WHATSAPP' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
-    const emails = await prisma.message.findMany({ where: { leadId, channel: 'EMAIL', createdAt: { gte: new Date(Date.now() - 10 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 4, select: { direction: true, content: true, createdAt: true } });
+    const { isCommissionConversationEmail } = require('./commission-email') as typeof import('./commission-email');
+    const emails = (await prisma.message.findMany({ where: { leadId, channel: 'EMAIL', createdAt: { gte: new Date(Date.now() - 10 * 86_400_000) } }, orderBy: { createdAt: 'desc' }, take: 8, select: { direction: true, content: true, createdAt: true } }))
+      .filter((m) => !isCommissionConversationEmail(m.content)).slice(0, 4); // comissão não é do processo do cliente (Fabio 18/11)
     const emailsTxt = emails.length ? emails.reverse().map((m) => `- ${m.direction === 'INBOUND' ? 'recebido' : 'enviado'} em ${m.createdAt.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' })}: ${m.content.replace(/\s+/g, ' ').slice(0, 380)}`).join('\n') : '(sem e-mails recentes)';
     const candTxt = candidates.map((t: any) => {
       const body = bodyOf(t).replace(/\n+/g, ' ');

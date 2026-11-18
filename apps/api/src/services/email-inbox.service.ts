@@ -10,6 +10,7 @@ import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
 import { emailJaEnviado, enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
 import { EmailLink, htmlComLinks, linksDoHtml, textoComLinks } from './email-links';
+import { isCommissionEmail } from './commission-email';
 
 /**
  * Caixa de e-mail dentro do CRM (pedido do Fabio, 2026-09-24/25): a caixa da
@@ -513,7 +514,9 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   // Só Entrada e Enviados vão pra conversa do card (spam/lixeira/rascunho não).
   const convo = folder === 'INBOX' || folder === 'SENT';
   const counterparts = folder === 'INBOX' ? (from ? [from.address] : []) : [...to, ...cc].map((a) => a.address);
-  let leadId = convo ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
+  // E-mail de comissão (NF, pagamento, demonstrativo) fica só na caixa: não liga a card nenhum, nem pelo fio, nem pelo leitor do Inter/Creditas (Fabio 18/11, commission-email.ts).
+  const comissao = convo && isCommissionEmail({ subject: env.subject, text: fresh });
+  let leadId = convo && !comissao ? await findLeadFor(acc.accountId, counterparts, env.inReplyTo || null, opts.ownAddresses) : null;
 
   const row = await prisma.emailMessage.create({
     data: {
@@ -536,7 +539,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   }
 
   // Creditas pedindo a Autorização SCR Bacen assinada: acha o card pelo CPF do texto, liga o e-mail e dispara o fluxo (creditas-scr.service).
-  if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i.test(from.address)) {
+  if (row && folder === 'INBOX' && from && !comissao && /@([a-z0-9-]+\.)*creditas\.(com|com\.br|io)$/i.test(from.address)) {
     const { handleCreditasScrEmail } = require('./creditas-scr.service') as typeof import('./creditas-scr.service');
     const tratado = await handleCreditasScrEmail(acc, row, opts.io as any).catch((err) => { console.warn('[Creditas SCR] falhou:', err?.message); return false; });
     if (tratado) return;
@@ -549,7 +552,7 @@ async function storeFetched(acc: EmailAccount, client: ImapFlow, folder: Folder,
   }
 
   // Inter escrevendo sobre UM cliente (engajamento automático, vistoria, pendência): liga só este e-mail ao card pelo nº da proposta/nome, nota + push (inter-email.service).
-  if (row && folder === 'INBOX' && from && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/i.test(from.address) && !opts.initial && Date.now() - date.getTime() < 48 * 3_600_000) {
+  if (row && folder === 'INBOX' && from && !comissao && /@([a-z0-9-]+\.)*(inter\.co|bancointer\.com\.br)$/i.test(from.address) && !opts.initial && Date.now() - date.getTime() < 48 * 3_600_000) {
     const { handleInterEmail } = require('./inter-email.service') as typeof import('./inter-email.service');
     const ligou = await handleInterEmail(acc, { id: row.id, subject: env.subject || null, textBody, htmlBody, fromAddress: from.address, date }, opts.io as any).catch((err) => { console.warn('[Inter e-mail] falhou:', err?.message); return false; });
     // O card que o leitor do Inter escolheu (proposta/CPF/nome) vale no lugar do card do fio: o e-mail entra numa conversa só (Fabio 16/11: o do Ailon entrou no Ailon E no Alexandro).
@@ -904,7 +907,9 @@ export async function sendEmailFrom(params: {
   if (explicitLead?.contactId && !explicitLead.contact?.email?.trim() && to.length === 1 && !isInstitutionalSender(destino) && !FORM.has(destino) && !nossoDominio) {
     await prisma.contact.update({ where: { id: explicitLead.contactId }, data: { email: to[0] } }).catch(() => {});
   }
-  const leadId = explicitLead?.id || parent?.leadId || await findLeadFor(acc.accountId, [...to, ...cc], null, new Set([acc.address]));
+  // E-mail de comissão (pedido de dados da NF, NF enviada ao banco) não entra em card de cliente, nem mandado pelo card (Fabio 18/11, commission-email.ts).
+  const leadId = isCommissionEmail({ subject, text: body }) ? null
+    : explicitLead?.id || parent?.leadId || await findLeadFor(acc.accountId, [...to, ...cc], null, new Set([acc.address]));
   const saved = await prisma.emailMessage.create({
     data: {
       emailAccountId: acc.id, folder: 'SENT', uid: null, messageId, inReplyTo: parent?.messageId || null,
@@ -1011,7 +1016,9 @@ export async function linkEmailToLead(acc: EmailAccount, msgId: string, leadId: 
         orderBy: { date: 'asc' },
       })
     : [];
-  const toLink = [msg, ...siblings.filter((m) => m.id !== msg.id)].sort((a, b) => a.date.getTime() - b.date.getTime());
+  // "Vincular a um card" à mão vale pra ESTE e-mail (a equipe decidiu); os outros do mesmo remetente que são de comissão ficam de fora (Fabio 18/11).
+  const toLink = [msg, ...siblings.filter((m) => m.id !== msg.id && !isCommissionEmail({ subject: m.subject, text: stripQuoted(m.textBody || htmlToText(m.htmlBody || '')) }))]
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
 
   for (const m of toLink) {
     await prisma.emailMessage.update({ where: { id: m.id }, data: { leadId: lead.id } });

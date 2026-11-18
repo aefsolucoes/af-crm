@@ -251,8 +251,10 @@ async function openScr(acc: EmailAccount, lead: { id: string; name: string; cust
  *  (ou cobrança dele), dispara também o fluxo do SCR. true = achou card (o e-mail foi tratado). */
 export async function handleCreditasScrEmail(acc: EmailAccount, row: EmailMessage, io: Io): Promise<boolean> {
   if (!row.fromAddress || !CREDITAS_SENDER.test(row.fromAddress)) return false;
-  const { htmlToText, linkEmailToLead } = require('./email-inbox.service') as typeof import('./email-inbox.service');
+  const { htmlToText, linkEmailToLead, stripQuoted } = require('./email-inbox.service') as typeof import('./email-inbox.service');
   const text = row.textBody || (row.htmlBody ? htmlToText(row.htmlBody) : '');
+  // E-mail de comissão da Creditas (NF, pagamento) nunca liga a card de cliente (Fabio 18/11, commission-email.ts).
+  if ((require('./commission-email') as typeof import('./commission-email')).isCommissionEmail({ subject: row.subject, text: stripQuoted(text) })) return false;
   const scr = isScrRequest(row.fromAddress, row.subject, text);
   const fresh = Date.now() - row.date.getTime() < 3 * 3_600_000;
   let ligado = false;

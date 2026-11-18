@@ -214,6 +214,8 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const subject = row.subject || '';
   const text = interEmailTexto(row.textBody, row.htmlBody);
   const fresh = freshPart(text);
+  // E-mail de comissão do Inter (dados da NF, pagamento) cita proposta e nome do cliente, mas não é do processo: não vai pro card (Fabio 18/11, caso Adilson — commission-email.ts).
+  if ((require('./commission-email') as typeof import('./commission-email')).isCommissionEmail({ subject, text: fresh })) return false;
   const kind = classifyInterEmail(subject, fresh);
   if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject)) && !parseInterBody(text).proposta) return false; // alinhamento semanal, newsletter etc.
   const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado

@@ -3,6 +3,7 @@ import { sendOutboundWhatsApp } from './message.service';
 import { cleanEmailForAi } from './ai-shared.service';
 import { contractingAutoOn } from './contracting-auto.service';
 import { callableFirstName } from '../lib/text';
+import { isCommissionEmail } from './commission-email';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
 
@@ -86,7 +87,8 @@ export async function processEmailRelay(accountId: string, io: Io): Promise<void
       take: 80,
       select: { id: true, leadId: true, fromAddress: true, subject: true, textBody: true, snippet: true, date: true },
     });
-    const cand = rows.filter((e) => e.fromAddress && INSTITUTIONAL.test(e.fromAddress) && !AUTOMATICO.test(e.fromAddress.split('@')[0]) && !/Engajamento Autom[aá]tico/i.test(e.subject || ''));
+    const cand = rows.filter((e) => e.fromAddress && INSTITUTIONAL.test(e.fromAddress) && !AUTOMATICO.test(e.fromAddress.split('@')[0]) && !/Engajamento Autom[aá]tico/i.test(e.subject || '')
+      && !isCommissionEmail({ subject: e.subject, text: e.snippet })); // comissão não é pedido do processo (Fabio 18/11)
     if (!cand.length) return;
     const leads = await prisma.lead.findMany({ where: { id: { in: [...new Set(cand.map((e) => e.leadId!))] } }, select: { id: true, name: true, aiAutoReplyActive: true, customFields: true, stage: { select: { name: true } } } });
     const byId = new Map(leads.map((l) => [l.id, l]));
