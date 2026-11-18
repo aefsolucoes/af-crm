@@ -19,6 +19,17 @@ async function salvarP(leadId: string, mut: (c: Cf) => void): Promise<Cf> {
 }
 const note = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
 
+/** Avaliação de Risco do Caixa Aqui "Aprovada e Propagada" = o SIOPI já criou a proposta; "Aprovada e Não Propagada" = não criou, precisa da Nova Proposta
+ *  (Fabio 18/11: "se a proposta no caixa aqui foi aprovada e propagada, a proposta no SIOPI foi criada, se foi aprovada e não propagada quer dizer que não criou").
+ *  null = o texto do resultado não diz. Pura. */
+export function avaliacaoPropagada(cf: Cf): boolean | null {
+  if (typeof cf._caixaResultado?.propagada === 'boolean') return cf._caixaResultado.propagada; // gravado na aprovação, do texto original
+  const t = String(cf._caixaResultado?.ultimaTela || cf._caixaResultado?.texto || '');
+  if (/aprovad[ao]\s+e\s+n[ãa]o\s+propagad/i.test(t)) return false;
+  if (/aprovad[ao]\s+e\s+propagad/i.test(t)) return true;
+  return null;
+}
+
 /** CPFs pra abrir a proposta: tomador da avaliação primeiro, depois os outros com renda. Pura. */
 export function cpfsDaProposta(cf: Cf): string[] {
   const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
@@ -62,13 +73,14 @@ export async function proximaPropostaSiopi(accountId: string): Promise<any | nul
     const cpfs = cpfsDaProposta(cf);
     if (!cpfs.length) { await salvarP(id, (x) => { x.status = 'ERRO'; x.erro = 'sem CPF'; x.fim = new Date().toISOString(); }); continue; }
     await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'proposta', passo: st.passo || 'abrir', leadId: id, leadName: l!.name, cpfs, siric: cf.num_proposta || cf._fhChosen?.proposta || null };
+    // A extensão procura a proposta pelo CPF ANTES de criar (Fabio 18/11: "primeiro precisa ver se o Caixa Aqui criou a proposta automaticamente"); propagada e não achada = para.
+    return { tipo: 'proposta', passo: st.passo || 'abrir', leadId: id, leadName: l!.name, cpfs, propagada: avaliacaoPropagada(cf) === true, siric: cf.num_proposta || cf._fhChosen?.proposta || null };
   }
   return null;
 }
 
 /** Retorno da extensão: a tela que abriu (ou o erro). Sessão do SIOPI caída → volta pra fila. */
-export async function reportPropostaSiopi(accountId: string, leadId: string, b: { etapa?: string; erro?: string; tela?: any; cpfUsado?: number; passo?: string; versao?: string }): Promise<void> {
+export async function reportPropostaSiopi(accountId: string, leadId: string, b: { etapa?: string; erro?: string; tela?: any; cpfUsado?: number; passo?: string; versao?: string; propostas?: { numero?: string; linha?: string }[] }): Promise<void> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true } });
   if (!l) return;
   const etapa = String(b.etapa || 'ERRO');
@@ -81,11 +93,32 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
     return;
   }
   await salvarP(leadId, (x) => {
-    x.status = etapa === 'TELA' ? 'TELA' : 'ERRO'; x.fim = new Date().toISOString(); x.erro = b.erro || null; x.versaoExt = b.versao || null;
+    x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU'].includes(etapa) ? etapa : 'ERRO'; x.fim = new Date().toISOString(); x.erro = b.erro || null; x.versaoExt = b.versao || null;
+    if (Array.isArray(b.propostas)) x.propostas = b.propostas.slice(0, 20).map((p) => ({ numero: String(p?.numero || ''), linha: String(p?.linha || '').slice(0, 300) }));
     if (tela) { x.ultimaTela = { at: new Date().toISOString(), passo: b.passo || x.passo, cpfUsado: b.cpfUsado || null, ...tela }; x.telas = [...(x.telas || []), { at: new Date().toISOString(), passo: b.passo || x.passo, titulo: tela.titulo, etapa }].slice(-15); }
   });
   const campos = (tela?.campos || []).filter((c: any) => c?.nome).map((c: any) => `• ${c.rotulo || c.nome}${c.valor ? `: ${c.valor}` : ''}${c.opcoes ? ` [${c.opcoes.length} opções]` : ''}`).slice(0, 40);
   const botoes = (tela?.botoes || []).map((x: any) => x.texto).filter(Boolean).slice(0, 30);
-  await note(leadId, `🏠 SIOPI — proposta (${b.passo || 'abrir'}): ${etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"${b.cpfUsado ? ` (com o ${b.cpfUsado}º CPF)` : ''}` : `PAROU — ${b.erro || 'erro'}`}${tela?.texto ? `\n\n${tela.texto.slice(0, 2500)}` : ''}${campos.length ? `\n\nCampos:\n${campos.join('\n')}` : ''}${botoes.length ? `\n\nBotões: ${botoes.join(' · ')}` : ''}`);
-  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
+  const props = Array.isArray(b.propostas) ? b.propostas.map((p) => `• ${p?.linha || p?.numero}`).slice(0, 10) : [];
+  const resumo = etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"${b.cpfUsado ? ` (com o ${b.cpfUsado}º CPF)` : ''}`
+    : etapa === 'JA_EXISTE' ? `o SIOPI JÁ TEM proposta pro ${b.cpfUsado || 1}º CPF — não criei outra (avaliação propagada pelo Caixa Aqui):\n${props.join('\n')}`
+      : etapa === 'NAO_ACHOU' ? `NÃO ACHEI a proposta — ${b.erro || ''}` : `PAROU — ${b.erro || 'erro'}`;
+  await note(leadId, `🏠 SIOPI — proposta (${b.passo || 'abrir'}): ${resumo}${tela?.texto ? `\n\n${tela.texto.slice(0, 2500)}` : ''}${campos.length ? `\n\nCampos:\n${campos.join('\n')}` : ''}${botoes.length ? `\n\nBotões: ${botoes.join(' · ')}` : ''}`);
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
+}
+
+/** CAIXA aprovou (Fabio 18/11: "ele pode verificar isso quando aprovar o crédito"): anota se a proposta já existe no SIOPI. Propagada → a extensão só PROCURA a
+ *  proposta pelo CPF (passo "localizar", nunca cria); não propagada → anota que, na contratação (depois da vistoria aprovada), vai a Nova Proposta. */
+export async function aoAprovarCaixa(accountId: string, leadId: string, propagada: boolean): Promise<void> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return;
+  const st = (((l.customFields || {}) as Cf)._siopiProposta || {}) as Cf;
+  if (['RODANDO', 'TELA', 'JA_EXISTE'].includes(String(st.status || ''))) return; // já tem a proposta (ou a extensão está nela)
+  if (!propagada) {
+    await salvarP(leadId, (x) => { x.propagada = false; });
+    await note(leadId, '🏠 SIOPI: a avaliação da CAIXA saiu "Aprovada e NÃO Propagada" no Caixa Aqui — a proposta NÃO foi criada no SIOPI. Na contratação (depois da vistoria aprovada) vai a Nova Proposta Individual PF.');
+    return;
+  }
+  await salvarP(leadId, (x) => { x.propagada = true; x.status = 'FILA'; x.passo = 'localizar'; x.pedidoEm = new Date().toISOString(); x.por = 'automático (CAIXA aprovou)'; x.tentativas = 0; delete x.inicio; });
+  await note(leadId, '🏠 SIOPI: a avaliação da CAIXA saiu "Aprovada e Propagada" — a proposta já foi criada no SIOPI. A extensão vai conferir lá (Localiza Proposta pelo CPF) e traz o número pra cá; não cria nada.');
 }

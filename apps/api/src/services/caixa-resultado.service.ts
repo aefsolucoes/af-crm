@@ -96,12 +96,16 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   // "Aprovada e Não Propagada" é só "Aprovada" (Fabio 03/11: "não é para mandar aprovada e não propagada, apenas aprovada") — no card, na nota, no push e nos avisos.
   const soAprovada = (t: string) => String(t || '').replace(/aprovada e n[aã]o propagada/gi, 'Aprovada');
   const r = { status: soAprovada(bruto.status), texto: soAprovada(bruto.texto) };
+  // Propagada? (Fabio 18/11: "aprovada e propagada" = o SIOPI já criou a proposta; "não propagada" = não criou — "ele pode verificar isso quando aprovar o crédito").
+  // Lido do texto ORIGINAL (o `soAprovada` apaga o "não propagada").
+  const brutoTxt = `${bruto.status}\n${bruto.texto}`;
+  const propagada = /aprovad[ao]\s+e\s+n[aã]o\s+propagad/i.test(brutoTxt) ? false : /aprovad[ao]\s+e\s+propagad/i.test(brutoTxt) ? true : null;
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   if (PROCESSANDO_RE.test(r.status)) { await gravarProcessando(accountId, leadId, l.name, (l.customFields || {}) as Cf, r); return; }
   const foraDoCrm = ((l.customFields || {}) as Cf)._caixaResultado?.foraDoCrm === true;
-  await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); delete x.processando; });
+  await salvar(leadId, (x) => { x.status = r.status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 3000); delete x.processando; if (propagada !== null) x.propagada = propagada; });
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏦 Resultado da Avaliação de Risco CAIXA (Formulários Enviados): ${r.status}${foraDoCrm ? '\n(avaliação rodada direto no Caixa Aqui, fora do CRM: só registrei aqui — o cliente NÃO foi avisado e nada foi refeito sozinho)' : ''}\n\n${String(r.texto || '').slice(0, 3500)}` } }).catch(() => {});
   if (foraDoCrm) {
     const { userId } = (await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true } })) || {};
@@ -127,6 +131,7 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   else if (APROVADA_RE.test(r.status) && !/n[aã]o aprovad/i.test(r.status)) {
     await tratarAprovadaNaPrice(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada na PRICE]', e?.message));
     await marcarAvisoAprovada(accountId, leadId, l.name, String(r.texto || '')).catch((e) => console.error('[CAIXA aprovada → simulação]', e?.message));
+    if (propagada !== null) await (require('./siopi-proposta.service') as typeof import('./siopi-proposta.service')).aoAprovarCaixa(accountId, leadId, propagada).catch((e) => console.error('[CAIXA aprovada → SIOPI]', e?.message));
   }
   // "2ª autorização do PV" (Fabio 01/11): o cliente rodou crédito mais de uma vez, com correspondentes diferentes — o colaborador pede a autorização à agência.
   if (PV_RE.test(`${r.status}\n${r.texto}`)) {
