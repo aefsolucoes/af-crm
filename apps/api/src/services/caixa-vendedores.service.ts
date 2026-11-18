@@ -55,7 +55,8 @@ export function faltaVendedor(p: any): string[] {
 /** Pessoa lida na pasta VENDEDOR → formato do participante da ficha (o que a extensão já sabe preencher). `mesAno` = mês/ano do endereço quando não há comprovante
  *  (o campo é obrigatório na CAIXA; pro vendedor o comprovante não tem prazo — Fabio 18/11). Pura. */
 export function paraParticipante(p: any, ordem: number, mesAno: string): any {
-  const id = p?.identidade?.numero ? p.identidade
+  // CNH: a CAIXA pede a data da 1ª habilitação (Rosa Mary 18/11: "Informe a Data da Primeira Habilitação") — vem do bloco `cnh` da leitura.
+  const id = p?.identidade?.numero ? (String(p.identidade.tipo || '').toUpperCase() === 'CNH' ? { ...p.identidade, validade: p.identidade.validade || p?.cnh?.validade || null, primeiraHabilitacao: p.identidade.primeiraHabilitacao || p?.cnh?.primeiraHabilitacao || null } : p.identidade)
     : p?.cnh?.numero ? { tipo: 'CNH', numero: p.cnh.numero, orgao: p.cnh.orgao, uf: p.cnh.uf, emissao: p.cnh.emissao, validade: p.cnh.validade, primeiraHabilitacao: p.cnh.primeiraHabilitacao }
       : p?.rg?.numero ? { tipo: 'RG', numero: p.rg.numero, orgao: p.rg.orgao, uf: p.rg.uf, emissao: p.rg.emissao } : null;
   const e = p?.endereco || {};
