@@ -31,23 +31,31 @@ export type LeituraConstrucao = { construcao: 'SO_TERRENO' | 'AVERBADA' | 'NAO_S
 // ─── Funções puras (testáveis) ─────────────────────────────────────────────────────────────────────────────
 
 /** Tipo do imóvel dito pelo cliente → CASA | OUTRO | null (não disse). "Residencial", "Residencial — Casa Residencial", "Casa Condomínio", "Casa" = CASA. */
-function tipoDito(valor: unknown): 'CASA' | 'OUTRO' | null {
+function tipoDito(valor: unknown): 'CASA' | 'APTO' | 'OUTRO' | null {
   const n = sem(valor);
   if (!n.trim()) return null;
-  if (/apart|\b(ap|apt|apto)\b|cobertura|kitnet|flat|terreno|\blotes?\b|gleba|comerc|\bsala\b|\bloja\b|galp|rural|chacara|sitio|fazenda|constru/.test(n)) return 'OUTRO';
+  // Habite-se é de imóvel RESIDENCIAL — casa ou apartamento (Fabio 18/11). Terreno vazio não tem habite-se, e é normal: não entra.
+  if (/terreno|\blotes?\b|gleba|comerc|\bsala\b|\bloja\b|galp|rural|chacara|sitio|fazenda|constru/.test(n)) return 'OUTRO';
+  if (/apart|\b(ap|apt|apto)\b|cobertura|kitnet|flat/.test(n)) return 'APTO';
   if (/\bcasa\b|sobrado|residen|moradia/.test(n)) return 'CASA';
   return null;
 }
 
-/** O cliente disse que o imóvel é CASA residencial? Pela linha "Tipo do imóvel" da proposta e pelos campos do card. Qualquer fonte dizendo apartamento/terreno/comercial = não. */
-export function clienteDisseCasa(proposta: string, cf: Cf = {}): boolean {
-  const ditos: ('CASA' | 'OUTRO' | null)[] = [];
+/** O imóvel é RESIDENCIAL (casa ou apartamento)? Pela linha "Tipo do imóvel" da proposta e pelos campos do card. Qualquer fonte dizendo terreno/comercial/rural = não. Pura (testável). */
+export function tipoResidencial(proposta: string, cf: Cf = {}): 'CASA' | 'APTO' | null {
+  const ditos: ('CASA' | 'APTO' | 'OUTRO' | null)[] = [];
   for (const linha of String(proposta || '').replace(/[*_]/g, '').split('\n')) {
     const m = /^\W*\s*tipo d[oe] im[oó]vel\s*:\s*(.+)$/i.exec(linha.trim());
     if (m) ditos.push(tipoDito(m[1]));
   }
   ditos.push(tipoDito(cf.imovel_tipo), tipoDito(cf.tipo_imovel), tipoDito(cf.finalidade));
-  return ditos.includes('CASA') && !ditos.includes('OUTRO');
+  if (ditos.includes('OUTRO')) return null;
+  return ditos.includes('APTO') ? 'APTO' : ditos.includes('CASA') ? 'CASA' : null;
+}
+
+/** O cliente disse que o imóvel é residencial (casa ou apartamento — Fabio 18/11: "habite-se é para imóvel residencial, casa ou apto")? O nome ficou do tempo em que só a casa entrava. */
+export function clienteDisseCasa(proposta: string, cf: Cf = {}): boolean {
+  return tipoResidencial(proposta, cf) !== null;
 }
 
 /** "Habite-se: Sim, tem Habite-se | Não tem Habite-se | Não sei se tem Habite-se" da proposta do site. */
@@ -99,7 +107,10 @@ export function terrenoNaCertidao(cf: Cf, agora = new Date()): Terreno | null {
 }
 
 /** Pergunta ao cliente (curta, sem nome de banco). */
-export function perguntaHabite(t: Terreno): string {
+export function perguntaHabite(t: Terreno, apto = false): string {
+  if (apto) return t.antiga && t.emissao
+    ? `Vi na certidão do imóvel, emitida em ${mesAno(t.emissao)}, que ele aparece só como terreno, sem a construção do prédio averbada. O apartamento tem *habite-se*? Se ele saiu depois dessa data, pode não aparecer nessa certidão. 🙏`
+    : 'Vi na certidão do imóvel que ele aparece só como terreno, sem a construção do prédio averbada. O apartamento tem *habite-se*? 🙏';
   return t.antiga && t.emissao
     ? `Vi na certidão do imóvel, emitida em ${mesAno(t.emissao)}, que ele está registrado como terreno (lote), sem a construção da casa. A casa tem *habite-se*? Se ele saiu depois dessa data, pode não aparecer nessa certidão. 🙏`
     : 'Vi na certidão do imóvel que ele está registrado como terreno (lote), sem a construção da casa. A casa tem *habite-se*? 🙏';
@@ -432,7 +443,7 @@ export async function habiteNaConferencia(accountId: string, leadId: string, io:
       return r === 'PERGUNTADO' ? 'AGUARDA' : r;
     }
   }
-  const pergunta = perguntaHabite(t);
+  const pergunta = perguntaHabite(t, tipoResidencial(proposta, cf) === 'APTO');
   if (opts.podeFalar && lead.aiAutoReplyActive && !cf._autoPaused) {
     const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
     const sent = await sendOutboundWhatsApp({ accountId, leadId, content: pergunta, io: io || undefined });
