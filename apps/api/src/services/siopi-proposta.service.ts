@@ -30,6 +30,12 @@ export function avaliacaoPropagada(cf: Cf): boolean | null {
   return null;
 }
 
+/** Proposta mais recente = maior nº sequencial ("0007.3444.0000525-4" > "…0000520-3"). Pura. */
+export function maisRecente(nums: string[]): string | null {
+  const seq = (n: string) => Number((String(n).match(/\.(\d{7})-\d$/) || [])[1] || 0);
+  return nums.filter(Boolean).sort((a, b) => seq(b) - seq(a))[0] || null;
+}
+
 /** CPFs pra abrir a proposta: tomador da avaliação primeiro, depois os outros com renda. Pura. */
 export function cpfsDaProposta(cf: Cf): string[] {
   const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
@@ -95,13 +101,16 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
   await salvarP(leadId, (x) => {
     x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU'].includes(etapa) ? etapa : 'ERRO'; x.fim = new Date().toISOString(); x.erro = b.erro || null; x.versaoExt = b.versao || null;
     if (Array.isArray(b.propostas)) x.propostas = b.propostas.slice(0, 20).map((p) => ({ numero: String(p?.numero || ''), linha: String(p?.linha || '').slice(0, 300) }));
+    // Mais de uma proposta ativa: segue só a MAIS RECENTE (maior número sequencial da agência) e as outras ficam como estão (Fabio 18/11: "deixa as duas ativas e segue
+    // apenas com a proposta mais recente").
+    if (etapa === 'JA_EXISTE' && Array.isArray(x.propostas) && x.propostas.length) x.escolhida = maisRecente(x.propostas.filter((p: any) => !/cancelad|inativ/i.test(p.linha)).map((p: any) => p.numero)) || x.propostas[0].numero;
     if (tela) { x.ultimaTela = { at: new Date().toISOString(), passo: b.passo || x.passo, cpfUsado: b.cpfUsado || null, ...tela }; x.telas = [...(x.telas || []), { at: new Date().toISOString(), passo: b.passo || x.passo, titulo: tela.titulo, etapa }].slice(-15); }
   });
   const campos = (tela?.campos || []).filter((c: any) => c?.nome).map((c: any) => `• ${c.rotulo || c.nome}${c.valor ? `: ${c.valor}` : ''}${c.opcoes ? ` [${c.opcoes.length} opções]` : ''}`).slice(0, 40);
   const botoes = (tela?.botoes || []).map((x: any) => x.texto).filter(Boolean).slice(0, 30);
   const props = Array.isArray(b.propostas) ? b.propostas.map((p) => `• ${p?.linha || p?.numero}`).slice(0, 10) : [];
   const resumo = etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"${b.cpfUsado ? ` (com o ${b.cpfUsado}º CPF)` : ''}`
-    : etapa === 'JA_EXISTE' ? `o SIOPI JÁ TEM proposta pro ${b.cpfUsado || 1}º CPF — não criei outra (avaliação propagada pelo Caixa Aqui):\n${props.join('\n')}`
+    : etapa === 'JA_EXISTE' ? `o SIOPI JÁ TEM proposta pro ${b.cpfUsado || 1}º CPF — não criei outra:\n${props.join('\n')}${(b.propostas || []).length > 1 ? `\nSeguimos só pela mais recente: ${maisRecente((b.propostas || []).filter((p) => !/cancelad|inativ/i.test(String(p?.linha || ''))).map((p) => String(p?.numero || ''))) || b.propostas![0]?.numero}; as outras ficam ativas, sem mexer (Fabio 18/11).` : ''}`
       : etapa === 'NAO_ACHOU' ? `NÃO ACHEI a proposta — ${b.erro || ''}` : `PAROU — ${b.erro || 'erro'}`;
   await note(leadId, `🏠 SIOPI — proposta (${b.passo || 'abrir'}): ${resumo}${tela?.texto ? `\n\n${tela.texto.slice(0, 2500)}` : ''}${campos.length ? `\n\nCampos:\n${campos.join('\n')}` : ''}${botoes.length ? `\n\nBotões: ${botoes.join(' · ')}` : ''}`);
   try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
@@ -116,7 +125,11 @@ export async function aoAprovarCaixa(accountId: string, leadId: string, propagad
   if (['RODANDO', 'TELA', 'JA_EXISTE'].includes(String(st.status || ''))) return; // já tem a proposta (ou a extensão está nela)
   if (!propagada) {
     await salvarP(leadId, (x) => { x.propagada = false; });
-    await note(leadId, '🏠 SIOPI: a avaliação da CAIXA saiu "Aprovada e NÃO Propagada" no Caixa Aqui — a proposta NÃO foi criada no SIOPI. Na contratação (depois da vistoria aprovada) vai a Nova Proposta Individual PF.');
+    // A propagação pode aparecer uns 10 min depois da aprovação (Fabio 18/11): reconsulta agendada (15 min, depois mais 15 e 30), sem segurar a extensão.
+    const { salvarPropagacao } = require('./caixa-resultado.service') as typeof import('./caixa-resultado.service');
+    const jaAgendada = ['AGENDADA', 'RODANDO'].includes(String((((l.customFields || {}) as Cf)._caixaPropagacao || {}).status || ''));
+    if (!jaAgendada) await salvarPropagacao(leadId, (x) => { x.status = 'AGENDADA'; x.em = new Date(Date.now() + 15 * 60_000).toISOString(); x.tentativas = 0; x.desde = new Date().toISOString(); });
+    if (!jaAgendada) await note(leadId, '🏠 SIOPI: a avaliação da CAIXA saiu "Aprovada e NÃO Propagada" no Caixa Aqui. A propagação pode aparecer uns minutos depois: reconfiro no Caixa Aqui em 15 min. Continuando "não propagada", na contratação (depois da vistoria aprovada) vai a Nova Proposta Individual PF.');
     return;
   }
   await salvarP(leadId, (x) => { x.propagada = true; x.status = 'FILA'; x.passo = 'localizar'; x.pedidoEm = new Date().toISOString(); x.por = 'automático (CAIXA aprovou)'; x.tentativas = 0; delete x.inicio; });

@@ -20,6 +20,14 @@ async function salvar(leadId: string, mut: (r: Cf) => void): Promise<void> {
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaResultado}', ${JSON.stringify(r)}::jsonb, true) WHERE id = ${leadId}`;
 }
 
+/** `_caixaPropagacao` (fora de `_caixaResultado`, que a consulta regrava): reconsulta da propagação agendada depois da aprovação. */
+export async function salvarPropagacao(leadId: string, mut: (r: Cf) => void): Promise<void> {
+  const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const r: Cf = { ...(((l?.customFields || {}) as Cf)._caixaPropagacao || {}) };
+  mut(r);
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaPropagacao}', ${JSON.stringify(r)}::jsonb, true) WHERE id = ${leadId}`;
+}
+
 /** Tomador da avaliação = 1º participante da ficha de cadastro. */
 function tomador(cf: Cf): { nome: string; cpf: string } | null {
   // O tomador da avaliação é quem tem a MAIOR renda (Fabio 02/11) — o mesmo critério do envio (participantesDaAvaliacao), não o 1º da ficha.
@@ -88,6 +96,23 @@ export async function proximaConsultaResultado(accountId: string) {
     await salvar(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
     return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String((r.foraDoCrm ? r.produto : cf._caixaCadastro?.avaliacao?.produto) || ''), ...(r.foraDoCrm ? { foraDoCrm: true } : {}) }; // foraDoCrm: a extensão abre o detalhe também na aprovada (condições); produto: a extensão lê a linha dele (uma avaliação lista vários produtos)
   }
+  // Depois: reconsulta só da PROPAGAÇÃO (Fabio 18/11: "pode demorar um pouco para aparecer se realmente continua propagada ou não propagada… uns 10 min após a
+  // aprovação do crédito, mas a extensão da caixa não pode ficar travada por conta disso") — trabalho próprio na fila, sem esperar nada.
+  const pr = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND status = 'OPEN' AND archived = false
+      AND (("customFields"->'_caixaPropagacao'->>'status' = 'AGENDADA' AND "customFields"->'_caixaPropagacao'->>'em' <= ${agora})
+        OR ("customFields"->'_caixaPropagacao'->>'status' = 'RODANDO' AND "customFields"->'_caixaPropagacao'->>'inicio' <= ${new Date(Date.now() - LEASE_MS).toISOString()}))
+    ORDER BY "customFields"->'_caixaPropagacao'->>'em' ASC LIMIT 5`;
+  for (const { id } of pr) {
+    const l = await prisma.lead.findUnique({ where: { id }, select: { name: true, customFields: true } });
+    const cf = (l?.customFields || {}) as Cf;
+    if (['FILA', 'RODANDO'].includes(String(cf._caixaResultado?.status || ''))) continue; // a consulta normal vem antes
+    const t = tomador(cf);
+    const pg = (cf._caixaPropagacao || {}) as Cf;
+    if (!t || t.cpf.length !== 11 || (pg.tentativas || 0) >= 4) { await salvarPropagacao(id, (x) => { x.status = 'PAROU'; x.fim = new Date().toISOString(); }); continue; }
+    await salvarPropagacao(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
+    return { tipo: 'consultarAvaliacao', leadId: id, leadName: l!.name, ordem: 1, nome: t.nome, cpf: t.cpf, produto: String(cf._caixaCadastro?.avaliacao?.produto || ''), soPropagacao: true };
+  }
   return null;
 }
 
@@ -102,6 +127,18 @@ export async function gravarConsultaResultado(accountId: string, leadId: string,
   const propagada = /aprovad[ao]\s+e\s+n[aã]o\s+propagad/i.test(brutoTxt) ? false : /aprovad[ao]\s+e\s+propagad/i.test(brutoTxt) ? true : null;
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
+  // Resultado da reconsulta só da PROPAGAÇÃO (a consulta normal não está rodando): grava a propagação e mais nada — nada de aviso, PRICE, Perdidos.
+  const cf0 = (l.customFields || {}) as Cf;
+  if (cf0._caixaPropagacao?.status === 'RODANDO' && !['FILA', 'RODANDO'].includes(String(cf0._caixaResultado?.status || ''))) {
+    const ainda = propagada !== true && (cf0._caixaPropagacao.tentativas || 0) < 4; // não leu (null) também tenta de novo
+    const proxima = new Date(Date.now() + (cf0._caixaPropagacao.tentativas >= 2 ? 30 : 15) * 60_000).toISOString();
+    await salvarPropagacao(leadId, (x) => { x.ultima = { at: new Date().toISOString(), propagada, status: String(bruto.status || '').slice(0, 200) }; if (propagada === true || !ainda) { x.status = 'FEITA'; x.fim = new Date().toISOString(); } else { x.status = 'AGENDADA'; x.em = proxima; } delete x.inicio; });
+    if (propagada === true) {
+      await salvar(leadId, (x) => { x.propagada = true; });
+      await (require('./siopi-proposta.service') as typeof import('./siopi-proposta.service')).aoAprovarCaixa(accountId, leadId, true).catch((e) => console.error('[CAIXA propagação → SIOPI]', e?.message));
+    } else if (!ainda) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 SIOPI: reconferi o Caixa Aqui ${cf0._caixaPropagacao.tentativas || 0} vezes depois da aprovação e a avaliação continua "${propagada === false ? 'Aprovada e NÃO Propagada' : String(bruto.status || '').slice(0, 120)}" — a proposta não foi criada no SIOPI pelo Caixa Aqui.` } }).catch(() => {});
+    return;
+  }
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   if (PROCESSANDO_RE.test(r.status)) { await gravarProcessando(accountId, leadId, l.name, (l.customFields || {}) as Cf, r); return; }
   const foraDoCrm = ((l.customFields || {}) as Cf)._caixaResultado?.foraDoCrm === true;
