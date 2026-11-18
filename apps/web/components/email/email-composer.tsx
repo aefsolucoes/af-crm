@@ -6,6 +6,8 @@ import { Modal } from '@/components/ui/modal';
 import { toast } from '@/components/ui/toast';
 import api from '@/lib/api';
 import { signatureLineHtml } from '@/lib/signature-links';
+import { RecipientInput, emailValido, splitAddresses, uniqAddresses } from './recipient-input';
+import { EmailThread, ThreadMessage } from './email-thread';
 
 // Mesmo limite do servidor (email-inbox.service.ts): cabe no ~25 MB do provedor.
 const MAX_FILES = 10;
@@ -115,9 +117,35 @@ export function EmailComposer({
   onSent?: () => void;
 }) {
   const [mailboxId, setMailboxId] = useState(defaultMailboxId || mailboxes.find((m) => !m.shared)?.id || mailboxes[0]?.id || '');
-  const [toValue, setToValue] = useState(to);
-  const [cc, setCc] = useState(initialCc);
-  const [showCc, setShowCc] = useState(!!initialCc);
+  // Vários destinatários em chips, como no Outlook (Fabio 18/11) — Para, Cc e Cco.
+  const [toList, setToList] = useState<string[]>(() => splitAddresses(to));
+  const [ccList, setCcList] = useState<string[]>(() => splitAddresses(initialCc));
+  const [bccList, setBccList] = useState<string[]>([]);
+  const [showCc, setShowCc] = useState(!!initialCc.trim());
+  const [showBcc, setShowBcc] = useState(false);
+  const toValue = toList.join(', ');
+  // Resposta: o fio do e-mail embaixo + "Responder a todos" (quem estava em Para/Cc do original, menos as nossas caixas) — GET /api/email/thread/:id.
+  const [thread, setThread] = useState<ThreadMessage[] | null>(null);
+  const [threadLoading, setThreadLoading] = useState(!!replyToId);
+  useEffect(() => {
+    if (!replyToId) return;
+    let vivo = true;
+    setThreadLoading(true);
+    api.get(`/api/email/thread/${replyToId}`)
+      .then(({ data }) => {
+        if (!vivo) return;
+        setThread(data.messages || []);
+        if (draftId) return; // rascunho já tem os destinatários que a pessoa deixou
+        const novosTo: string[] = data.to || [];
+        const novosCc: string[] = data.cc || [];
+        setToList((prev) => uniqAddresses([...prev, ...novosTo]));
+        setCcList((prev) => uniqAddresses([...prev, ...novosCc]).filter((a) => !novosTo.includes(a)));
+        if (novosCc.length) setShowCc(true);
+      })
+      .catch(() => { if (vivo) setThread([]); })
+      .finally(() => { if (vivo) setThreadLoading(false); });
+    return () => { vivo = false; };
+  }, [replyToId, draftId]);
   const [subjectValue, setSubjectValue] = useState(subject);
   const [body, setBody] = useState(initialBody);
   const [savingDraft, setSavingDraft] = useState(false);
@@ -147,7 +175,7 @@ export function EmailComposer({
         replyToId, leadId, instruction: iaPedido, to: toValue, subject: subjectValue, draft: body, conversationDate: diaConversa || undefined,
         docs: iaDocs.map((d) => (d.attachmentId ? { attachmentId: d.attachmentId, name: d.name } : d.driveFileId ? { driveFileId: d.driveFileId, name: d.name, type: d.type } : { name: d.name, type: d.type, dataBase64: d.dataBase64 })),
       });
-      if (data.to && !toValue.trim()) setToValue(data.to);
+      if (data.to && !toList.length) setToList(splitAddresses(data.to));
       if (data.subject && !subjectValue.trim()) setSubjectValue(data.subject);
       if (body.trim()) setSuggestion(data.body); else setBody(data.body);
       if (data.pulados?.length) toast(`A IA não conseguiu ler: ${data.pulados.join(', ')} (só PDF e imagem)`, 'warning');
@@ -270,11 +298,13 @@ export function EmailComposer({
 
   async function send() {
     if (!mailboxId) { toast('Nenhuma caixa de e-mail disponível', 'error'); return; }
-    if (!toValue.trim() || !body.trim()) { toast('Preencha o destinatário e a mensagem', 'warning'); return; }
+    if (!toList.length || !body.trim()) { toast('Preencha o destinatário e a mensagem', 'warning'); return; }
+    const invalido = [...toList, ...ccList, ...bccList].find((a) => !emailValido(a));
+    if (invalido) { toast(`Endereço inválido: ${invalido} — clique no endereço vermelho pra corrigir`, 'warning'); return; }
     setSending(true);
     try {
       await api.post(`/api/email/accounts/${mailboxId}/send`, {
-        to: toValue, cc, subject: subjectValue, body, replyToId, leadId, draftId,
+        to: toList, cc: ccList, bcc: bccList, subject: subjectValue, body, replyToId, leadId, draftId,
         attachments: files.map((f) => (f.attachmentId ? { filename: f.name, contentType: f.type, attachmentId: f.attachmentId } : f.driveFileId ? { filename: f.name, contentType: f.type, driveFileId: f.driveFileId } : { filename: f.name, contentType: f.type, dataBase64: f.dataBase64 })),
       });
       toast('E-mail enviado');
@@ -291,8 +321,8 @@ export function EmailComposer({
     if (!mailboxId) return;
     setSavingDraft(true);
     try {
-      await api.post(`/api/email/accounts/${mailboxId}/drafts`, { to: toValue, cc, subject: subjectValue, body, draftId, replyToId });
-      toast('Rascunho salvo');
+      await api.post(`/api/email/accounts/${mailboxId}/drafts`, { to: toList, cc: ccList, subject: subjectValue, body, draftId, replyToId });
+      toast(bccList.length ? 'Rascunho salvo (o Cco não fica no rascunho)' : 'Rascunho salvo');
       onSent?.();
       if (closeAfter) onClose();
     } catch (err: any) {
@@ -304,7 +334,7 @@ export function EmailComposer({
 
   // Fechar com texto escrito: pergunta se guarda como rascunho (não perde nada).
   function close() {
-    const changed = body.trim() && (body !== initialBody || toValue !== to || subjectValue !== subject);
+    const changed = body.trim() && (body !== initialBody || toValue !== splitAddresses(to).join(', ') || subjectValue !== subject);
     if (changed && !sending && confirm('Salvar como rascunho antes de fechar?')) { saveDraft(true); return; }
     onClose();
   }
@@ -322,15 +352,26 @@ export function EmailComposer({
             ))}
           </select>
         </div>
-        <div className="flex items-center gap-2">
-          <label className="w-14 text-xs text-slate-500 flex-shrink-0">Para</label>
-          <input value={toValue} onChange={(e) => setToValue(e.target.value)} placeholder="cliente@exemplo.com (separe vários com vírgula)" className={field} />
-          {!showCc && <button onClick={() => setShowCc(true)} className="text-xs text-af-mid hover:underline flex-shrink-0">Cc</button>}
+        <div className="flex items-start gap-2">
+          <label className="w-14 pt-2.5 text-xs text-slate-500 flex-shrink-0">Para</label>
+          <RecipientInput label="Para" value={toList} onChange={setToList} placeholder="cliente@exemplo.com — Enter separa" />
+          {(!showCc || !showBcc) && (
+            <span className="flex flex-shrink-0 items-center gap-2 pt-2.5">
+              {!showCc && <button type="button" onClick={() => setShowCc(true)} className="text-xs text-af-mid hover:underline">Cc</button>}
+              {!showBcc && <button type="button" onClick={() => setShowBcc(true)} className="text-xs text-af-mid hover:underline" title="Cópia oculta">Cco</button>}
+            </span>
+          )}
         </div>
         {showCc && (
-          <div className="flex items-center gap-2">
-            <label className="w-14 text-xs text-slate-500 flex-shrink-0">Cc</label>
-            <input value={cc} onChange={(e) => setCc(e.target.value)} className={field} />
+          <div className="flex items-start gap-2">
+            <label className="w-14 pt-2.5 text-xs text-slate-500 flex-shrink-0">Cc</label>
+            <RecipientInput label="Cc" value={ccList} onChange={setCcList} placeholder="Enter separa cada e-mail" />
+          </div>
+        )}
+        {showBcc && (
+          <div className="flex items-start gap-2">
+            <label className="w-14 pt-2.5 text-xs text-slate-500 flex-shrink-0" title="Cópia oculta: quem está aqui recebe, mas os outros não veem">Cco</label>
+            <RecipientInput label="Cco" value={bccList} onChange={setBccList} placeholder="Cópia oculta — os outros não veem" />
           </div>
         )}
         <div className="flex items-center gap-2">
@@ -494,8 +535,9 @@ export function EmailComposer({
           ) : null;
         })()}
         <p className="text-[11px] text-slate-400">
-          {replyToId ? 'A mensagem original vai citada embaixo. ' : ''}Assinatura acima entra automaticamente (muda no lápis ao lado da caixa, na página E-mail).
+          {replyToId ? 'O e-mail respondido vai citado no fim, com o histórico. ' : ''}Assinatura acima entra automaticamente (muda no lápis ao lado da caixa, na página E-mail).
         </p>
+        {replyToId && <EmailThread messages={thread} loading={threadLoading} />}
         <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }} />
         <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
           <button

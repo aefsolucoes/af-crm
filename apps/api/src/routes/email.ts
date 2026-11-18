@@ -6,6 +6,7 @@ import {
   syncEmailAccount, listEmailMessages, openEmailMessage, streamAttachment, sendEmailFrom,
   updateMailboxSignature, searchLeadsForEmail, linkEmailToLead, moveConversationEmail,
   moveEmail, deleteEmailForever, saveDraft, FOLDERS, Folder, conversationEmailAttachment,
+  htmlToText, stripQuoted,
 } from '../services/email-inbox.service';
 import { getScopeDepartmentIds } from '../services/department.service';
 import { PrismaClient } from '@prisma/client';
@@ -43,6 +44,76 @@ router.get('/reply-target', async (req: AuthRequest, res: Response) => {
   const to = enviado ? ((Array.isArray(msg.toList) ? (msg.toList as any[]) : []).map((t) => t?.address).filter(Boolean).join(', ')) : (msg.fromAddress || '');
   const subject = /^re:/i.test(String(msg.subject || '')) ? String(msg.subject) : `Re: ${msg.subject || ''}`.trim();
   res.json({ id: msg.id, mailboxId: msg.emailAccountId, to, subject });
+});
+
+/** Assunto sem "Re:/RES:/Fwd:/ENC:" na frente, pra achar o mesmo fio pelo assunto. */
+const assuntoBase = (s: string | null | undefined) => String(s || '').replace(/^\s*((re|res|enc|fwd?|tr|aw|wg)\s*(\[\d+\])?\s*:\s*)+/i, '').trim();
+
+// Fio do e-mail na janela de responder (Fabio 18/11: "abra o restante dos e-mails, que dê a opção de colocar mais de um em cópia ... igual no Outlook"):
+// - to/cc: o "Responder a todos" — quem mandou + Para + Cc do original, menos as nossas caixas (recebido); o que NÓS mandamos repete o Para/Cc.
+// - messages: os e-mails do mesmo fio (Message-ID / In-Reply-To / References; com card, também o mesmo assunto no mesmo card), mais novo primeiro,
+//   só das caixas que a pessoa vê. "text" é a parte nova de cada um; "full" o texto inteiro com o histórico citado (quando tem).
+router.get('/thread/:id', async (req: AuthRequest, res: Response) => {
+  const caixas = await listVisibleEmailAccounts(req.user!.accountId, req.user!.id);
+  const ids = (caixas as any[]).map((c) => c.id);
+  const parent = await prisma.emailMessage.findFirst({ where: { id: req.params.id, emailAccountId: { in: ids } } });
+  if (!parent) return res.status(404).json({ error: 'E-mail não encontrado' });
+  const nossas = new Set((await prisma.emailAccount.findMany({ where: { accountId: req.user!.accountId }, select: { address: true } })).map((a) => a.address.toLowerCase()));
+  const enderecos = (v: unknown) => (Array.isArray(v) ? (v as any[]) : []).map((a) => String(a?.address || '').trim().toLowerCase()).filter(Boolean);
+  const unicos = (l: string[]) => [...new Set(l)];
+  const remetente = String(parent.fromAddress || '').toLowerCase();
+  const nosso = parent.folder === 'SENT' || nossas.has(remetente);
+  const to = unicos((nosso ? enderecos(parent.toList) : [remetente, ...enderecos(parent.toList)]).filter((a) => a && !nossas.has(a)));
+  const cc = unicos(enderecos(parent.ccList).filter((a) => !nossas.has(a) && !to.includes(a)));
+
+  // Junta o fio pelos cabeçalhos (até 3 voltas: cada e-mail achado traz os ids dos dele).
+  const conhecidos = new Set<string>();
+  const anota = (m: { messageId: string | null; inReplyTo: string | null; references: string | null }) => {
+    for (const x of [m.messageId, m.inReplyTo, ...String(m.references || '').split(/\s+/)]) if (x && x.trim()) conhecidos.add(x.trim());
+  };
+  anota(parent);
+  const achados = new Map<string, typeof parent>([[parent.id, parent]]);
+  for (let volta = 0; volta < 3; volta++) {
+    const lista = [...conhecidos].slice(0, 300);
+    if (!lista.length) break;
+    const rows = await prisma.emailMessage.findMany({
+      where: { emailAccountId: { in: ids }, folder: { in: ['INBOX', 'SENT'] }, OR: [{ messageId: { in: lista } }, { inReplyTo: { in: lista } }] },
+      orderBy: { date: 'desc' }, take: 80,
+    });
+    let novos = 0;
+    for (const r of rows) if (!achados.has(r.id)) { achados.set(r.id, r); anota(r); novos++; }
+    if (!novos) break;
+  }
+  // Mesmo assunto no mesmo card (e-mail que perdeu o cabeçalho do fio no caminho). Sem card não: "[Inter] Engajamento Automático" é o assunto de todo cliente.
+  const base = assuntoBase(parent.subject);
+  if (parent.leadId && base.length >= 4) {
+    const mesmos = await prisma.emailMessage.findMany({
+      where: { emailAccountId: { in: ids }, folder: { in: ['INBOX', 'SENT'] }, leadId: parent.leadId, subject: { contains: base, mode: 'insensitive' } },
+      orderBy: { date: 'desc' }, take: 60,
+    });
+    for (const r of mesmos) if (!achados.has(r.id) && assuntoBase(r.subject).toLowerCase() === base.toLowerCase()) achados.set(r.id, r);
+  }
+
+  // O mesmo e-mail pode estar em mais de uma caixa/pasta (Enviados de uma, Entrada da outra): fica um só.
+  const vistos = new Set<string>();
+  const rotulo = (v: unknown) => (Array.isArray(v) ? (v as any[]) : []).filter((a) => a?.address).map((a) => (a.name ? `${a.name} <${a.address}>` : String(a.address)));
+  const messages = [...achados.values()]
+    .sort((a, b) => (a.id === parent.id ? -1 : b.id === parent.id ? 1 : 0))
+    .filter((m) => { const k = m.messageId || m.id; if (vistos.has(k)) return false; vistos.add(k); return true; })
+    .sort((a, b) => b.date.getTime() - a.date.getTime())
+    .slice(0, 40)
+    .map((m) => {
+      const inteiro = (m.textBody || (m.htmlBody ? htmlToText(m.htmlBody) : '')).replace(/\r/g, '').trim();
+      const novo = stripQuoted(inteiro) || inteiro;
+      return {
+        id: m.id, folder: m.folder, date: m.date, fromName: m.fromName, fromAddress: m.fromAddress,
+        to: rotulo(m.toList), cc: rotulo(m.ccList), subject: m.subject,
+        text: novo.slice(0, 12000), full: inteiro.length > novo.length + 20 ? inteiro.slice(0, 30000) : null,
+        attachments: (Array.isArray(m.attachments) ? (m.attachments as any[]) : []).map((a) => String(a?.filename || '')).filter(Boolean),
+        respondendo: m.id === parent.id,
+      };
+    });
+  res.json({ to, cc, messages });
 });
 
 router.post('/accounts', async (req: AuthRequest, res: Response) => {
@@ -389,14 +460,14 @@ router.post('/accounts/:id/send', requirePermission('inbox_reply'), async (req: 
     if (attachments.some((a) => !a.content.length)) return res.status(400).json({ error: 'Não consegui buscar um dos arquivos da conversa — tire e anexe de novo' });
     if (attachments.reduce((t, a) => t + a.content.length, 0) > 20 * 1024 * 1024) return res.status(400).json({ error: 'Os anexos passam de 20 MB — mande em mais de um e-mail' });
     const saved = await sendEmailFrom({
-      acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), subject: String(b.subject || ''), body: String(b.body || ''),
+      acc, userId: req.user!.id, to: list(b.to), cc: list(b.cc), bcc: list(b.bcc), subject: String(b.subject || ''), body: String(b.body || ''),
       replyToId: b.replyToId || null, leadId: b.leadId || null, io: io(req), draftId: b.draftId || null,
       attachments,
     });
     res.json(saved);
     // E-mail de VISTORIA escrito pela equipe e mandado ao banco pela caixa do CRM (modo manual, fora dos botões de vistoria): o card vai pra "Vistoria do Imóvel"
     // (Fabio 07/11: "sempre que solicitar a vistoria, a etapa do cliente deve ir para Vistoria do Imóvel"). Só pra frente; card já adiante fica onde está.
-    const destinos = [...list(b.to), ...list(b.cc)].map((a) => a.toLowerCase());
+    const destinos = [...list(b.to), ...list(b.cc), ...list(b.bcc)].map((a) => a.toLowerCase());
     if (saved?.leadId && ehEmailDeVistoria(String(b.subject || ''), String(b.body || ''), destinos)) {
       const { moverParaVistoria } = require('../services/vistoria-inter.service') as typeof import('../services/vistoria-inter.service');
       moverParaVistoria(req.user!.accountId, saved.leadId, `e-mail de vistoria enviado a ${destinos.filter((a) => BANCO_EMAIL.test(a)).join(', ')}`, io(req) as any).catch(() => {});

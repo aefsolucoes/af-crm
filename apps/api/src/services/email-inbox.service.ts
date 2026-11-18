@@ -818,6 +818,8 @@ function emailRespondido(acc: EmailAccount, replyToId: string | null | undefined
 
 export async function sendEmailFrom(params: {
   acc: EmailAccount; userId: string | null; to: string[]; cc?: string[]; subject: string; body: string;
+  /** Cópia oculta (Cco): vai no envio e na cópia em Enviados do servidor; o CRM não guarda (Fabio 18/11, vários em cópia como no Outlook). */
+  bcc?: string[];
   replyToId?: string | null; leadId?: string | null; io: Io;
   /** Enviando um rascunho: ele sai da pasta Rascunhos depois do envio. */
   draftId?: string | null;
@@ -830,13 +832,15 @@ export async function sendEmailFrom(params: {
   if (totalBytes > MAX_ATTACHMENT_BYTES) throw new Error(`Os anexos passam de ${Math.round(MAX_ATTACHMENT_BYTES / 1024 / 1024)} MB — mande em mais de um e-mail ou use um link do Drive`);
   const pedidosTo = params.to.map((a) => a.trim().toLowerCase()).filter(Boolean);
   const pedidosCc = (params.cc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
+  const pedidosBcc = (params.bcc || []).map((a) => a.trim().toLowerCase()).filter(Boolean);
   if (!pedidosTo.length) throw new Error('Informe pelo menos um destinatário');
-  const bad = [...pedidosTo, ...pedidosCc].find((a) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
+  const bad = [...pedidosTo, ...pedidosCc, ...pedidosBcc].find((a) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(a));
   if (bad) throw new Error(`E-mail inválido: ${bad}`);
   // E-mail inexistente não recebe mais nada (Fabio 09/11): sai da lista; se não sobrar destinatário, o envio para e quem mandou vê o motivo.
-  const barrados = await enderecosBarrados(acc.accountId, [...pedidosTo, ...pedidosCc]);
+  const barrados = await enderecosBarrados(acc.accountId, [...pedidosTo, ...pedidosCc, ...pedidosBcc]);
   const to = pedidosTo.filter((a) => !barrados.has(a));
   const cc = pedidosCc.filter((a) => !barrados.has(a));
+  const bcc = pedidosBcc.filter((a) => !barrados.has(a));
   if (!to.length) throw new Error(`E-mail não enviado para ${pedidosTo[0]}: ${barrados.get(pedidosTo[0])}. Corrija o endereço.`);
   const subject = params.subject.trim() || '(sem assunto)';
   const body = params.body.replace(/\r/g, '');
@@ -854,7 +858,8 @@ export async function sendEmailFrom(params: {
     ? signatureHtml(acc.signature)
     : acc.userId ? signatureHtml(defaultSignature(acc, user?.name)) : companySignatureHtml();
   // Resposta: cita o e-mail original embaixo, como qualquer cliente de e-mail.
-  const parentText = parent ? (parent.textBody || (parent.htmlBody ? htmlToText(parent.htmlBody) : '')).slice(0, 5000) : '';
+  // Com o histórico que o original já trazia (Fabio 18/11: "abra o restante dos e-mails") — antes cortava em 5 mil caracteres e o fio antigo sumia.
+  const parentText = parent ? (parent.textBody || (parent.htmlBody ? htmlToText(parent.htmlBody) : '')).slice(0, 20000) : '';
   const quoteHeader = parent ? `Em ${parent.date.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}, ${parent.fromName || parent.fromAddress || ''} escreveu:` : '';
   const quoteHtml = parentText
     ? `<p style="margin:24px 0 6px;font-size:12px;color:#64748b">${escapeHtml(quoteHeader)}</p><blockquote style="margin:0;padding-left:12px;border-left:3px solid #cbd5e1;color:#64748b;white-space:pre-wrap">${escapeHtml(parentText)}</blockquote>`
@@ -865,7 +870,7 @@ export async function sendEmailFrom(params: {
 
   const mail = {
     from: fromName ? `"${fromName.replace(/"/g, '')}" <${acc.address}>` : acc.address,
-    to, cc: cc.length ? cc : undefined, subject, text: `${body}${quoteText}`, html, messageId,
+    to, cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined, subject, text: `${body}${quoteText}`, html, messageId,
     attachments: files.length ? files.map((f) => ({ filename: f.filename, content: f.content, contentType: f.contentType || undefined })) : undefined,
     ...(parent?.messageId ? {
       inReplyTo: parent.messageId,
@@ -890,7 +895,10 @@ export async function sendEmailFrom(params: {
 
   // Guarda uma cópia em Enviados no servidor (SMTP não guarda sozinho) —
   // em segundo plano: o e-mail já saiu, isso não pode travar a resposta.
-  new MailComposer(mail as any).compile().build().then((raw: Buffer) => withImap(acc, async (client) => {
+  // keepBcc: o Cco aparece na cópia de Enviados (só pra nós; no envio ele nunca vai no cabeçalho).
+  const sentNode: any = new MailComposer(mail as any).compile();
+  sentNode.keepBcc = true;
+  sentNode.build().then((raw: Buffer) => withImap(acc, async (client) => {
     const path = await sentPath(client);
     if (path) await client.append(path, raw, ['\\Seen']);
   })).catch((err: any) => console.warn(`[E-mail] Cópia em Enviados (${acc.address}):`, err?.message));
