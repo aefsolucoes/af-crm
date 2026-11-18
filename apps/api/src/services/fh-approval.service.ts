@@ -143,8 +143,65 @@ async function enriquecer(leadId: string, cf: Cf, ops: FhOption[]): Promise<FhOp
     const prazoPedido = Number(String(cf._fhPrazo || '').replace(/\D/g, '')) || 0;
     if (prazoPedido && Number(x.prazo) && prazoPedido !== Number(x.prazo)) x.prazoPedido = String(prazoPedido);
     if (doSegundo(x.banco, num(x.valor))) x.nome = (require('../lib/text') as typeof import('../lib/text')).paraNomeSocial(cf, p2);
-    return x;
+    return comParcelasLidas(cf, x);
   });
+}
+
+// ── Parcelas no aviso do Financiamento (Fabio 18/11: "coloca as parcelas também no 'Avisar cliente' e no aviso automático") ──────────────────
+// A leitura do Credimorar não traz a parcela: antes do aviso, o CRM baixa a simulação de cada banco aprovado SÓ PRA LER a 1ª e a última parcela (pedido `PARCELAS`, nada vai
+// ao cliente) e guarda em `_fhParcelas[banco]` com a chave da proposta (nº|prazo). O aviso espera a leitura até ESPERA_PARCELAS_MS; leitura que falha ou demora = aviso sem parcelas.
+const ESPERA_PARCELAS_MS = 8 * 60_000;
+const brlParcela = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+/** Chave da proposta do banco ("5705240|180"): parcela lida de outra proposta/prazo nunca entra no aviso. '' = sem como identificar. */
+function chaveParcelas(cf: Cf, o: FhOption): string {
+  const p = propostaNoResumo(cf, o.banco);
+  return p || o.prazo ? `${p || ''}|${o.prazo || ''}` : '';
+}
+function comParcelasLidas(cf: Cf, o: FhOption): FhOption {
+  if (o.parcela) return o;
+  const x = cf._fhParcelas?.[o.banco] as Cf | undefined;
+  const k = chaveParcelas(cf, o);
+  if (!k || !x || x.chave !== k || !Number(x.primeira)) return o;
+  return { ...o, parcela: brlParcela(Number(x.primeira)), ...(Math.abs(Number(x.ultima) - Number(x.primeira)) > 1 ? { ultimaParcela: brlParcela(Number(x.ultima)) } : {}) };
+}
+
+/** Antes do aviso: pede a leitura das parcelas dos bancos aprovados que ainda não têm. 'esperando' = leitura em andamento (o aviso espera); 'pronto' = pode mandar. */
+async function parcelasAntesDoAviso(accountId: string, leadId: string, cf: Cf, ops: FhOption[]): Promise<'pronto' | 'esperando'> {
+  const ca = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
+  if (ca.foraDoHorario() && !(await ca.liberadoAte(prisma as any, accountId))) return 'pronto'; // extensões paradas: não segura o aviso
+  const sd = require('./simulation-doc.service') as typeof import('./simulation-doc.service');
+  let esperando = false;
+  for (const o of ops) {
+    const inst = PDF_INST[o.banco];
+    const k = chaveParcelas(cf, o);
+    if (o.parcela || !inst || !k || (cf._fhParcelas?.[o.banco] as Cf | undefined)?.chave === k) continue; // já tem, sem PDF, sem chave ou já lida (deu certo ou não)
+    const aberto = await prisma.simulationDocRequest.findFirst({ where: { leadId, source: 'PARCELAS', institution: { in: [inst, `${inst}_CM`] }, status: { in: ['REQUESTED', 'RUNNING'] } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+    if (aberto) { if (Date.now() - aberto.createdAt.getTime() < ESPERA_PARCELAS_MS) esperando = true; continue; }
+    const feito = await prisma.simulationDocRequest.findFirst({ where: { leadId, source: 'PARCELAS', institution: { in: [inst, `${inst}_CM`] }, caption: `PARCELAS|${o.banco}|${k}` }, select: { id: true } });
+    if (feito) continue; // essa proposta já foi lida uma vez: não pede de novo
+    const out = await sd.requestSimulationDocs(prisma as any, { accountId, leadId, institutions: [inst], source: 'PARCELAS', caption: `PARCELAS|${o.banco}|${k}` }).catch(() => null);
+    if (out?.created.length) esperando = true;
+  }
+  return esperando ? 'esperando' : 'pronto';
+}
+
+/** Leitura das parcelas terminou (simulation-doc.deliver) ou falhou (noteFailure): guarda em `_fhParcelas` e, se a equipe clicou "Avisar cliente" esperando por ela, manda o aviso. */
+export async function gravarParcelasFh(leadId: string, caption: string | null, parcelas: { primeira: number; ultima: number; prazo: number } | null, erro?: string | null, io?: any): Promise<void> {
+  const [marca, banco, proposta, prazo] = String(caption || '').split('|');
+  if (marca !== 'PARCELAS' || !banco) return;
+  const chave = `${proposta || ''}|${prazo || ''}`;
+  const certo = !!parcelas && (!Number(prazo) || Math.abs(parcelas.prazo - Number(prazo)) <= 1); // PDF de outro prazo = outra simulação: não vale
+  const v = certo ? { chave, primeira: parcelas!.primeira, ultima: parcelas!.ultima, prazo: parcelas!.prazo, at: new Date().toISOString() }
+    : { chave, erro: String(erro || (parcelas ? `o PDF é de ${parcelas.prazo} meses (outra simulação)` : 'sem leitura das parcelas')).slice(0, 200), at: new Date().toISOString() };
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fhParcelas}', COALESCE("customFields"->'_fhParcelas', '{}'::jsonb) || jsonb_build_object(${banco}::text, ${JSON.stringify(v)}::jsonb), true) WHERE id = ${leadId}`;
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { accountId: true, customFields: true } });
+  const av = ((lead?.customFields || {}) as Cf)._fhAvisarEquipe as Cf | null | undefined;
+  if (!lead || !av?.at) return;
+  const out = await enviarPropostasFh({ accountId: lead.accountId, leadId, userName: av.por, userId: av.userId || undefined, io, retomada: true });
+  if (!out.ok) {
+    await saveCf(leadId, { _fhAvisarEquipe: null });
+    await note(leadId, `⚠️ "Avisar cliente" do Financiamento: depois da leitura das parcelas, o aviso NÃO saiu (${out.error}). Clique em "Avisar cliente" de novo.`);
+  }
 }
 
 /** Rodada NOVA pedida (outro valor/prazo, novaPropostaFh): até cada banco responder, o que está no card ainda é da proposta antiga — o aviso espera, no máximo 12 h (Fabio 09/11, Pedro Paulo:
@@ -248,6 +305,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
       const semNum = new Set<string>(Array.isArray(cf._fhNotice.semNumeros) ? cf._fhNotice.semNumeros : []);
       const completas = aprovadas.filter((o) => semNum.has(o.banco) && o.valor && o.prazo);
       if (completas.length && !cf._fhChosen && inNoticeWindow() && l.aiAutoReplyActive && (await whatsappWindowOpen(l.id))) {
+        if ((await parcelasAntesDoAviso(accountId, l.id, cf, completas)) === 'esperando') continue; // lendo as parcelas na simulação (Fabio 18/11)
         const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
         await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, semNumeros: [...semNum].filter((b) => !completas.some((o) => o.banco === b)) } });
         const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
@@ -268,6 +326,7 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
         continue;
       }
       if (!inNoticeWindow() || !l.aiAutoReplyActive || !(await whatsappWindowOpen(l.id))) continue;
+      if ((await parcelasAntesDoAviso(accountId, l.id, cf, novas)) === 'esperando') continue; // lendo as parcelas na simulação (Fabio 18/11)
       const { sendOutboundWhatsApp } = require('./message.service') as typeof import('./message.service');
       await saveCf(l.id, { _fhNotice: { ...cf._fhNotice, bancos: [...ja, ...novas.map((o) => o.banco)] } });
       const nome = firstName(cf.falando_com || cf.participante_1 || l.name);
@@ -310,6 +369,8 @@ export async function processFhNotices(accountId: string, io?: any): Promise<voi
       push(accountId, `🏠 ${l.name}: financiamento aprovado`, `${bancos} — avise o cliente (${!l.aiAutoReplyActive ? 'IA desligada' : 'conversa fechada'})`, l.id);
       continue;
     }
+    // Parcelas no aviso automático (Fabio 18/11): lê antes a simulação de cada banco aprovado sem parcela; espera até uns 8 min, depois vai sem.
+    if ((await parcelasAntesDoAviso(accountId, l.id, cf, aprovadas)) === 'esperando') continue;
     const out = await sendFhNotice(accountId, l.id, l.name, aprovadas, emAnalise, io);
     if (out) {
       await moverAguardandoDocsFh(accountId, l.id, io);
@@ -394,7 +455,7 @@ async function propostasFh(accountId: string, leadId: string) {
 
 /** "Avisar cliente" (todas as aprovadas, com a introdução do aviso automático) e "Encaminhar ao cliente" (só a do banco) no Financiamento: uma mensagem por banco com o botão
  *  "Seguir com esta". Vale com a IA do card desligada (quem manda é a equipe) e pode mandar de novo. Conversa fechada (24 h) → erro: o template vai antes. */
-export async function enviarPropostasFh(p: { accountId: string; leadId: string; userName?: string; userId?: string; bancos?: string[]; io?: any }): Promise<{ ok: boolean; error?: string; bancos?: string[]; simulando?: boolean }> {
+export async function enviarPropostasFh(p: { accountId: string; leadId: string; userName?: string; userId?: string; bancos?: string[]; io?: any; /** chamado de novo quando a leitura das parcelas chegou */ retomada?: boolean }): Promise<{ ok: boolean; error?: string; bancos?: string[]; simulando?: boolean }> {
   const so = (p.bancos || []).filter(Boolean);
   // CAIXA (Fabio 18/11): antes de encaminhar, a simulação no simulador da CAIXA (parcela com a taxa bonificada) — as condições saem quando ela termina.
   if (so.length === 1 && so[0] === 'CAIXA') return encaminharCaixaFh(p);
@@ -408,6 +469,18 @@ export async function enviarPropostasFh(p: { accountId: string; leadId: string; 
   if (so.length === 1 && lista.length === 1 && !lista[0].parcela && PDF_INST[lista[0].banco]) return encaminharComSimulacaoFh(p, x.lead, x.cf, lista[0]);
   const quem = p.userName || 'a equipe';
   if (!so.length) {
+    // Parcelas no "Avisar cliente" (Fabio 18/11): lê antes a simulação dos bancos sem parcela; o aviso sai quando a leitura chegar (gravarParcelasFh) — ou sem ela, se falhar.
+    const av = x.cf._fhAvisarEquipe as Cf | null | undefined;
+    if (!p.retomada && av?.at && Date.now() - Date.parse(av.at) < ESPERA_PARCELAS_MS + 10 * 60_000) return { ok: false, error: 'O aviso já está esperando a leitura das parcelas: ele sai sozinho em instantes.' };
+    const passou = !!av?.at && Date.now() - Date.parse(av.at) > ESPERA_PARCELAS_MS;
+    if (!passou && (await parcelasAntesDoAviso(p.accountId, p.leadId, x.cf, lista)) === 'esperando') {
+      if (!av?.at) {
+        await saveCf(p.leadId, { _fhAvisarEquipe: { at: new Date().toISOString(), por: quem, userId: p.userId || null } });
+        await note(p.leadId, `📣 ${quem} pediu "Avisar cliente" (${lista.map((o) => o.banco).join(', ')}): o CRM está lendo as parcelas nas simulações dos bancos; o aviso sai sozinho quando elas chegarem (até uns 8 min; se a leitura falhar, sai sem as parcelas).`);
+      }
+      return { ok: true, bancos: lista.map((o) => o.banco), simulando: true };
+    }
+    if (av?.at) await saveCf(p.leadId, { _fhAvisarEquipe: null });
     const out = await sendFhNotice(p.accountId, p.leadId, x.lead.name, lista, x.emAnalise, p.io);
     if (!out) return { ok: false, error: 'O aviso não saiu (veja a nota no card).' };
     await note(p.leadId, `📣 ${quem} mandou ao cliente o Financiamento aprovado (${lista.map((o) => o.banco).join(', ')}), uma mensagem por banco com o botão "Seguir com esta" (botão "Avisar cliente").`);

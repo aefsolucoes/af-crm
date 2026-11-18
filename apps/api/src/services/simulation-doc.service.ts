@@ -72,7 +72,9 @@ async function planoDeNovaTentativa(db: Db, r: { leadId: string; institution: st
   return { quando: new Date(fim + RETRY_MIN[Math.max(0, falhas - 1)] * 60_000), login: false, falhas };
 }
 
-async function noteFailure(db: Db, r: { id?: string; leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null }) {
+async function noteFailure(db: Db, r: { id?: string; leadId: string; institution: string; source: string; detail: string | null; createdAt: Date; finishedAt: Date | null; caption?: string | null }) {
+  // Leitura das parcelas pro aviso do Financiamento (Fabio 18/11): a falha só destrava o aviso — ele sai sem as parcelas, como antes. Nada de nota por pedido.
+  if (r.source === 'PARCELAS') { await (require('./fh-approval.service') as typeof import('./fh-approval.service')).gravarParcelasFh(r.leadId, r.caption || null, null, r.detail).catch((e: any) => console.error('[Simulação FH] parcelas (falha):', e?.message)); return; }
   // "Encaminhar ao cliente" da CAIXA (Fabio 18/11): a simulação roda minutos depois do clique — quem pediu não vê a falha na tela, então vai nota + push pra equipe.
   if (r.institution === 'FH_CAIXA' && r.id) await (require('./fh-approval.service') as typeof import('./fh-approval.service')).falhouEncaminharCaixa(r.leadId, r.id, r.detail).catch((e: any) => console.error('[Simulação CAIXA] falha do encaminhar:', e?.message));
   // "Encaminhar ao cliente" dos outros bancos do Financiamento (Fabio 18/11, Gilvano): o resumo espera a simulação com as parcelas — a falha tenta de novo ou vai pra equipe.
@@ -103,7 +105,7 @@ async function refazerFalhas(db: Db, accountId: string) {
       if (vistos.has(chave)) continue; // só a falha mais recente de cada simulação
       vistos.add(chave);
       // Já tem pedido mais novo (outra tentativa, ou a equipe mandou à mão): não refaz.
-      if (await db.simulationDocRequest.findFirst({ where: { leadId: r.leadId, institution: { in: mesmaSimulacao(r.institution) }, createdAt: { gt: r.createdAt } }, select: { id: true } })) continue;
+      if (await db.simulationDocRequest.findFirst({ where: { leadId: r.leadId, institution: { in: mesmaSimulacao(r.institution) }, createdAt: { gt: r.createdAt }, source: { not: 'PARCELAS' } }, select: { id: true } })) continue;
       const plano = await planoDeNovaTentativa(db, r);
       if (!plano.quando || plano.quando.getTime() > Date.now()) continue;
       const banco = bancoDoLogin(r.institution);
@@ -159,7 +161,7 @@ async function interFhMaiorNoCredimorar(db: Db, leadId: string): Promise<boolean
   return cmMax > nossoMax;
 }
 
-export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI' | 'ASSISTANT'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
+export async function requestSimulationDocs(db: Db, p: { accountId: string; leadId: string; institutions: string[]; userId?: string; source?: 'USER' | 'AI' | 'ASSISTANT' | 'PARCELAS'; caption?: string; /** guarda o PDF pronto (READY) até o aviso de aprovação sair */ hold?: boolean; /** não pede de novo se o mesmo PDF já foi enviado nas últimas N horas (envio automático) */ skipIfSentWithinHours?: number }) {
   const lead = await db.lead.findFirst({ where: { id: p.leadId, accountId: p.accountId }, select: { id: true } });
   if (!lead) throw new Error('Card não encontrado');
   await expireStuck(db, p.accountId);
@@ -253,6 +255,13 @@ export function parcelasDaTabela(rows: Array<{ n: number; parcela: number }>, si
 }
 
 async function deliver(db: Db, r: { id: string; accountId: string; leadId: string; institution: string; caption: string | null; requestedById: string | null; hold?: boolean; source?: string }, pdf: Buffer, io?: Io, parcelas?: ParcelasDaSimulacao | null) {
+  // Só LEITURA das parcelas pro aviso do Financiamento ("Avisar cliente" / aviso automático — Fabio 18/11: "coloca as parcelas também"): nada vai ao cliente; o PDF não fica guardado.
+  if ((r as any).source === 'PARCELAS') {
+    const txt = parcelas ? `Parcelas lidas: 1ª ${brl(parcelas.primeira)} · última ${brl(parcelas.ultima)} · ${parcelas.prazo} meses (só leitura, nada foi ao cliente)` : 'PDF baixado, mas não consegui ler as parcelas (só leitura, nada foi ao cliente)';
+    await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'PRIVATE', finishedAt: new Date(), detail: txt } });
+    await (require('./fh-approval.service') as typeof import('./fh-approval.service')).gravarParcelasFh(r.leadId, r.caption, parcelas || null, null, io).catch((e: any) => console.error('[Simulação FH] parcelas:', e?.message));
+    return { ok: true as const, held: true as const, messageId: undefined as string | undefined };
+  }
   if ((r as any).source === 'ASSISTANT') { // pedido pelo ASSISTENTE do CRM (Fabio 26/10: "preciso da simulação do cliente X, ele me retorna com o PDF"): fica SÓ pra equipe, nunca vai ao cliente
     await db.simulationDocRequest.update({ where: { id: r.id }, data: { status: 'PRIVATE', pdf, finishedAt: new Date(), detail: 'PDF pronto — só pra equipe (pedido pelo assistente do CRM)' } });
     return { ok: true as const, held: true as const, messageId: undefined as string | undefined };

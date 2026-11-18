@@ -98,7 +98,7 @@ export function LeadFhAnalysis({ leadId }: { leadId: string }) {
     setBusy(banco ? `fwd-${banco}` : 'avisar');
     try {
       const { data: r } = await api.post('/api/credit-analysis/fh-avisar', { leadId, ...(banco ? { banco } : {}) });
-      toast(r.simulando ? `Simulação ${r.bancos?.[0] === 'CAIXA' ? 'da CAIXA' : `do ${r.bancos?.[0] || 'banco'}`} pedida: a proposta vai ao cliente com as parcelas e o PDF assim que ela chegar` : `Proposta enviada ao cliente: ${(r.bancos || []).join(', ')}`, 'success');
+      toast(r.simulando ? (banco ? `Simulação ${r.bancos?.[0] === 'CAIXA' ? 'da CAIXA' : `do ${r.bancos?.[0] || 'banco'}`} pedida: a proposta vai ao cliente com as parcelas e o PDF assim que ela chegar` : `Lendo as parcelas nas simulações (${(r.bancos || []).join(', ')}): o aviso vai ao cliente assim que elas chegarem`) : `Proposta enviada ao cliente: ${(r.bancos || []).join(', ')}`, 'success');
       recarregar();
     } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao mandar a proposta', 'error'); } finally { setBusy(null); }
   }
