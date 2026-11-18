@@ -198,6 +198,37 @@ router.post('/:leadId/cadastro', async (req: AuthRequest, res: Response) => {
   try { await gravarCadastro(req.user!.accountId, req.params.leadId, Number(ordem), { status: String(status), texto: String(texto || ''), antigo: antigo ? String(antigo) : '', antigoDatas: antigoDatas && typeof antigoDatas === 'object' ? antigoDatas : null }); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
 });
 
+// VENDEDORES no Caixa Aqui (Fabio 18/11: cadastrados sem renda pra aparecerem no SIOPI na contratação; sem card próprio — ficam no card do comprador).
+router.get('/:leadId/vendedores', async (req: AuthRequest, res: Response) => {
+  const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+  if (!l) return res.status(404).json({ error: 'Lead não encontrado' });
+  const { vendedoresDaFicha, faltaVendedor } = await import('../services/caixa-vendedores.service');
+  const cf = (l.customFields || {}) as any;
+  res.json({ at: cf._caixaVendedores?.at || null, cadastros: cf._caixaVendedores?.cadastros || {}, pessoas: vendedoresDaFicha(cf).map((p: any) => ({ ordem: p.ordem, nome: p.nome, telefone: p.telefone, email: p.email, enderecoDoImovel: p.enderecoDoImovel, falta: faltaVendedor(p) })) });
+});
+router.post('/:leadId/vendedores/ficha', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const { montarFichaVendedores, faltaVendedor } = await import('../services/caixa-vendedores.service');
+  const r = await montarFichaVendedores(req.user!.accountId, req.params.leadId, quem).catch((e) => ({ erro: e?.message || 'erro' } as { erro: string; pessoas?: any[] }));
+  if (r.erro) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, pessoas: (r.pessoas || []).map((p: any) => ({ ordem: p.ordem, nome: p.nome, falta: faltaVendedor(p) })) });
+});
+router.post('/:leadId/vendedores/dados', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const { informarDadosVendedor } = await import('../services/caixa-vendedores.service');
+  const erro = await informarDadosVendedor(req.user!.accountId, req.params.leadId, Number(req.body?.ordem), { telefone: req.body?.telefone, email: req.body?.email }, quem).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+router.post('/:leadId/vendedores/cadastrar', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const { pedirCadastroVendedores } = await import('../services/caixa-vendedores.service');
+  const ordens = (Array.isArray(req.body?.ordens) ? req.body.ordens : []).map(Number).filter((n: number) => n > 100);
+  const r = await pedirCadastroVendedores(req.user!.accountId, req.params.leadId, quem, ordens.length ? ordens : undefined).catch((e) => ({ erro: e?.message || 'erro', fila: [], faltando: [] }));
+  if (r.erro) return res.status(400).json({ error: r.erro });
+  res.json({ ok: true, fila: r.fila, faltando: r.faltando });
+});
+
 // Avaliação de Risco (passo 2): equipe pede; extensão devolve o que viu/fez.
 router.post('/:leadId/avaliar', async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';

@@ -165,6 +165,8 @@ async function enderecoComCepDaRegiao(leadId: string, ordem: number, e: any): Pr
 
 /** Próximo trabalho da extensão: o 1º participante ainda sem consulta do card mais antigo na fila. Marca como "em consulta" (10 min). */
 export async function proximaConsulta(accountId: string): Promise<any | null> {
+  const vend = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
+  if (await vend.vendedorEmAndamento(accountId)) return null; // cadastro de vendedor nas mãos da extensão: um por vez
   // Consulta que já falhou ou foi largada vai pro fim da fila (Fabio 09/11: um card repetiu por horas e prendeu quem estava atrás); a que está em andamento fica na frente pra valer o "um por vez".
   const prazo = new Date(Date.now() - LEASE_MS).toISOString();
   const ids = await prisma.$queryRaw<{ id: string }[]>`
@@ -258,7 +260,8 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
     await salvar(id, (x) => { x.atual = { ordem: p.ordem, desde: new Date().toISOString() }; });
     return { tipo: 'consultar', leadId: id, leadName: l!.name, ordem: p.ordem, nome: p.nome, cpf: p.cpf };
   }
-  return null;
+  // Por último: cadastro dos VENDEDORES (sem renda, Fabio 18/11) — pra eles aparecerem no SIOPI na contratação.
+  return vend.proximoCadastroVendedor(accountId);
 }
 
 /** Resultado da consulta de um participante → anotação; todos consultados → CONSULTADO + push pra equipe cadastrar. */
@@ -558,7 +561,9 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   if (!apiKey) return null;
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return null;
-  const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));
+  const vend = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
+  const ehVend = vend.ehOrdemVendedor(ordem); // vendedor (Fabio 18/11): ficha em _caixaVendedores, sem renda
+  const p = (ehVend ? vend.vendedoresDaFicha((l.customFields || {}) as Cf) : participantesDa((l.customFields || {}) as Cf)).find((x) => x.ordem === Number(ordem));
   if (!p) return null;
   const { fontes, faltando, ...fichaLida } = p;
   // Cadastro que o cliente JÁ TINHA na CAIXA, conferido como está, de quem TEM RENDA (Fabio 14/11, Fernando: "caso o cliente já tenha tudo cadastrado e o cadastro de
@@ -567,7 +572,8 @@ export async function conferirCadastro(accountId: string, leadId: string, ordem:
   // conta, os padrões da A&F não; o resultado vira anotação e a extensão avança SEM mexer.
   const comoEsta = campos.some((c) => /CADASTRO QUE O CLIENTE J[ÁA] TINHA NA CAIXA/i.test(String(c?.valor || '')));
   const comRenda = !p.semRenda && !p.rendaInformal && ((Array.isArray(fontes) && fontes.length > 0) || Number(p.rendaBrutaMensal) > 0);
-  const manter = comoEsta && comRenda;
+  // Vendedor que já tem cadastro na CAIXA: fica como está (não é cliente — o CRM não troca a renda dele).
+  const manter = comoEsta && (comRenda || ehVend);
   // Órgão do RG já no nome da lista da CAIXA (Fabio 01/11, Fernanda): a ficha antiga diz "INSTITUTO DE IDENTIFICAÇÃO PCDF" e a conferência pedia "Outro" — vai como SSP.
   const ficha: any = { ...fichaLida, identidade: fichaLida.identidade && { ...fichaLida.identidade, orgao: orgaoCaixa(fichaLida.identidade) } };
   // CEP do comprovante inexistente nos Correios → o cadastro usa o CEP da região (Fabio 17/11): a conferência compara com ele.
@@ -591,11 +597,13 @@ ESTE É O CADASTRO QUE O CLIENTE JÁ TINHA NA CAIXA, conferido como está, de qu
   const linhas = [...out.divergencias.map((d) => `• ❌ ${d}`), ...out.faltando.map((f) => `• ⚠️ vazio na tela: ${f}`)];
   if (manter) {
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📌 Cadastro que ${p.nome || `o ${ordem}º participante`} já tinha na CAIXA (tem renda): MANTIDO como está — nada é alterado, pra não pedir a autorização do PV (Fabio 14/11).${linhas.length ? `\nDiverge dos documentos (NÃO alterado — confira com o cliente/agência):\n${linhas.join('\n')}` : '\n✅ Confere com os documentos apresentados.'}` } }).catch(() => {});
-    await salvar(leadId, (x) => { x.conferencias = { ...(x.conferencias || {}), [ordem]: { at: new Date().toISOString(), ok: true, mantido: true, divergencias: linhas.length } }; });
+    if (ehVend) await vend.marcarConferenciaVendedor(leadId, ordem, { ok: true, mantido: true, divergencias: linhas.length });
+    else await salvar(leadId, (x) => { x.conferencias = { ...(x.conferencias || {}), [ordem]: { at: new Date().toISOString(), ok: true, mantido: true, divergencias: linhas.length } }; });
     return { ok: true, divergencias: [], faltando: [], resumo: out.resumo, manter: true };
   }
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔎 Conferência do cadastro na CAIXA — ${ordem}º participante (${p.nome || '—'}): ${out.ok && !linhas.length ? '✅ tudo confere com os documentos.' : 'precisa corrigir antes de gravar:'}${linhas.length ? `\n${linhas.join('\n')}` : ''}${out.resumo ? `\n${out.resumo}` : ''}` } }).catch(() => {});
-  await salvar(leadId, (x) => { x.conferencias = { ...(x.conferencias || {}), [ordem]: { at: new Date().toISOString(), ok: out.ok && !linhas.length } }; });
+  if (ehVend) await vend.marcarConferenciaVendedor(leadId, ordem, { ok: out.ok && !linhas.length });
+  else await salvar(leadId, (x) => { x.conferencias = { ...(x.conferencias || {}), [ordem]: { at: new Date().toISOString(), ok: out.ok && !linhas.length } }; });
   return out;
 }
 
@@ -651,15 +659,18 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
   if (!link) return 'O card não tem a pasta do Drive';
   const data = Buffer.from(String(pdfBase64 || ''), 'base64');
   if (data.length < 1000 || data.subarray(0, 4).toString('latin1') !== '%PDF') return 'O arquivo do formulário não é um PDF';
-  const p = participantesDa(cf).find((x) => x.ordem === Number(ordem));
+  const vend = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
+  const ehVend = vend.ehOrdemVendedor(ordem);
+  const p = (ehVend ? vend.vendedoresDaFicha(cf) : participantesDa(cf)).find((x) => x.ordem === Number(ordem));
   const quem = String(p?.nome || `${ordem}º participante`).toUpperCase();
-  const nome = `FICHA CADASTRAL CAIXA - ${quem}.pdf`;
+  const nome = `FICHA CADASTRAL CAIXA - ${ehVend ? 'VENDEDOR ' : ''}${quem}.pdf`;
   const google = await import('./google.service');
   const pasta = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
   for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
   const up = await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data });
-  await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), formulario: up.id } }; });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Formulário do cadastro na CAIXA de ${quem} salvo na pasta FORMULARIOS do Drive (${nome}). A assinatura do cliente fica pra contratação.` } }).catch(() => {});
+  if (ehVend) await vend.marcarFormularioVendedor(leadId, ordem, up.id);
+  else await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), formulario: up.id } }; });
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📄 Formulário do cadastro na CAIXA de ${ehVend ? 'VENDEDOR ' : ''}${quem} salvo na pasta FORMULARIOS do Drive (${nome}). A assinatura do cliente fica pra contratação.` } }).catch(() => {});
   return null;
 }
 
@@ -797,6 +808,9 @@ export function cadastroAntigoRecente(d: { residenciaMes?: string; residenciaAno
 }
 
 export async function gravarCadastro(accountId: string, leadId: string, ordem: number, r: { status: string; texto: string; antigo?: string; antigoDatas?: { residenciaMes?: string; residenciaAno?: string; renda?: string } | null }): Promise<void> {
+  // Vendedor (ordem 101+, Fabio 18/11): só anota e avisa — nada de análise nem conferência dos compradores.
+  const vend = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
+  if (vend.ehOrdemVendedor(ordem)) return vend.gravarCadastroVendedor(accountId, leadId, ordem, r);
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const p = participantesDa((l.customFields || {}) as Cf).find((x) => x.ordem === Number(ordem));

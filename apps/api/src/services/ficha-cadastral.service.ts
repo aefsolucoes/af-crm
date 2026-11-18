@@ -28,7 +28,7 @@ Responda SOMENTE com JSON:
 "rg":{"numero":null,"orgao":null,"uf":null,"emissao":"dd/mm/aaaa"},"cnh":{"numero":null,"emissao":"dd/mm/aaaa","validade":"dd/mm/aaaa","primeiraHabilitacao":"dd/mm/aaaa","orgao":null,"uf":null},
 "mae":null,"pai":null,"estadoCivil":null,"regimeBens":null,"dataCasamento":"dd/mm/aaaa","conjuge":{"nome":null,"cpf":null},
 "endereco":{"logradouro":null,"numero":null,"complemento":null,"bairro":null,"cidade":null,"uf":null,"cep":null,"comprovanteMesAno":"mm/aaaa"},
-"pis":null,"ctps":{"numero":null,"serie":null},"profissao":null,"escolaridade":null,
+"pis":null,"ctps":{"numero":null,"serie":null},"profissao":null,"escolaridade":null,"telefone":null,"email":null,
 "empregador":{"nome":null,"cnpj":null},"cargo":null,"admissao":"dd/mm/aaaa","competencia":"mm/aaaa","rendaBruta":null,"rendaLiquida":null,"irRetido":null,"tipoRenda":"salario|aposentadoria|pensao|null","inicioBeneficio":null,"verbasEventuais":[{"descricao":null,"valor":null}],
 "fontesPagadoras":[{"nome":null,"cnpj":null,"valorAnual":null,"contribPrev":null,"irRetido":null}],"lucrosDividendos":[{"fonte":null,"cnpj":null,"valorAnual":null}],"anoCalendario":null,"contratos":[{"empregador":null,"cnpj":null,"cargo":null,"admissao":null,"saida":null}],
 "outrasRendas":[{"tipo":"aposentadoria|pensao|aluguel|outra","valor":null}],"patrimonioTotal":null}],
