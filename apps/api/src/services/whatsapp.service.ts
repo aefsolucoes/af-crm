@@ -1926,6 +1926,12 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     // Banco que a IA marcou pra rodar + rede de segurança (Fabio 26/10): banco citado como "em análise" no texto que vai ao cliente também roda (só os que nunca rodaram — requestBankRunForAi confere).
     const { bancosEmAnaliseNoTexto } = require('./credit-analysis.service') as typeof import('./credit-analysis.service');
     const runBanks = Array.from(new Set([...(genResult.runBanks || []), ...(genResult.noReply ? [] : bancosEmAnaliseNoTexto(reply))]));
+    // Cliente em outro correspondente disse "sim" (Fabio 18/11, Lucas): a extensão clica "Enviar Token" e a CAIXA manda o código por SMS.
+    if (genResult.caixaToken) {
+      const { pedirDesbloqueio } = require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service');
+      const e = await pedirDesbloqueio(accountId, leadId, 'IA (o cliente concordou em seguir com a gente)', { modo: 'enviar', seNaoEnviado: true }).catch((x) => x?.message || 'erro');
+      if (e) console.log(`[IA] ${leadId}: caixaToken não pedido — ${e}`);
+    }
 
     if (genResult.noReply) {
       if (moveToStage || resumeOn || markLost || stopFollowUp || runAnalysis || runBanks.length || (sendSimulation && sendSimulation.length) || sendApproval || simulate || chooseBank || caixaPedido || caixaRota || certidaoPorEndereco || imovelSemRegistro || (extractedFields && Object.keys(extractedFields).length)) {
