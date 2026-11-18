@@ -146,7 +146,7 @@ export async function aoAprovarCaixa(accountId: string, leadId: string, propagad
 
 /** Etapa "Complementar Dados" da proposta escolhida (Fabio 18/11: seguradora "Caixa residencial", assinatura "15 dias após"; valores do card). `salvar` false = só
  *  preenche e devolve a tela. Valores em texto no formato do SIOPI ("292.998,84", "03/12/2026"). Erro em texto. */
-export async function pedirComplementarSiopi(accountId: string, leadId: string, por: string, d: { primeiraAquisicao?: 'S' | 'N'; agendamento?: string; financiamento?: number; compraVenda?: number; salvar?: boolean; natoDigital?: 'S' | 'N'; situacoes?: string[]; agencia?: string }): Promise<string | null> {
+export async function pedirComplementarSiopi(accountId: string, leadId: string, por: string, d: { primeiraAquisicao?: 'S' | 'N'; agendamento?: string; financiamento?: number; compraVenda?: number; salvar?: boolean; natoDigital?: 'S' | 'N'; situacoes?: string[]; agencia?: string; ufAgencia?: string }): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -166,9 +166,13 @@ export async function pedirComplementarSiopi(accountId: string, leadId: string, 
   const end = await enderecoDoImovel(leadId, cf).catch(() => null);
   const ufIm = String(end?.uf || cf.uf_imovel || '').toUpperCase().slice(0, 2) || 'DF';
   const munIm = ufIm === 'DF' ? 'BRASILIA' : String(end?.cidade || cf.cidade_imovel || '').trim();
-  const agencia = String(d.agencia || '3444').replace(/\D/g, '');
+  // Unidade de cobrança = a agência da CONTA CAIXA da cliente (Fabio 18/11: "unidade de cobrança é a mesma da conta da cliente") — campo agencia_conta_caixa do card.
+  const agencia = String(d.agencia || cf.agencia_conta_caixa || '').replace(/\D/g, '').slice(0, 4);
+  if (!agencia) return 'Falta a agência da conta CAIXA da cliente (unidade de cobrança) — informe a agência';
+  if (d.agencia) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{agencia_conta_caixa}', to_jsonb(${agencia}::text), true) WHERE id = ${leadId}`;
+  const SR_CONHECIDA: Record<string, { uf: string; sr: string }> = { '3444': { uf: 'DF', sr: '2639' } }; // achadas na busca PV/SR do SIOPI
   const dados = { financiamento: br(fin), compraVenda: br(cv), agendamento: ag, vencimento: venc, seguradora: '14', apolice: 'LIMITE COBERTURA', tipoApolice: 'C', amortizacao: 'PRICE', garantia: '426',
-    unidadeCobranca: { pv: agencia, uf: agencia === '3444' ? 'DF' : ufIm, sr: agencia === '3444' ? '2639' : '' }, ufImovel: ufIm, municipio: munIm,
+    unidadeCobranca: { pv: agencia, uf: SR_CONHECIDA[agencia]?.uf || String(d.ufAgencia || ufIm), sr: SR_CONHECIDA[agencia]?.sr || '' }, ufImovel: ufIm, municipio: munIm,
     situacoes: Array.isArray(d.situacoes) && d.situacoes.length ? d.situacoes.map(String) : ['117', '132', '791'],
     ...(d.primeiraAquisicao ? { primeiraAquisicao: d.primeiraAquisicao } : {}), ...(d.natoDigital ? { natoDigital: d.natoDigital } : {}) };
   await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'complementar'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.complementar = { dados, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
