@@ -119,23 +119,38 @@ export function semHabite(cf: Cf, proposta: string): SemHabite | null {
 /** Texto do "NÃO RODEI" do Santander/Creditas. */
 export const textoNaoRodeiHabite = (bank: string, s: SemHabite) => `${bank === 'CREDITAS' ? 'a Creditas' : 'o Santander'} só faz Home Equity com imóvel com habite-se — ${s.texto} (Fabio 06/11).`;
 
+/** O Inter — o único que faz Home Equity SEM habite-se (16/11) — já não atende este card? Última análise do Inter reprovada ou "NÃO RODEI" (terreno, idade…).
+ *  Aí o habite-se decide: sem ele não tem como fazer (Fabio 18/11, Nadja/João: "deveria verificar se o imóvel possui habite-se, se não tiver não tem como fazer"). null = o Inter ainda é caminho. */
+export async function interForaDoCard(leadId: string): Promise<string | null> {
+  const r = await prisma.creditAnalysis.findFirst({ where: { leadId, bank: 'INTER', dryRun: false, status: { in: ['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED'] } }, orderBy: { createdAt: 'desc' }, select: { status: true, detail: true } }).catch(() => null);
+  if (!r) return null;
+  if (r.status === 'REJECTED') return 'o Inter (o único que aceita sem habite-se) já reprovou este cliente';
+  if (r.status === 'FAILED' && /^N[ÃA]O RODEI/i.test(String(r.detail || ''))) return 'o Inter (o único que aceita sem habite-se) não atende este cliente';
+  return null;
+}
+
 /** Linha pro bloco "DOCUMENTOS DESTE CLIENTE" da IA da conversa (como tratar a pergunta/resposta do habite-se). Vazio quando não se aplica. */
-export function aiHabiteDocsLinha(cf: Cf): string {
+export function aiHabiteDocsLinha(cf: Cf, interFora: string | null = null): string {
   const h = cf._habiteSe;
   const st: StatusHabite | undefined = h?.status;
   const naoPede = 'NÃO peça o habite-se, certidão atualizada nem outro documento por causa disso (só com o OK da equipe) e NÃO diga que algum banco aceita ou recusa.';
   if (st === 'PERGUNTADO') return `\nHABITE-SE EM ABERTO (Fabio 06/11): a certidão de ônus/matrícula mostra o imóvel como TERRENO/LOTE, sem a construção da casa, e o CRM perguntou ao cliente se a casa tem habite-se${h.antiga && h.emissao ? ` (a certidão é de ${mesAno(h.emissao)}: se o habite-se saiu depois, não aparece nela)` : ''}. Quando ele responder: agradeça em 1 frase curta e siga — o CRM registra a resposta e a equipe decide o caminho. ${naoPede} Se ele perguntar por quê: alguns bancos só aceitam a casa com a construção registrada (habite-se); a equipe vai ver o melhor caminho.`;
+  if (st === 'NAO_TEM' && interFora) return `\nHABITE-SE: o cliente disse que a casa NÃO tem habite-se, e ${interFora}. Santander e Creditas só fazem com habite-se: sem ele NÃO TEM COMO FAZER (Fabio 18/11) — siga a linha "SEM HABITE-SE NÃO TEM COMO FAZER" da análise de crédito. Não peça documento.`;
   if (st === 'NAO_TEM') return `\nHABITE-SE: o cliente disse que a casa NÃO tem habite-se (a certidão mostra só o terreno). ${naoPede} A equipe decide com qual banco seguir.`;
   if (st === 'TEM') return `\nHABITE-SE: o cliente disse que a casa TEM habite-se, mas a certidão que ele mandou mostra só o terreno — a equipe vai conferir. ${naoPede}`;
+  if (st === 'NAO_SABE' && interFora) return `\nHABITE-SE DECIDE (Fabio 18/11): ${interFora}, então o habite-se decide — Santander e Creditas só fazem com ele. VERIFIQUE com o cliente se a casa tem habite-se: quem emite é a PREFEITURA (habite-se ou certidão de conclusão de obra) — ele confirma lá, pelo endereço ou pela inscrição do IPTU. Se não tiver, não tem como fazer. Não peça outro documento por causa disso sem o OK da equipe e não prometa banco.`;
   if (st === 'NAO_SABE') return `\nHABITE-SE: o cliente não sabe se a casa tem habite-se (a certidão mostra só o terreno) — a equipe vai conferir. ${naoPede}`;
   return '';
 }
 
 /** Linha pro bloco da ANÁLISE DE CRÉDITO da IA da conversa. Vazio quando não se aplica. */
-export function aiHabiteBancosLinha(cf: Cf, proposta: string): string {
+export function aiHabiteBancosLinha(cf: Cf, proposta: string, interFora: string | null = null): string {
   const s = semHabite(cf, proposta);
+  // Sem habite-se e o Inter fora (Fabio 18/11, Nadja/João): nenhum banco faz — a IA diz com clareza que não tem como fazer, em vez de "a equipe vê o melhor caminho".
+  if (s && interFora) return `- SEM HABITE-SE NÃO TEM COMO FAZER (Fabio 18/11): ${s.texto}; Santander e Creditas só fazem Home Equity com habite-se e ${interFora} — nenhum banco que a gente trabalha faz este caso agora. Quando falar do próximo passo (ou se ele perguntar), diga com clareza e gentileza, numa mensagem curta: sem o habite-se não tem como fazer o crédito agora; se a casa tiver o habite-se (a prefeitura emite) ou ele regularizar, a gente retoma. NÃO ofereça outro banco, não prometa rodar de novo e não peça documento.`;
   if (s) return `- SANTANDER E CREDITAS FORA (Fabio 06/11): ${s.texto}, e esses dois bancos só fazem Home Equity com imóvel com habite-se. NÃO ofereça, não prometa e não confirme seguir pelo Santander nem pela Creditas; fale só dos outros bancos, sem explicar ao cliente regra de banco por nome. Se ele insistir num deles, diga que vai confirmar com a equipe (askTeam).`;
   const st: StatusHabite | undefined = cf._habiteSe?.status;
+  if ((st === 'PERGUNTADO' || st === 'NAO_SABE') && interFora) return `- HABITE-SE DECIDE (Fabio 18/11): ${interFora}; só o Santander ou a Creditas podem fazer, e os dois exigem habite-se. Verifique com o cliente se a casa tem habite-se (a prefeitura emite) — sem ele não tem como fazer. Até saber, não prometa nem confirme banco nenhum.`;
   if (st === 'PERGUNTADO' || st === 'A_PERGUNTAR' || st === 'NAO_SABE') return '- HABITE-SE EM ABERTO (Fabio 06/11): a certidão mostra o imóvel como terreno e ainda não se sabe se a casa tem habite-se — Santander e Creditas só fazem Home Equity com habite-se. Até a equipe confirmar, não prometa nem confirme seguir pelo Santander ou pela Creditas.';
   return '';
 }
@@ -292,8 +307,9 @@ async function registrarResposta(accountId: string, leadId: string, leadName: st
   const dito = trecho ? ` ("${trecho}")` : '';
   if (status === 'NAO_TEM') {
     const extra = await tirarBancos(accountId, leadId, { fonte: 'cliente', texto: 'o cliente disse que a casa não tem habite-se' });
-    await note(leadId, `🚫 Habite-se: ${fonte === 'documento' ? 'pelos documentos' : 'o cliente disse'} que a casa NÃO tem habite-se${dito}. Santander e Creditas não fazem Home Equity sem habite-se (Fabio 06/11): rodadas automáticas nesses bancos param e a IA não oferece esses dois.${extra} Siga pelos outros bancos (Inter). ${cert}.`);
-    await pushResponsavel(accountId, leadId, `🚫 ${leadName}: casa sem habite-se`, 'Santander e Creditas não fazem HE sem habite-se — seguir pelo Inter');
+    const interFora = await interForaDoCard(leadId);
+    await note(leadId, `🚫 Habite-se: ${fonte === 'documento' ? 'pelos documentos' : 'o cliente disse'} que a casa NÃO tem habite-se${dito}. Santander e Creditas não fazem Home Equity sem habite-se (Fabio 06/11): rodadas automáticas nesses bancos param e a IA não oferece esses dois.${extra} ${interFora ? `E ${interFora}: sem habite-se não tem como fazer (Fabio 18/11) — a IA avisa o cliente.` : 'Siga pelos outros bancos (Inter).'} ${cert}.`);
+    await pushResponsavel(accountId, leadId, `🚫 ${leadName}: casa sem habite-se`, interFora ? 'Sem habite-se e com o Inter fora: não tem como fazer' : 'Santander e Creditas não fazem HE sem habite-se — seguir pelo Inter');
   } else if (status === 'TEM') {
     await note(leadId, `🏠 Habite-se: ${fonte === 'documento' ? 'o cliente mandou o habite-se' : 'o cliente disse que a casa TEM habite-se'}${dito}. ${cert}: ${h.antiga ? `o habite-se pode ter sido averbado depois dela — ${atualizada}.` : `a construção ainda não aparece averbada na matrícula, e Santander e Creditas precisam da casa averbada — confira com o cliente antes de seguir por eles (não pedi documento).`}`);
     await pushResponsavel(accountId, leadId, `🏠 ${leadName}: diz que tem habite-se`, h.antiga ? 'Certidão antiga mostra só terreno — avaliar certidão atualizada' : 'Certidão mostra só terreno — conferir a averbação da casa');

@@ -2447,7 +2447,7 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
   const depto = (await db.lead.findUnique({ where: { id: leadId }, select: { pipeline: { select: { department: { select: { name: true } } } } } }))?.pipeline?.department?.name || '';
   if (/home equity/i.test(depto)) {
     const hs = require('./habite-se.service') as typeof import('./habite-se.service');
-    const habiteFora = hs.aiHabiteBancosLinha(cf, cf._habiteSe?.status === 'NAO_TEM' ? '' : await hs.propostaDoLead(leadId).catch(() => ''));
+    const habiteFora = hs.aiHabiteBancosLinha(cf, cf._habiteSe?.status === 'NAO_TEM' ? '' : await hs.propostaDoLead(leadId).catch(() => ''), cf._habiteSe?.status ? await hs.interForaDoCard(leadId) : null);
     if (habiteFora) linhas.push(habiteFora);
   }
   // O banco não abriu outra proposta (Fabio 12/11): a IA não promete rodar de novo nem diz que está em processamento.

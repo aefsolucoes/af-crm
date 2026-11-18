@@ -910,7 +910,8 @@ export async function aiDocsContext(leadId: string): Promise<string> {
   const me = cf._matriculaEncerrada as { antiga?: string; quando?: string; novas?: string[] } | undefined;
   const encerrada = me ? `\nMATRÍCULA ENCERRADA: a certidão que o cliente mandou é da matrícula${me.antiga ? ` nº ${me.antiga}` : ''}, que foi ENCERRADA${me.quando ? ` em ${me.quando}` : ''} — o imóvel agora tem ${(me.novas || []).join('; ') || 'matrícula nova'}. Essa certidão NÃO serve. A A&F vai EMITIR a certidão da matrícula nova (por isso a vistoria só depois). Se o cliente perguntar, explique isso com calma; NÃO peça que ele tire outra no cartório e NÃO diga que a vistoria já foi solicitada com essa matrícula.` : '';
   // Habite-se (Fabio 06/11): certidão com só terreno × casa — como tratar a pergunta/resposta do habite-se.
-  const habite = (require('./habite-se.service') as typeof import('./habite-se.service')).aiHabiteDocsLinha(cf);
+  const hsv = require('./habite-se.service') as typeof import('./habite-se.service');
+  const habite = hsv.aiHabiteDocsLinha(cf, cf._habiteSe?.status ? await hsv.interForaDoCard(leadId).catch(() => null) : null);
   return `DOCUMENTOS DESTE CLIENTE (a IA LEU os arquivos que ele mandou — frente/verso, legibilidade, validade e titular):\n${linhas.join('\n')}${falta}${recusada}${encerrada}${habite}`;
 }
 
