@@ -246,6 +246,9 @@ export async function anexarDocumentosEquipe(accountId: string, leadId: string, 
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, _documentosEquipe: [...antes, ...novos] } as any } });
   await prisma.note.create({ data: { leadId, ...(userId ? { userId } : {}), type: 'COMMENT', content: `📎 Documentos anexados pela equipe (sem pasta nem conversa):\n${novos.map((n) => `• ${n.nome}${n.link ? ` — ${n.link}` : ''}`).join('\n')}` } }).catch(() => {});
   await linkarPastaDoCadastro(accountId, leadId).catch((e: any) => console.error('[Ficha cadastral] link da pasta:', e?.message));
+  // A conferência de documentos também lê o que a equipe anexou (Fabio 19/11, Marcos: CNH e comprovante subidos pelo card eram cobrados de novo).
+  await (require('./drive-de-fora.service') as typeof import('./drive-de-fora.service')).importarArquivosDeFora(accountId, leadId, undefined, { ids: novos.map((n) => n.id) })
+    .catch((e: any) => console.error('[Ficha cadastral] leitura dos documentos da equipe:', e?.message));
   return { anexados: novos.map((n) => n.nome), links: novos.map((n) => n.link) };
 }
 

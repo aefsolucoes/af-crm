@@ -54,15 +54,17 @@ async function listar(accountId: string, rootId: string): Promise<Arq[]> {
 }
 
 /** Os arquivos de fora ainda não vistos na pasta do card. Pura sobre a lista (testável). */
-export function filtrarDeFora(arquivos: Arq[], conhecidos: Set<string>, todos = false): Arq[] {
-  return arquivos.filter((f) => !conhecidos.has(f.id) && !f.doCrm && TIPOS.test(f.mimeType) && f.size > 0 && f.size <= MAX_BYTES
-    && !NOME_FORA.test(semAcento(f.name)) && (todos || new Date(f.createdTime).getTime() > MARCA_DESDE
+export function filtrarDeFora(arquivos: Arq[], conhecidos: Set<string>, todos = false, forcar: Set<string> = new Set()): Arq[] {
+  return arquivos.filter((f) => !conhecidos.has(f.id) && TIPOS.test(f.mimeType) && f.size > 0 && f.size <= MAX_BYTES && !NOME_FORA.test(semAcento(f.name))
+    // `forcar` = documentos que a EQUIPE anexou no card (documentos-equipe): o CRM sobe com a marca, mas são documentos do cliente e a conferência precisa ler (Marcos 19/11)
+    && (forcar.has(f.id) || (!f.doCrm && (todos || new Date(f.createdTime).getTime() > MARCA_DESDE
       // de antes da marca: só o que OUTRA conta subiu nos últimos 7 dias (o 1º giro não despeja a pasta antiga inteira na leitura)
-      || (f.outraConta && new Date(f.createdTime).getTime() > Date.now() - 7 * 86_400_000)));
+      || (f.outraConta && new Date(f.createdTime).getTime() > Date.now() - 7 * 86_400_000)))));
 }
 
-/** Procura na pasta do card os arquivos incluídos por fora e manda pra leitura. Devolve os nomes que entraram. */
-export async function importarArquivosDeFora(accountId: string, leadId: string, io?: Io, opts: { todos?: boolean } = {}): Promise<{ novos: string[] }> {
+/** Procura na pasta do card os arquivos incluídos por fora e manda pra leitura. Devolve os nomes que entraram.
+ *  `ids`: arquivos que entram mesmo tendo sido subidos pelo CRM (os que a equipe acabou de anexar pelo card). Os de `_documentosEquipe` entram sempre. */
+export async function importarArquivosDeFora(accountId: string, leadId: string, io?: Io, opts: { todos?: boolean; ids?: string[] } = {}): Promise<{ novos: string[] }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, isGroup: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead || lead.isGroup) return { novos: [] };
   const cf = (lead.customFields || {}) as Record<string, any>;
@@ -75,7 +77,9 @@ export async function importarArquivosDeFora(accountId: string, leadId: string, 
     ...(await prisma.certidaoRequest.findMany({ where: { leadId, driveFileId: { not: null } }, select: { driveFileId: true } })).map((c) => c.driveFileId as string),
     ...Object.keys((cf._driveDeFora || {}) as Record<string, unknown>),
   ]);
-  const candidatos = filtrarDeFora(arquivos, conhecidos, !!opts.todos);
+  // Documentos anexados pela equipe no card (Fabio 19/11, Marcos: CNH e comprovante subidos em 12/11 pelo card eram cobrados de novo — a conferência não lia).
+  const daEquipe = (Array.isArray(cf._documentosEquipe) ? cf._documentosEquipe : []).map((d: any) => String(d?.id || '')).filter(Boolean);
+  const candidatos = filtrarDeFora(arquivos, conhecidos, !!opts.todos, new Set<string>([...(opts.ids || []), ...daEquipe]));
   if (!candidatos.length) return { novos: [] };
 
   // Pega a vez arquivo por arquivo (poller e botão juntos, dois servidores no deploy): só quem gravou a chave nova em _driveDeFora cria o anexo.
