@@ -6,6 +6,7 @@ import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResulta
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 import { pedirDesbloqueio, proximoDesbloqueio, gravarDesbloqueio, perguntarAoCliente, entregarCodigo } from '../services/caixa-desbloqueio.service';
+import { pedirProdutosCaixa, proximoProdutosCaixa, gravarProdutosCaixa, produtosDaAvaliacao } from '../services/caixa-produtos.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -14,7 +15,8 @@ router.use(authMiddleware);
 router.get('/fila', async (req: AuthRequest, res: Response) => {
   // Sem consulta/cadastro/avaliação pendente → consulta do resultado de avaliação já enviada (Formulários Enviados).
   // Desbloqueio do cadastro (cliente em outro convênio, Fabio 18/11) vem primeiro: é pedido pela equipe e espera o cliente.
-  try { res.json((await proximoDesbloqueio(req.user!.accountId)) || (await proximaConsulta(req.user!.accountId)) || (await proximaConsultaResultado(req.user!.accountId))); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
+  // Por último: conta + cartão do proponente na contratação (Fabio 19/11) — só consulta nesta fase.
+  try { res.json((await proximoDesbloqueio(req.user!.accountId)) || (await proximaConsulta(req.user!.accountId)) || (await proximaConsultaResultado(req.user!.accountId)) || (await proximoProdutosCaixa(req.user!.accountId))); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro na fila da CAIXA' }); }
 });
 
 // Resultado da Avaliação de Risco (Fabio 01/11: "PARA CONSULTAR O RESULTADO, PRECISA VOLTAR NO MENU E IR EM FORMULÁRIOS ENVIADOS").
@@ -312,6 +314,24 @@ router.post('/:leadId/desbloqueio', async (req: AuthRequest, res: Response) => {
 });
 
 // Histórico da extensão nos logs do servidor (diagnóstico sem precisar abrir o Chrome do Fabio).
+// Conta + cartão do PROPONENTE na contratação (Fabio 18/11 e 19/11: "caso estejam aprovados, basta contratá-los") — 1ª fase só consulta no Caixa Aqui.
+router.get('/:leadId/produtos', async (req: AuthRequest, res: Response) => {
+  const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+  if (!l) return res.status(404).json({ error: 'Lead não encontrado' });
+  const cf = (l.customFields || {}) as any;
+  res.json({ estado: cf._caixaProdutos || null, daAvaliacao: produtosDaAvaliacao(cf) });
+});
+router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const ordem = Number(req.body?.ordem) || undefined;
+  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+router.post('/:leadId/produtos', async (req: AuthRequest, res: Response) => {
+  try { await gravarProdutosCaixa(req.user!.accountId, req.params.leadId, req.body || {}); res.json({ ok: true }); } catch (e: any) { res.status(500).json({ error: e?.message || 'Erro' }); }
+});
+
 router.post('/log', async (req: AuthRequest, res: Response) => {
   console.log('[CAIXA ext]', String((req.body as any)?.texto || '').replace(/\d{11}/g, '[CPF]').slice(0, 500));
   res.json({ ok: true });
