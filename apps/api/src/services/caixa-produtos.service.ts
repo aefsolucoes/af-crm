@@ -54,7 +54,7 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
-export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean } | null } = {}): Promise<string | null> {
+export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string } | null } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -73,7 +73,7 @@ export async function pedirProdutosCaixa(accountId: string, leadId: string, por:
     delete x.inicio; delete x.fim;
   });
   const linhas = aprovados.length ? aprovados.map((a) => `• ${a.produto} (proposta ${a.proposta}, ${a.data}): ${a.resultado}`).join('\n') : '• (o resultado da Avaliação de Risco gravado no card não lista cartão/cheque azul)';
-  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.conta ? `conta CORRENTE PF individual ${opts.conta.cheque ? 'COM' : 'sem'} cheque especial${opts.conta.gerar ? ' — a extensão clica em "Gerar Nº Conta" uma vez e para (não avança nem confirma depois)' : ' — preenche e para antes do "Gerar Nº Conta"'}` : opts.modo === 'ate' ? 'no Solicitar Contas a extensão escolhe Individual → Avançar e só segue (até ' + (Number(opts.avancos) || 0) + ' tela(s)) as telas que a CAIXA já trouxe preenchidas; para na 1ª que falta dado ou tem confirmar — não digita nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
+  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.conta ? `conta CORRENTE PF individual ${opts.conta.cheque ? `COM cheque especial${opts.conta.limite ? ` de R$ ${opts.conta.limite}` : ''}` : 'sem cheque especial'}${opts.conta.gerar ? ' — a extensão clica em "Gerar Nº Conta" uma vez e para (não avança nem confirma depois)' : ' — preenche e para antes do "Gerar Nº Conta"'}` : opts.modo === 'ate' ? 'no Solicitar Contas a extensão escolhe Individual → Avançar e só segue (até ' + (Number(opts.avancos) || 0) + ' tela(s)) as telas que a CAIXA já trouxe preenchidas; para na 1ª que falta dado ou tem confirmar — não digita nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
   return null;
 }
 
