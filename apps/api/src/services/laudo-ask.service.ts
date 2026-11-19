@@ -290,7 +290,48 @@ async function marca(leadId: string, patch: Record<string, unknown>) {
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, any>), ...patch } as any } });
 }
 
+/** Link do laudo que está numa mensagem RECEBIDA do card e não foi pro campo "Link do laudo Inter" (Fabio 19/11, Deborah: o e-mail do Inter entrou na conversa pelo fio,
+ *  sem nº da proposta, e o leitor do Inter não guardou o link — o laudo nunca andou). Vale também pro e-mail ligado à mão pela equipe e pro cliente que cola o link no WhatsApp.
+ *  Link de OUTRA proposta (o card tem proposta do Inter e o número não bate) não entra: fica marcado em _laudoLinkConversa pra não ser lido de novo. */
+async function linkDoLaudoNaConversa(accountId: string): Promise<void> {
+  const rows = await prisma.$queryRaw<{ id: string; content: string }[]>`
+    SELECT x.id, x.content FROM (
+      SELECT DISTINCT ON (m."leadId") m."leadId" AS id, m.content, m."createdAt" FROM "Message" m
+      WHERE m."leadId" IN (
+          SELECT l.id FROM "Lead" l JOIN "Pipeline" p ON p.id = l."pipelineId"
+          WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
+            AND COALESCE(l."customFields"->>'link_laudo_inter', '') = '' AND l."updatedAt" > now() - interval '30 days'
+            AND (p.name ILIKE 'Em contrata%' OR jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaRequestedAt'))
+            AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaConcluidaAt')
+            AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoLinkConversa'))
+        AND m.direction = 'INBOUND' AND m.deleted = false AND m."createdAt" > now() - interval '30 days' AND m.content ILIKE '%avaliacaoimovel.bancointer.com.br%'
+      ORDER BY m."leadId", m."createdAt" DESC) x
+    ORDER BY x."createdAt" DESC LIMIT 20`;
+  if (!rows.length) return;
+  const { extractLaudoLink, engajamentoDizApartamento } = require('./inter-email.service') as typeof import('./inter-email.service');
+  const semZero = (s: unknown) => String(s || '').replace(/\D/g, '').replace(/^0+/, '');
+  for (const r of rows) {
+    const link = extractLaudoLink(r.content);
+    if (!link) continue;
+    const lead = await prisma.lead.findUnique({ where: { id: r.id }, select: { customFields: true } });
+    const cf = (lead?.customFields || {}) as Record<string, any>;
+    if (!vazio(cf.link_laudo_inter)) continue;
+    const doLink = semZero(propostaDoLink(link));
+    const cas = await prisma.creditAnalysis.findMany({ where: { leadId: r.id, bank: { in: ['INTER', 'INTER_FH'] }, proposalNumber: { not: null } }, select: { proposalNumber: true } });
+    const propostas = [cf.num_proposta, ...cas.map((c) => c.proposalNumber)].map(semZero).filter(Boolean);
+    if (doLink && propostas.length && !propostas.includes(doLink)) {
+      await marca(r.id, { _laudoLinkConversa: { ignorado: link, motivo: `proposta do link (${doLink}) não é a do card (${propostas.join(', ')})`, at: new Date().toISOString() } });
+      continue;
+    }
+    const apto = engajamentoDizApartamento(r.content) && vazio(cf.imovel_tipo);
+    await marca(r.id, { link_laudo_inter: link, _laudoLinkConversa: { at: new Date().toISOString() }, ...(apto ? { imovel_tipo: 'Apartamento' } : {}) });
+    await prisma.note.create({ data: { leadId: r.id, type: 'COMMENT', content: `🔗 Link do laudo digital achado na conversa (e-mail do Inter) e guardado no card (campo "Link do laudo Inter"): ${link}${apto ? '\n🏢 O e-mail diz que o imóvel é apartamento: "Tipo do imóvel" do card = Apartamento.' : ''}` } }).catch(() => {});
+  }
+}
+
 export async function processLaudoAsk(accountId: string, io: Io): Promise<void> {
+  // Antes de tudo: link do laudo que chegou na conversa e não foi pro card.
+  await linkDoLaudoNaConversa(accountId).catch((e: any) => console.warn('[Laudo] link da conversa:', e?.message));
   // As 3 buscas vão pelos cards mexidos por ÚLTIMO (Fabio 19/11, Adriano: o link chegou 17/11 e nada aconteceu até a cliente falar — "LIMIT 20" sem ordem devolvia
   // sempre os mesmos cards antigos que nunca se resolvem, e o card novo nunca entrava; mesmo erro da fila do cadastro CAIXA, bfd2f16).
   // 0) preencher sozinho com o que já chegou (proposta, e-mail do Inter, resposta do cliente, documentos do imóvel)
@@ -358,7 +399,11 @@ async function askOne(accountId: string, leadId: string, io: Io): Promise<void> 
   Object.assign(cf, await dadosJaDitosNaConversa(leadId, CAMPOS_REGRINHAS.filter((k) => vazio(cf[k]))).catch(() => ({})));
   if (CAMPOS_REGRINHAS.every((k) => !vazio(cf[k]))) { await marca(leadId, { _laudoAsk: { skip: 'o cliente já tinha informado na conversa', at: new Date().toISOString() } }); return; }
   // a IA da conversa (ou a equipe) já fez essas perguntas
-  const jaPerguntou = await prisma.message.count({ where: { leadId, direction: 'OUTBOUND', AND: [{ content: { contains: 'suíte', mode: 'insensitive' } }, { content: { contains: 'dormit', mode: 'insensitive' } }] } });
+  // Só conta o que PEDE os dados ao cliente: "é só preencher o link que veio no seu e-mail… atenção nos pontos: dormitórios, suítes…" (IA da conversa, Deborah 19/11)
+  // é orientação pro cliente preencher sozinho, não pergunta — contava como "já perguntado" e o CRM nunca pedia os dados.
+  const saidas = await prisma.message.findMany({ where: { leadId, direction: 'OUTBOUND', AND: [{ content: { contains: 'suíte', mode: 'insensitive' } }, { content: { contains: 'dormit', mode: 'insensitive' } }] }, select: { content: true }, take: 20 });
+  const jaPerguntou = saidas.filter((m) => /\?|preciso|quant[oa]s|pode responder|me (passa|diz|informa|conta|confirma)/i.test(m.content || '')
+    && !/s[oó] preencher o (link|formul[aá]rio)|preencher o (link|formul[aá]rio) que (veio|chegou)/i.test(m.content || '')).length;
   if (jaPerguntou > 0) { await marca(leadId, { _laudoAsk: { skip: 'já perguntado na conversa', at: new Date().toISOString() } }); return; }
   // IA do card desligada (Fabio 27/10: "só avisa a equipe"): nota + push com o texto pronto. A resposta do cliente o CRM lê sozinho (preencherDadosDoLaudo).
   if (!lead.aiAutoReplyActive) {

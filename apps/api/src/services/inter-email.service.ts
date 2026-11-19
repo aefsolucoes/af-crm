@@ -29,7 +29,8 @@ export function parseInterSubject(subject: string | null | undefined): { propost
 export function parseInterBody(text: string | null | undefined): { proposta: string | null; nome: string | null } {
   const t = String(text || '').replace(/\r/g, ' ').replace(/\s+/g, ' ');
   const p = /proposta\s+(?:n[º°o.]*\s*)?(\d{5,10})\b/i.exec(t);
-  const n = /cliente\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' ]{5,70}?)(?:\s*[.,;:\n]|\s+ANDRE|\s+será|\s+$)/.exec(t);
+  // "!" e "?" também fecham o nome (Fabio 19/11, Deborah: "…para seu cliente DEBORAH BEZERRA VALERIO DE QUEIROZ!" — sem isso o e-mail do laudo não achava o card)
+  const n = /cliente\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ' ]{5,70}?)(?:\s*[.,;:\n!?]|\s+ANDRE|\s+será|\s+$)/.exec(t);
   return { proposta: p ? stripZeros(p[1]) : null, nome: n ? n[1].trim() : null };
 }
 
@@ -219,8 +220,10 @@ export async function handleInterEmail(acc: { accountId: string }, row: { id: st
   const kind = classifyInterEmail(subject, fresh);
   if (kind === 'OUTRO' && !/\d{5,10}\s*[-–]/.test(cleanSubject(subject)) && !parseInterBody(text).proposta) return false; // alinhamento semanal, newsletter etc.
   const sig = extractInterSignals(subject, text); // o assunto às vezes vem só "Home Equity - PEDRO"; nº da proposta/nome completo/CPF podem estar no texto citado
-  if (!sig.proposta && !sig.cpfs.length && !sig.nomes.length) return false;
-  const achou = pickLead(await loadCandidates(acc.accountId), sig);
+  // Sem pista nenhuma (nem proposta, nem CPF, nem nome): ainda vale o card do FIO logo abaixo — resposta do Inter no fio de um e-mail do card (Fabio 19/11, Deborah:
+  // "Re: [Inter] Engajamento Automático - Correspondente Bancário" com o link do laudo entrou na conversa pelo fio, mas este leitor desistia aqui e o link nunca ia pro card).
+  const semPista = !sig.proposta && !sig.cpfs.length && !sig.nomes.length;
+  const achou: ReturnType<typeof pickLead> = semPista ? { id: null, ambiguous: [] } : pickLead(await loadCandidates(acc.accountId), sig);
   // Resposta no mesmo fio de um e-mail que já é de um card ("Re: Home Equity - PEDRO" com vários Pedros): o fio vale mais que o NOME (pista fraca) —
   // mas só se o card do fio bate com a proposta/CPF/nome completo do e-mail; proposta/CPF de card aberto continuam mandando.
   // (Fabio 16/11: "Re: … 5752558 - MARIA ROSA MARCELLI", card dela Perdido, foi pra Maria do Carmo pelo "Maria".)
