@@ -173,13 +173,14 @@ export async function pedirComplementarSiopi(accountId: string, leadId: string, 
   if (!agencia) return 'Falta a agência da conta CAIXA da cliente (unidade de cobrança) — informe a agência';
   if (d.agencia) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{agencia_conta_caixa}', to_jsonb(${agencia}::text), true) WHERE id = ${leadId}`;
   const SR_CONHECIDA: Record<string, { uf: string; sr: string }> = { '3444': { uf: 'DF', sr: '2639' } }; // achadas na busca PV/SR do SIOPI
-  const dados = { financiamento: br(fin), compraVenda: br(cv), agendamento: ag, vencimento: venc, seguradora: '14', apolice: 'LIMITE COBERTURA', tipoApolice: 'C', amortizacao: 'PRICE', garantia: '426',
+  const dados = { financiamento: br(fin), compraVenda: br(cv), agendamento: ag, vencimento: venc, seguradora: '14', apolice: 'LIMITE COBERTURA', tipoApolice: 'C', amortizacao: 'PRICE', garantia: '432', // 426 Alienação Fiduciária deu "TIPO DE GARANTIA INVÁLIDO PARA A PROPOSTA" no SBPE usado (18/11); a extensão troca se precisar
+   
     unidadeCobranca: { pv: agencia, uf: SR_CONHECIDA[agencia]?.uf || String(d.ufAgencia || ufIm), sr: SR_CONHECIDA[agencia]?.sr || '' }, ufImovel: ufIm, municipio: munIm,
     situacoes: Array.isArray(d.situacoes) && d.situacoes.length ? d.situacoes.map(String) : ['117', '132', '791'],
     ...(d.primeiraAquisicao ? { primeiraAquisicao: d.primeiraAquisicao } : {}) } as Record<string, any>;
   // "Proposta Nato Digital?" é obrigatório (SIOPI 18/11: "É obrigatório informar o campo 'Proposta Nato Digital?'"): com a situação 791 NATO DIGITAL = Sim.
   dados.natoDigital = d.natoDigital || (dados.situacoes.includes('791') ? 'S' : 'N');
   await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'complementar'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.complementar = { dados, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
-  await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Complementar Dados na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): financiamento R$ ${dados.financiamento}, compra e venda R$ ${dados.compraVenda}, assinatura ${dados.agendamento}, 1º encargo ${dados.vencimento}, unidade de cobrança ${agencia}, imóvel ${munIm}/${ufIm}, situações ${dados.situacoes.join(', ')}, seguradora CAIXA RESIDENCIAL HABITACIONAL (apólice SBPE limite de cobertura, coletiva), PRICE, garantia 426 Alienação Fiduciária${d.primeiraAquisicao ? `, 1ª aquisição no SFH: ${d.primeiraAquisicao === 'S' ? 'Sim' : 'Não'}` : ''}.`);
+  await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Complementar Dados na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): financiamento R$ ${dados.financiamento}, compra e venda R$ ${dados.compraVenda}, assinatura ${dados.agendamento}, 1º encargo ${dados.vencimento}, unidade de cobrança ${agencia}, imóvel ${munIm}/${ufIm}, situações ${dados.situacoes.join(', ')}, seguradora CAIXA RESIDENCIAL HABITACIONAL (apólice SBPE limite de cobertura, coletiva), PRICE, garantia ${dados.garantia === '432' ? '432 Imóveis residenciais urbanos NR' : '426 Alienação Fiduciária'}${d.primeiraAquisicao ? `, 1ª aquisição no SFH: ${d.primeiraAquisicao === 'S' ? 'Sim' : 'Não'}` : ''}.`);
   return null;
 }
