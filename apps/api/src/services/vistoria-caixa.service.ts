@@ -247,6 +247,12 @@ export async function solicitarVistoriaCaixa(accountId: string, leadId: string, 
   const vc = cf._vistoriaCaixa || {};
   if (['LENDO', 'IMOVEL', 'CADASTRANDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'TAXA', 'EMITINDO', 'BOLETO', 'BAIXANDO_BOLETO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
   if (!opts.novoImovel && (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA')) return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}. Se o cliente trocou de imóvel, use "Imóvel trocado: nova vistoria".` };
+  // Parou DEPOIS de criar a OS (Marcos 19/11): pedir de novo retoma do anexo da certidão + taxa — não relê nem abre outra OS.
+  if (!opts.novoImovel && vc.status === 'ERRO' && vc.os?.numero && vc.codigoImovel) {
+    await gravar(leadId, { status: 'DOCUMENTOS', erro: null, leaseAt: null, tentativasAnexo: 0 });
+    await nota(leadId, `🏠 Vistoria CAIXA retomada por ${user.nome}: a OS ${vc.os.numero} já existe — a extensão anexa a certidão, emite a taxa e manda o boleto ao cliente.`, user.id);
+    return { mensagem: `A OS ${vc.os.numero} já existe: a extensão retoma do anexo da certidão e da taxa.` };
+  }
   if (!String(cf.link_pasta_drive || '').trim()) return { erro: 'O card não tem a pasta do Drive (a certidão do imóvel fica na pasta IMOVEL).' };
   if (!brlSemSimbolo(cf.valor_credito)) return { erro: 'Preencha o "Valor do crédito" do card (vai como valor proposto a financiar).' };
   if (!brlSemSimbolo(cf.valor_imovel)) return { erro: 'Preencha o "Valor do imóvel" do card (vai como valor de compra e venda).' };
@@ -491,8 +497,13 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   const vc = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as any)._vistoriaCaixa) || {};
   // Erro na taxa ou no boleto (a OS já existe): volta pra TAXA_PRONTA — o botão "Emitir taxa e mandar boleto" refaz sem emitir outra (Fabio 11/11).
   const naTaxa = vc.status === 'EMITINDO' || vc.status === 'BAIXANDO_BOLETO';
-  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : vc.status === 'EMITINDO' ? 'TAXA' : vc.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA') : naTaxa ? 'TAXA_PRONTA' : 'ERRO';
-  await gravar(leadId, { status: voltaPara, leaseAt: null, erro: body.erro || etapa });
+  // OS JÁ CRIADA e o erro veio no anexo (Marcos 19/11: OS 11583210 criada, o anexo quebrou na troca de tela): volta pra DOCUMENTOS e a extensão tenta de novo
+  // (até 2 vezes) — nunca "pedir a vistoria de novo", que daria "já tem OS" e pararia sem anexar nem emitir a taxa.
+  const osCriada = !!vc.os?.numero && !naTaxa;
+  const tentAnexo = Number(vc.tentativasAnexo || 0);
+  const refazAnexo = etapa !== 'AGUARDANDO_LOGIN' && osCriada && tentAnexo < 2;
+  const voltaPara: Estado = etapa === 'AGUARDANDO_LOGIN' ? (vc.status === 'ENVIANDO' ? 'ENVIAR' : vc.status === 'ANEXANDO' ? 'DOCUMENTOS' : vc.status === 'EMITINDO' ? 'TAXA' : vc.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA') : naTaxa ? 'TAXA_PRONTA' : refazAnexo ? 'DOCUMENTOS' : 'ERRO';
+  await gravar(leadId, { status: voltaPara, leaseAt: null, erro: body.erro || etapa, ...(refazAnexo ? { tentativasAnexo: tentAnexo + 1 } : {}) });
   if (etapa === 'AGUARDANDO_LOGIN') {
     if (!vc.avisoLoginEm || Date.now() - new Date(vc.avisoLoginEm).getTime() > 2 * 3600_000) {
       await gravar(leadId, { avisoLoginEm: new Date().toISOString() });
@@ -502,10 +513,12 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   }
   // Antes da OS nada foi enviado; criando/anexando a OS pode já existir no SIOPI (Fernanda 11/11: a OS saiu e a nota dizia "nada foi enviado").
   const depois = naTaxa ? 'A OS já existe no SIOPI. Confira e clique em "Emitir taxa e mandar boleto" no card (não emite outra taxa).'
-    : ['ENVIANDO', 'ANEXANDO'].includes(vc.status) ? 'A OS pode já ter sido criada: confira no SIOPI (Ordens de Serviço de Engenharia) antes de pedir de novo.'
-      : 'Nada foi enviado. Confira e clique de novo em "Solicitar vistoria CAIXA".';
+    : refazAnexo ? `A OS ${vc.os.numero} já existe no SIOPI — a extensão tenta de novo anexar a certidão e emitir a taxa (tentativa ${tentAnexo + 1} de 2).`
+      : osCriada ? `A OS ${vc.os.numero} já existe no SIOPI — NÃO peça a vistoria de novo. Anexe a certidão na OS pelo SIOPI e clique em "Emitir taxa e mandar boleto" no card.`
+        : ['ENVIANDO', 'ANEXANDO'].includes(vc.status) ? 'A OS pode já ter sido criada: confira no SIOPI (Ordens de Serviço de Engenharia) antes de pedir de novo.'
+          : 'Nada foi enviado. Confira e clique de novo em "Solicitar vistoria CAIXA".';
   await nota(leadId, `⚠️ Vistoria CAIXA parou no SIOPI: ${String(body.erro || 'tela desconhecida').slice(0, 400)}${body.texto ? `\n${body.texto.slice(0, 600)}` : ''}\n${depois}`);
-  await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA parou`, String(body.erro || 'Confira o SIOPI').slice(0, 120));
+  if (!refazAnexo) await push(accountId, leadId, `🏠 ${lead.name}: vistoria CAIXA parou`, String(body.erro || 'Confira o SIOPI').slice(0, 120));
 }
 
 /** "Emitir taxa e mandar boleto" (Fabio 11/11): OS criada e certidão anexada → a extensão emite a taxa (nunca duas) e o boleto vai ao cliente. Se o título do boleto
