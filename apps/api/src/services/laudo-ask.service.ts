@@ -291,6 +291,8 @@ async function marca(leadId: string, patch: Record<string, unknown>) {
 }
 
 export async function processLaudoAsk(accountId: string, io: Io): Promise<void> {
+  // As 3 buscas vão pelos cards mexidos por ÚLTIMO (Fabio 19/11, Adriano: o link chegou 17/11 e nada aconteceu até a cliente falar — "LIMIT 20" sem ordem devolvia
+  // sempre os mesmos cards antigos que nunca se resolvem, e o card novo nunca entrava; mesmo erro da fila do cadastro CAIXA, bfd2f16).
   // 0) preencher sozinho com o que já chegou (proposta, e-mail do Inter, resposta do cliente, documentos do imóvel)
   const preencher = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l
@@ -298,7 +300,7 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
       AND l."stageEnteredAt" >= ${LAUDO_ASK_FROM}
       AND jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter')
       AND COALESCE(l."customFields"->>'_laudoStatus', '') = ''
-    LIMIT 20`;
+    ORDER BY l."updatedAt" DESC LIMIT 40`;
   for (const { id } of preencher) {
     try { await preencherDadosDoLaudo(accountId, id); } catch (e: any) { console.warn('[Laudo] preencher:', e?.message); }
   }
@@ -311,7 +313,7 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
       AND (jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter') OR jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaRequestedAt')
            OR COALESCE(l."customFields"->'_vistoriaAi'->>'status', '') IN ('AGUARDA_ENGAJAMENTO', 'ENVIADA'))
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaConcluidaAt') AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_interQuest')
-    LIMIT 20`;
+    ORDER BY l."updatedAt" DESC LIMIT 40`;
   for (const { id } of ids) {
     try { await askOne(accountId, id, io); } catch (e: any) { console.warn('[Laudo] pergunta:', e?.message); }
   }
@@ -324,7 +326,7 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
       AND jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter')
       AND COALESCE(l."customFields"->>'_laudoStatus', '') = '' AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoAutoQueuedAt')
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaConcluidaAt') AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_interQuest')
-    LIMIT 20`;
+    ORDER BY l."updatedAt" DESC LIMIT 40`;
   for (const { id } of prontos) {
     try { await queueIfReady(accountId, id); } catch (e: any) { console.warn('[Laudo] fila:', e?.message); }
   }
