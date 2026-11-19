@@ -114,7 +114,11 @@ export async function gravarProdutosCaixa(accountId: string, leadId: string, r: 
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return;
   const status = String(r.status || 'TELA').slice(0, 400);
-  const st = await salvarProd(leadId, (x) => { x.status = status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 7000); x.mapa = r.mapa || null; x.botoes = (r.botoes || []).slice(0, 40); if (r.numeroConta) { x.numeroConta = String(r.numeroConta).slice(0, 40); x.contaGeradaEm = new Date().toISOString(); } if (x.cartao && /cart[aã]o/i.test(status)) { x.cartaoStatus = status; x.cartaoEm = new Date().toISOString(); } if (x.conta && /^(ENCAMINHADO|GERADO|CONFERIR: conta)/.test(status)) { x.contaStatus = status; x.contaEm = new Date().toISOString(); } });
+  // Depois do "Encaminhar Proposta" a tela traz "Número da conta que será aberta" e "Número da Proposta" (19/11, João Pedro):
+  // a extensão não manda o nº nesse caso — o CRM lê da tela.
+  if (!r.numeroConta) { const m = String(r.texto || '').match(/N[úu]mero da conta que ser[áa] aberta:\s*([\d.\-]{8,})/i); if (m) r = { ...r, numeroConta: m[1] }; }
+  const propConta = String(r.texto || '').match(/encaminhar proposta[\s\S]*?N[úu]mero da Proposta:\s*(\d{6,})/i)?.[1];
+  const st = await salvarProd(leadId, (x) => { if (propConta) x.contaProposta = propConta; x.status = status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 7000); x.mapa = r.mapa || null; x.botoes = (r.botoes || []).slice(0, 40); if (r.numeroConta) { x.numeroConta = String(r.numeroConta).slice(0, 40); x.contaGeradaEm = new Date().toISOString(); } if (x.cartao && /cart[aã]o/i.test(status)) { x.cartaoStatus = status; x.cartaoEm = new Date().toISOString(); } if (x.conta && /^(ENCAMINHADO|GERADO|CONFERIR: conta)/.test(status)) { x.contaStatus = status; x.contaEm = new Date().toISOString(); } });
   await note(leadId, `🏦 Conta + cartão CAIXA de ${st.nome || 'proponente'} — ${status}${r.numeroConta ? `\n💳 Nº da conta gerado no Caixa Aqui: ${r.numeroConta}` : ''}\n\n${String(r.texto || '').slice(0, 6000)}${(r.botoes || []).length ? `\n\nBotões na tela: ${(r.botoes || []).join(' | ')}` : ''}`);
   push(accountId, `🏦 ${l.name}: conta/cartão CAIXA`, status, leadId);
 }
