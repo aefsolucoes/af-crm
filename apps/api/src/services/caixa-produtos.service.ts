@@ -57,7 +57,7 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
-export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string } | null; cartao?: boolean | { solicitar?: boolean; bandeira?: string; vencimento?: string; limite?: string } } = {}): Promise<string | null> {
+export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string } | null; cartao?: boolean | { solicitar?: boolean; bandeira?: string; vencimento?: string; limite?: string; variante?: string } } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -73,7 +73,7 @@ export async function pedirProdutosCaixa(accountId: string, leadId: string, por:
   const avancos = Math.max(opts.conta ? 1 : 0, Math.min(8, Number(opts.avancos) || 0));
   await salvarProd(leadId, (x) => {
     if (x.status && x.status !== 'FILA') x.anteriores = [...(x.anteriores || []), { status: x.status, fim: x.fim, modo: x.modo }].slice(-5);
-    Object.assign(x, { status: 'FILA', modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.cartao ? null : (opts.conta || null), cartao: opts.cartao ? { consultar: true, ...(typeof opts.cartao === 'object' && opts.cartao.solicitar ? { solicitar: true, bandeira: opts.cartao.bandeira || 'MASTERCARD', vencimento: opts.cartao.vencimento || '10', ...(opts.cartao.limite ? { limite: opts.cartao.limite } : {}) } : {}) } : null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
+    Object.assign(x, { status: 'FILA', modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.cartao ? null : (opts.conta || null), cartao: opts.cartao ? { consultar: true, ...(typeof opts.cartao === 'object' && opts.cartao.solicitar ? { solicitar: true, bandeira: opts.cartao.bandeira || 'MASTERCARD', vencimento: opts.cartao.vencimento || '10', ...(opts.cartao.limite ? { limite: opts.cartao.limite } : {}), ...(opts.cartao.variante ? { variante: opts.cartao.variante } : {}) } : {}) } : null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
     delete x.inicio; delete x.fim;
   });
   const linhas = aprovados.length ? aprovados.map((a) => `• ${a.produto} (proposta ${a.proposta}, ${a.data}): ${a.resultado}`).join('\n') : '• (o resultado da Avaliação de Risco gravado no card não lista cartão/cheque azul)';
