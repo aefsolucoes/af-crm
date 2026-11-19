@@ -16,7 +16,7 @@ import { arquivosDoImovel, moverParaVistoria } from './vistoria-inter.service';
  */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
-type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'TAXA' | 'EMITINDO' | 'BOLETO' | 'BAIXANDO_BOLETO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
+type Estado = 'LENDO' | 'AGUARDANDO_CONTATO' | 'IMOVEL' | 'CADASTRANDO' | 'FILA' | 'RODANDO' | 'OS_PRONTA' | 'ENVIAR' | 'ENVIANDO' | 'DOCUMENTOS' | 'ANEXANDO' | 'TAXA_PRONTA' | 'TAXA' | 'EMITINDO' | 'BOLETO' | 'BAIXANDO_BOLETO' | 'ENVIADA' | 'JA_TEM_OS' | 'OUTRO_CCA' | 'ERRO';
 
 const MODELO = 'claude-sonnet-5';
 const LEASE_MS = 20 * 60_000;
@@ -240,12 +240,12 @@ export function vistoriaDoImovelNovo(vc: Record<string, any>, agora: string): Re
   return { anteriores: [...(Array.isArray(vc.anteriores) ? vc.anteriores : []), anterior].slice(-5) };
 }
 
-export async function solicitarVistoriaCaixa(accountId: string, leadId: string, user: { id: string; nome: string }, io?: Io, opts: { novoImovel?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
+export async function solicitarVistoriaCaixa(accountId: string, leadId: string, user: { id: string; nome: string }, io?: Io, opts: { novoImovel?: boolean; semPerguntarContato?: boolean } = {}): Promise<{ erro: string } | { mensagem: string }> {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!lead) return { erro: 'Card não encontrado' };
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
-  if (['LENDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'TAXA', 'EMITINDO', 'BOLETO', 'BAIXANDO_BOLETO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
+  if (['LENDO', 'IMOVEL', 'CADASTRANDO', 'FILA', 'RODANDO', 'ENVIAR', 'ENVIANDO', 'DOCUMENTOS', 'ANEXANDO', 'TAXA', 'EMITINDO', 'BOLETO', 'BAIXANDO_BOLETO'].includes(vc.status)) return { erro: 'A vistoria da CAIXA deste cliente já está em andamento.' };
   if (!opts.novoImovel && (vc.status === 'ENVIADA' || vc.status === 'TAXA_PRONTA')) return { erro: `A vistoria da CAIXA já foi solicitada${vc.os?.numero ? ` (OS ${vc.os.numero})` : ''}. Se o cliente trocou de imóvel, use "Imóvel trocado: nova vistoria".` };
   if (!String(cf.link_pasta_drive || '').trim()) return { erro: 'O card não tem a pasta do Drive (a certidão do imóvel fica na pasta IMOVEL).' };
   if (!brlSemSimbolo(cf.valor_credito)) return { erro: 'Preencha o "Valor do crédito" do card (vai como valor proposto a financiar).' };
@@ -257,7 +257,8 @@ export async function solicitarVistoriaCaixa(accountId: string, leadId: string, 
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...resto, _vistoriaCaixa: vistoriaDoImovelNovo(fresh._vistoriaCaixa || vc, agora) } } });
     await nota(leadId, `🏠 Imóvel trocado (${user.nome}): a vistoria CAIXA anterior${vc.os?.numero ? ` (OS ${vc.os.numero}${vc.codigoImovel ? `, imóvel ${vc.codigoImovel}` : ''})` : ''} foi pro histórico do card; a nova sai da certidão que está na pasta IMOVEL.`, user.id);
   }
-  await gravar(leadId, { status: 'LENDO', pedidoEm: new Date().toISOString(), por: user.nome, porId: user.id, erro: null, tentativas: 0 });
+  // semPerguntarContato (Fabio 19/11, Marcos: "vou checar quem irá acompanhar a vistoria, enquanto isso cadastra o imóvel"): a equipe preenche o "Contato vistoria"; o CRM não pergunta ao cliente.
+  await gravar(leadId, { status: 'LENDO', pedidoEm: new Date().toISOString(), por: user.nome, porId: user.id, erro: null, tentativas: 0, semPerguntarContato: opts.semPerguntarContato === true });
   await nota(leadId, `🏠 Vistoria CAIXA pedida por ${user.nome} — lendo a certidão do imóvel pra cadastrar no SIOPI.`, user.id);
   // Imóvel trocado: antes de ler a certidão, os documentos do imóvel que chegaram antes da vistoria anterior saem da pasta IMOVEL (senão o organizador
   // devolvia a matrícula antiga como "MATRICULA DO IMOVEL" e a leitura pegava o imóvel errado — Fernanda, 10/11).
@@ -327,15 +328,25 @@ async function conferirContato(accountId: string, leadId: string, user: { id: st
       const fresh = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
       if (!String(fresh.contato_vistoria || '').trim()) await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...fresh, contato_vistoria: texto } } });
       await nota(leadId, `🏠 Contato da vistoria achado na conversa: ${texto} (gravado no campo "Contato vistoria").`);
-    } else if (conversa.perguntado) {
-      await gravar(leadId, { status: 'AGUARDANDO_CONTATO' });
-      await nota(leadId, '🏠 Vistoria CAIXA esperando o contato: o cliente já foi perguntado na conversa e ainda não respondeu quem acompanha a vistoria. Quando o campo "Contato vistoria" for preenchido, a extensão segue sozinha.');
-      return;
     } else {
+      // Sem contato: o imóvel já é cadastrado no SIOPI enquanto isso (Fabio 19/11: "enquanto isso, cadastra o imóvel") — só a OS espera o contato.
+      const vc = cf._vistoriaCaixa || {};
+      const espera: Estado = vc.codigoImovel ? 'AGUARDANDO_CONTATO' : 'IMOVEL';
+      const imovelTxt = vc.codigoImovel ? '' : ' Enquanto isso a extensão do SIOPI já cadastra o imóvel (ou acha o cadastro dele).';
+      if (conversa.perguntado) {
+        await gravar(leadId, { status: espera, leaseAt: null });
+        await nota(leadId, `🏠 Vistoria CAIXA esperando o contato: o cliente já foi perguntado na conversa e ainda não respondeu quem acompanha a vistoria. Quando o campo "Contato vistoria" for preenchido, a OS sai sozinha.${imovelTxt}`);
+        return;
+      }
+      if (vc.semPerguntarContato) {
+        await gravar(leadId, { status: espera, leaseAt: null });
+        await nota(leadId, `🏠 Vistoria CAIXA esperando o contato: a equipe vai preencher o campo "Contato vistoria" (nome e telefone) — o CRM não perguntou ao cliente. Com o campo preenchido, a OS sai sozinha.${imovelTxt}`);
+        return;
+      }
       const r = await pedirContatoVistoria(accountId, leadId, user?.id || '', io as any).catch((e: any) => { console.error('[Vistoria CAIXA] contato', e?.message); return 'erro' as const; });
-      await gravar(leadId, { status: 'AGUARDANDO_CONTATO' });
+      await gravar(leadId, { status: espera, leaseAt: null });
       if (r === 'erro') {
-        await nota(leadId, '⚠️ Vistoria CAIXA: não consegui perguntar ao cliente quem acompanha a vistoria. Preencha o campo "Contato vistoria" (nome e telefone) — a extensão segue sozinha.');
+        await nota(leadId, `⚠️ Vistoria CAIXA: não consegui perguntar ao cliente quem acompanha a vistoria. Preencha o campo "Contato vistoria" (nome e telefone) — a OS sai sozinha.${imovelTxt}`);
         await push(accountId, leadId, `🏠 ${lead.name}: falta o contato da vistoria`, 'Preencha "Contato vistoria" no card (nome e telefone).');
       }
       return;
@@ -349,7 +360,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
   const rows = await prisma.$queryRaw<{ id: string; accountId: string; status: string; leaseAt: string | null; tentativas: number | null }[]>`
     SELECT id, "accountId", "customFields"->'_vistoriaCaixa'->>'status' AS status, "customFields"->'_vistoriaCaixa'->>'leaseAt' AS "leaseAt",
            ("customFields"->'_vistoriaCaixa'->>'tentativas')::int AS tentativas
-      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','RODANDO','ENVIANDO','ANEXANDO','EMITINDO','BAIXANDO_BOLETO')`;
+      FROM "Lead" WHERE "customFields"->'_vistoriaCaixa'->>'status' IN ('AGUARDANDO_CONTATO','CADASTRANDO','RODANDO','ENVIANDO','ANEXANDO','EMITINDO','BAIXANDO_BOLETO')`;
   for (const r of rows) {
     try {
       if (r.status === 'AGUARDANDO_CONTATO') {
@@ -364,7 +375,7 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
           await gravar(r.id, { status: 'ERRO', erro: 'A extensão do SIOPI começou 3 vezes e não terminou.' });
           await nota(r.id, '⚠️ Vistoria CAIXA: a extensão do SIOPI começou 3 vezes e não terminou. Confira o SIOPI aberto no Chrome (login) e clique de novo em "Solicitar vistoria CAIXA".');
           await push(r.accountId, r.id, '🏠 Vistoria CAIXA travou', 'A extensão do SIOPI não terminou — confira o Chrome.');
-        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : r.status === 'EMITINDO' ? 'TAXA' : r.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : 'FILA', leaseAt: null, tentativas: tent });
+        } else await gravar(r.id, { status: r.status === 'ENVIANDO' ? 'ENVIAR' : r.status === 'ANEXANDO' ? 'DOCUMENTOS' : r.status === 'EMITINDO' ? 'TAXA' : r.status === 'BAIXANDO_BOLETO' ? 'BOLETO' : r.status === 'CADASTRANDO' ? 'IMOVEL' : 'FILA', leaseAt: null, tentativas: tent });
       }
     } catch (e: any) { console.error('[Vistoria CAIXA] poll', r.id, e?.message); }
   }
@@ -374,16 +385,18 @@ export async function processVistoriaCaixa(io?: Io): Promise<void> {
  *  Fabio 12/11: "sempre que a extensão é acionada ela vai até o final e encaminha o boleto ao cliente" (antes FILA parava na OS pronta, sem enviar). */
 export async function proximaVistoriaCaixa(accountId: string): Promise<any | null> {
   const rows = await prisma.$queryRaw<{ id: string }[]>`
-    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','TAXA','BOLETO')
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND "customFields"->'_vistoriaCaixa'->>'status' IN ('FILA','ENVIAR','DOCUMENTOS','TAXA','BOLETO','IMOVEL')
      ORDER BY ("customFields"->'_vistoriaCaixa'->>'status' <> 'FILA') DESC, "updatedAt" ASC LIMIT 1`;
   if (!rows.length) return null;
   const lead = await prisma.lead.findUnique({ where: { id: rows[0].id }, select: { id: true, name: true, customFields: true } });
   if (!lead) return null;
   const cf = (lead.customFields || {}) as Record<string, any>;
   const vc = cf._vistoriaCaixa || {};
+  // IMOVEL (Fabio 19/11): só cadastrar/achar o imóvel no SIOPI — o contato da vistoria ainda não chegou, a OS espera.
+  const soImovel = vc.status === 'IMOVEL';
   const enviar = vc.status === 'ENVIAR' || vc.status === 'FILA';
-  const modo = vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : vc.status === 'TAXA' ? 'TAXA' : enviar ? 'ENVIAR' : 'PREPARAR';
-  await gravar(lead.id, { status: modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : modo === 'TAXA' ? 'EMITINDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
+  const modo = soImovel ? 'IMOVEL' : vc.status === 'BOLETO' ? 'BOLETO' : vc.status === 'DOCUMENTOS' ? 'DOCUMENTOS' : vc.status === 'TAXA' ? 'TAXA' : enviar ? 'ENVIAR' : 'PREPARAR';
+  await gravar(lead.id, { status: soImovel ? 'CADASTRANDO' : modo === 'BOLETO' ? 'BAIXANDO_BOLETO' : modo === 'DOCUMENTOS' ? 'ANEXANDO' : modo === 'TAXA' ? 'EMITINDO' : enviar ? 'ENVIANDO' : 'RODANDO', leaseAt: new Date().toISOString() });
   return {
     leadId: lead.id,
     leadName: lead.name,
@@ -404,8 +417,16 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
   const etapa = String(body.etapa || '').toUpperCase();
   const campos = (body.campos || []).filter((c) => c?.rotulo).map((c) => `• ${c.rotulo} ${String(c.valor ?? '').slice(0, 160)}`).join('\n');
   if (etapa === 'CADASTRADO' || etapa === 'IMOVEL_JA_EXISTIA') {
-    await gravar(leadId, { codigoImovel: body.codigoImovel || null });
-    await nota(leadId, `🏠 SIOPI: imóvel ${etapa === 'CADASTRADO' ? 'cadastrado' : 'já estava cadastrado'} — código do imóvel ${body.codigoImovel || '?'}.`);
+    const antes = await gravar(leadId, { codigoImovel: body.codigoImovel || null });
+    // Rodada só do imóvel (status IMOVEL → CADASTRANDO): o contato chegou nesse meio-tempo → fila da OS; senão volta a esperar o contato.
+    let depois = '';
+    if (antes.status === 'CADASTRANDO') {
+      const cf = ((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>;
+      const contato = partirContato(cf.contato_vistoria, cf);
+      await gravar(leadId, contato ? { status: 'FILA', contato, leaseAt: null, tentativas: 0 } : { status: 'AGUARDANDO_CONTATO', leaseAt: null, tentativas: 0 });
+      depois = contato ? ' O contato da vistoria já está no card — a OS entra na fila.' : ' A OS da vistoria espera o campo "Contato vistoria" (nome e telefone).';
+    }
+    await nota(leadId, `🏠 SIOPI: imóvel ${etapa === 'CADASTRADO' ? 'cadastrado' : 'já estava cadastrado'} — código do imóvel ${body.codigoImovel || '?'}.${depois}`);
     return;
   }
   // Imóvel cadastrado por OUTRO correspondente (Fabio 06/11): não dá pra abrir a OS — a equipe manda e-mail à agência pedindo a alteração. Por enquanto: nota + push.
@@ -416,6 +437,13 @@ export async function gravarVistoriaCaixa(accountId: string, leadId: string, bod
     return;
   }
   if (etapa === 'OS_PRONTA') {
+    // Trava (19/11): OS sem contato da vistoria nunca é criada — extensão antiga que seguiu da rodada "só imóvel" pra OS cai aqui e volta a esperar o contato.
+    const vcAgora = ((((await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }))?.customFields || {}) as Record<string, any>)._vistoriaCaixa || {}) as Record<string, any>;
+    if (!String(vcAgora.contato?.telefone || '').replace(/\D/g, '')) {
+      await gravar(leadId, { status: 'AGUARDANDO_CONTATO', leaseAt: null });
+      await nota(leadId, '🏠 Vistoria CAIXA: a OS não foi criada porque falta o contato da vistoria. Preencha o campo "Contato vistoria" (nome e telefone) — a OS sai sozinha.');
+      return;
+    }
     // Vai até o final (Fabio 12/11): OS preenchida sem criar (rodada antiga/sem "enviar") → volta pra fila já pra CRIAR, anexar, emitir a taxa e mandar o boleto.
     await gravar(leadId, { status: 'ENVIAR', leaseAt: null, erro: null, tentativas: 0, osPronta: { em: new Date().toISOString(), campos: body.campos || [] }, enviarPor: 'automático', enviarEm: new Date().toISOString() });
     await nota(leadId, `🏠 Vistoria CAIXA: OS de engenharia preenchida no SIOPI — a extensão cria a OS, anexa a certidão, emite a taxa e manda o boleto ao cliente:\n${campos}`);
