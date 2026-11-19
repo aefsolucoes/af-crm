@@ -5,8 +5,9 @@ import { prisma } from '../lib/prisma';
  * renda"; 19/11: "quando a gente faz a análise de crédito esses produtos já são encaminhados para aprovação; caso estejam aprovados, basta contratá-los").
  * A Avaliação de Risco do Caixa Aqui gera uma linha por produto em Formulários Enviados (Fernanda 03/11: Habitação + Cartão de Crédito + Cheque Azul (CROT)) — o
  * CRM já guarda isso em `_caixaResultado.ultimaTela`. A extensão "Cadastro CAIXA" faz o portal (o CRM nunca digita CPF).
- * 1ª fase ("olhar", só consulta): Formulários Enviados do CPF + Solicitar Contas → CPF → Consultar → grava a tela e PARA. "ate" (19/11): também abre o Quadro de
- * Oportunidades da habitação mais recente e, no Solicitar Contas, escolhe Individual → Avançar → grava a tela seguinte e PARA (não preenche nem confirma). O Cartão de Crédito do Caixa Aqui pede o
+ * 1ª fase ("olhar", só consulta): Formulários Enviados do CPF + Solicitar Contas → CPF → Consultar → grava a tela e PARA. "ate" (19/11): no Solicitar Contas escolhe
+ * Individual → Avançar e só segue (até `avancos` telas) as telas que a CAIXA trouxe preenchidas; para na 1ª com campo vazio ou botão de confirmar (não digita nem confirma).
+ * O Quadro de Oportunidades da habitação não lista cartão/conta (só crédito imobiliário/EGI). O Cartão de Crédito do Caixa Aqui pede o
  * aparelho PINPAD (goToURLPinpad) — fica com a equipe até haver um PINPAD ligado.
  * Estado: `_caixaProdutos` = { status: FILA | RODANDO | MAPEADO… | PAROU… | ERRO, modo, ordem, nome, pedidoEm, por, tentativas, inicio, fim, aprovados, ultimaTela }. */
 
@@ -53,7 +54,7 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
-export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate' } = {}): Promise<string | null> {
+export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -65,11 +66,11 @@ export async function pedirProdutosCaixa(accountId: string, leadId: string, por:
   const aprovados = produtosDaAvaliacao(cf);
   await salvarProd(leadId, (x) => {
     if (x.status && x.status !== 'FILA') x.anteriores = [...(x.anteriores || []), { status: x.status, fim: x.fim, modo: x.modo }].slice(-5);
-    Object.assign(x, { status: 'FILA', modo: opts.modo || 'olhar', ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
+    Object.assign(x, { status: 'FILA', modo: opts.modo || 'olhar', avancos: Math.max(0, Math.min(8, Number(opts.avancos) || 0)), ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
     delete x.inicio; delete x.fim;
   });
   const linhas = aprovados.length ? aprovados.map((a) => `• ${a.produto} (proposta ${a.proposta}, ${a.data}): ${a.resultado}`).join('\n') : '• (o resultado da Avaliação de Risco gravado no card não lista cartão/cheque azul)';
-  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.modo === 'ate' ? 'a extensão abre o Quadro de Oportunidades e vai no Solicitar Contas até a tela depois do Avançar (Individual) e PARA — não preenche nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
+  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.modo === 'ate' ? 'no Solicitar Contas a extensão escolhe Individual → Avançar e só segue (até ' + (Number(opts.avancos) || 0) + ' tela(s)) as telas que a CAIXA já trouxe preenchidas; para na 1ª que falta dado ou tem confirmar — não digita nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
   return null;
 }
 
@@ -90,7 +91,7 @@ export async function proximoProdutosCaixa(accountId: string): Promise<any | nul
     const t = titularDosProdutos(cf, st.ordem);
     if ('erro' in t) { await salvarProd(id, (x) => { x.status = `PAROU: ${t.erro}`; x.fim = new Date().toISOString(); }); await note(id, `⏸️ Conta/cartão CAIXA: ${t.erro}.`); continue; }
     await salvarProd(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'produtos', modo: st.modo || 'olhar', leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
+    return { tipo: 'produtos', modo: st.modo || 'olhar', avancos: Number(st.avancos) || 0, leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
   }
   return null;
 }

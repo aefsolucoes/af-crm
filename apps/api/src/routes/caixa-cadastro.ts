@@ -325,7 +325,7 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const ordem = Number(req.body?.ordem) || undefined;
   const modo = req.body?.modo === 'ate' ? 'ate' : 'olhar';
-  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo }).catch((e) => e?.message || 'erro');
+  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo, avancos: Number(req.body?.avancos) || 0 }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
