@@ -50,7 +50,10 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
   if (p.semRenda === true) return { erro: `${p.nome || `${p.ordem}º participante`} está sem renda — conta e cartão só pro proponente ou outro participante COM renda (Fabio 18/11)` };
   const cpf = String(p.cpf || '').replace(/\D/g, '');
   if (cpf.length !== 11) return { erro: `${p.nome || `${p.ordem}º participante`} sem CPF na ficha` };
-  return { ordem: Number(p.ordem) || 1, nome: String(p.nome || ''), cpf, email: String(p.email || cf[`email_${p.ordem}`] || '').trim() };
+  // E-mail da fatura do cartão: o do titular; sem ele, o do outro participante do card (Fabio 19/11, João Pedro sem e-mail: "usa o da Fernanda").
+  const emailDe = (x: any) => String(x?.email || cf[`email_${x?.ordem}`] || '').trim();
+  const email = emailDe(p) || ps.map(emailDe).find(Boolean) || String(cf.email || '').trim();
+  return { ordem: Number(p.ordem) || 1, nome: String(p.nome || ''), cpf, email };
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
