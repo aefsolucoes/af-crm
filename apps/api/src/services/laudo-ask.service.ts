@@ -310,17 +310,20 @@ export async function processLaudoAsk(accountId: string, io: Io): Promise<void> 
       AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoAsk')
       AND (jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter') OR jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaRequestedAt')
            OR COALESCE(l."customFields"->'_vistoriaAi'->>'status', '') IN ('AGUARDA_ENGAJAMENTO', 'ENVIADA'))
+      AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaConcluidaAt') AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_interQuest')
     LIMIT 20`;
   for (const { id } of ids) {
     try { await askOne(accountId, id, io); } catch (e: any) { console.warn('[Laudo] pergunta:', e?.message); }
   }
-  // 2) card completo + link do laudo → entra na fila da extensão
+  // 2) card completo + link do laudo → entra na fila da extensão. Vistoria já concluída (ou questionário do Inter já chegou) = o laudo já foi feito, mesmo sem o CRM saber
+  //    (Fabio 19/11, Fernanda Karita: laudo feito com a IA desligada; ao ligar a IA ele entrou na fila e a extensão abriu o "Você já preencheu este formulário").
   const prontos = await prisma.$queryRaw<{ id: string }[]>`
     SELECT l.id FROM "Lead" l
     WHERE l."accountId" = ${accountId} AND l.status = 'OPEN' AND l.archived = false AND l."isGroup" = false
       AND l."stageEnteredAt" >= ${LAUDO_ASK_FROM}
       AND jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), 'link_laudo_inter')
       AND COALESCE(l."customFields"->>'_laudoStatus', '') = '' AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_laudoAutoQueuedAt')
+      AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_vistoriaConcluidaAt') AND NOT jsonb_exists(COALESCE(l."customFields", '{}'::jsonb), '_interQuest')
     LIMIT 20`;
   for (const { id } of prontos) {
     try { await queueIfReady(accountId, id); } catch (e: any) { console.warn('[Laudo] fila:', e?.message); }

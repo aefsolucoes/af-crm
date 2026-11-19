@@ -365,6 +365,11 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Laudo digital do Inter ENVIADO pela extensão (marcou "me responsabilizo" e clicou em Enviar).${d.detail ? `\n${String(d.detail).slice(0, 400)}` : ''}` } }).catch(() => {});
     push('✅ Laudo do Inter enviado', `${lead.name}: laudo digital enviado ao Inter`);
     await avisarClienteLaudoEnviado(accountId, leadId).catch((e: any) => console.warn('[Laudo] aviso ao cliente:', e?.message));
+  } else if (d.event === 'already') {
+    // O Inter abriu "Você já preencheu este formulário anteriormente" (/preencher-novamente): o laudo já foi enviado por alguém (cliente ou equipe). Não preenche de novo,
+    // não avisa o cliente e não dá alerta — só registra (Fabio 19/11: "caso apareça essa tela, não precisa preencher novamente").
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: cf._laudoSentAt || new Date().toISOString(), _laudoJaPreenchido: true } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '✅ Laudo digital do Inter: o formulário já tinha sido enviado antes ("Você já preencheu este formulário"). A extensão não preencheu de novo e fechou a janela.' } }).catch(() => {});
   } else if (d.event === 'failed') {
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu preencher o laudo digital do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Link: ${laudoLink(cf)}` } }).catch(() => {});
