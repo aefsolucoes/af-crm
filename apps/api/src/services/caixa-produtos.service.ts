@@ -7,8 +7,8 @@ import { prisma } from '../lib/prisma';
  * CRM já guarda isso em `_caixaResultado.ultimaTela`. A extensão "Cadastro CAIXA" faz o portal (o CRM nunca digita CPF).
  * 1ª fase ("olhar", só consulta): Formulários Enviados do CPF + Solicitar Contas → CPF → Consultar → grava a tela e PARA. "ate" (19/11): no Solicitar Contas escolhe
  * Individual → Avançar e só segue (até `avancos` telas) as telas que a CAIXA trouxe preenchidas; para na 1ª com campo vazio ou botão de confirmar (não digita nem confirma).
- * O Quadro de Oportunidades da habitação não lista cartão/conta (só crédito imobiliário/EGI). O Cartão de Crédito do Caixa Aqui pede o
- * aparelho PINPAD (goToURLPinpad) — fica com a equipe até haver um PINPAD ligado.
+ * O Quadro de Oportunidades da habitação não lista cartão/conta (só crédito imobiliário/EGI). Cartão de Crédito (19/11): o link do menu é goToURLPinpad,
+ * mas abre sem o aparelho (Fabio: "não depende dele") — a extensão entra pelo menu, CPF → Consultar cliente → grava e para.
  * Estado: `_caixaProdutos` = { status: FILA | RODANDO | MAPEADO… | PAROU… | ERRO, modo, ordem, nome, pedidoEm, por, tentativas, inicio, fim, aprovados, ultimaTela }. */
 
 type Cf = Record<string, any>;
@@ -54,7 +54,7 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
-export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string } | null } = {}): Promise<string | null> {
+export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string } | null; cartao?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -69,11 +69,11 @@ export async function pedirProdutosCaixa(accountId: string, leadId: string, por:
   const avancos = Math.max(opts.conta ? 1 : 0, Math.min(8, Number(opts.avancos) || 0));
   await salvarProd(leadId, (x) => {
     if (x.status && x.status !== 'FILA') x.anteriores = [...(x.anteriores || []), { status: x.status, fim: x.fim, modo: x.modo }].slice(-5);
-    Object.assign(x, { status: 'FILA', modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.conta || null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
+    Object.assign(x, { status: 'FILA', modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.cartao ? null : (opts.conta || null), cartao: opts.cartao ? { consultar: true } : null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
     delete x.inicio; delete x.fim;
   });
   const linhas = aprovados.length ? aprovados.map((a) => `• ${a.produto} (proposta ${a.proposta}, ${a.data}): ${a.resultado}`).join('\n') : '• (o resultado da Avaliação de Risco gravado no card não lista cartão/cheque azul)';
-  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.conta ? `conta CORRENTE PF individual ${opts.conta.cheque ? `COM cheque especial${opts.conta.limite ? ` de R$ ${opts.conta.limite}` : ''}` : 'sem cheque especial'}${opts.conta.gerar ? ' — a extensão clica em "Gerar Nº Conta" uma vez e para (não avança nem confirma depois)' : ' — preenche e para antes do "Gerar Nº Conta"'}` : opts.modo === 'ate' ? 'no Solicitar Contas a extensão escolhe Individual → Avançar e só segue (até ' + (Number(opts.avancos) || 0) + ' tela(s)) as telas que a CAIXA já trouxe preenchidas; para na 1ª que falta dado ou tem confirmar — não digita nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
+  await note(leadId, `🏦 Conta + cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — ${opts.cartao ? 'CARTÃO DE CRÉDITO: Negócios → Cartão de Crédito → Cartão de Crédito → CPF → Consultar cliente → a extensão grava a tela e para (não escolhe nem confirma nada)' : opts.conta ? `conta CORRENTE PF individual ${opts.conta.cheque ? `COM cheque especial${opts.conta.limite ? ` de R$ ${opts.conta.limite}` : ''}` : 'sem cheque especial'}${opts.conta.gerar ? ' — a extensão clica em "Gerar Nº Conta" uma vez e para (não avança nem confirma depois)' : ' — preenche e para antes do "Gerar Nº Conta"'}` : opts.modo === 'ate' ? 'no Solicitar Contas a extensão escolhe Individual → Avançar e só segue (até ' + (Number(opts.avancos) || 0) + ' tela(s)) as telas que a CAIXA já trouxe preenchidas; para na 1ª que falta dado ou tem confirmar — não digita nem confirma nada' : 'a extensão só CONSULTA nesta fase (Formulários Enviados + Solicitar Contas), não contrata nada'}.\nO que a Avaliação de Risco já mandou pra aprovação:\n${linhas}`);
   return null;
 }
 
@@ -94,7 +94,7 @@ export async function proximoProdutosCaixa(accountId: string): Promise<any | nul
     const t = titularDosProdutos(cf, st.ordem);
     if ('erro' in t) { await salvarProd(id, (x) => { x.status = `PAROU: ${t.erro}`; x.fim = new Date().toISOString(); }); await note(id, `⏸️ Conta/cartão CAIXA: ${t.erro}.`); continue; }
     await salvarProd(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'produtos', modo: st.modo || 'olhar', avancos: Number(st.avancos) || 0, conta: st.conta || null, leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
+    return { tipo: 'produtos', modo: st.modo || 'olhar', avancos: Number(st.avancos) || 0, conta: st.conta || null, cartao: st.cartao || null, leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
   }
   return null;
 }
@@ -105,6 +105,6 @@ export async function gravarProdutosCaixa(accountId: string, leadId: string, r: 
   if (!l) return;
   const status = String(r.status || 'TELA').slice(0, 400);
   const st = await salvarProd(leadId, (x) => { x.status = status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 7000); x.mapa = r.mapa || null; x.botoes = (r.botoes || []).slice(0, 40); if (r.numeroConta) { x.numeroConta = String(r.numeroConta).slice(0, 40); x.contaGeradaEm = new Date().toISOString(); } });
-  await note(leadId, `🏦 Conta + cartão CAIXA de ${st.nome || 'proponente'} — ${status}${r.numeroConta ? `\n💳 Nº da conta gerado no Caixa Aqui: ${r.numeroConta}` : ''}\n\n${String(r.texto || '').slice(0, 6000)}${(r.botoes || []).length ? `\n\nBotões na tela: ${(r.botoes || []).join(' | ')}` : ''}\n\n(Cartão de Crédito do Caixa Aqui pede o aparelho PINPAD — a extensão não abre essa tela.)`);
+  await note(leadId, `🏦 Conta + cartão CAIXA de ${st.nome || 'proponente'} — ${status}${r.numeroConta ? `\n💳 Nº da conta gerado no Caixa Aqui: ${r.numeroConta}` : ''}\n\n${String(r.texto || '').slice(0, 6000)}${(r.botoes || []).length ? `\n\nBotões na tela: ${(r.botoes || []).join(' | ')}` : ''}`);
   push(accountId, `🏦 ${l.name}: conta/cartão CAIXA`, status, leadId);
 }

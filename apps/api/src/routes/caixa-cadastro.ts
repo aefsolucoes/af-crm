@@ -325,7 +325,7 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const ordem = Number(req.body?.ordem) || undefined;
   const modo = req.body?.modo === 'ate' ? 'ate' : 'olhar';
-  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo, avancos: Number(req.body?.avancos) || 0, conta: req.body?.conta ? { tipo: 'corrente', cheque: req.body.conta.cheque !== false, gerar: req.body.conta.gerar === true, ...(/^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.conta.limite || '')) ? { limite: String(req.body.conta.limite) } : {}) } : null }).catch((e) => e?.message || 'erro');
+  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo, avancos: Number(req.body?.avancos) || 0, conta: req.body?.conta ? { tipo: 'corrente', cheque: req.body.conta.cheque !== false, gerar: req.body.conta.gerar === true, ...(/^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.conta.limite || '')) ? { limite: String(req.body.conta.limite) } : {}) } : null, cartao: req.body?.cartao === true }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
