@@ -1994,6 +1994,11 @@ async function respostaIaCloudApi(accountId: string, leadId: string, incomingTex
     if (!enviadas) return;
     await prisma.note.create({ data: { leadId, content: `Resposta automática da IA: "${reply}"`, type: 'COMMENT' } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, summary: 'a IA respondeu o cliente', channel: 'WHATSAPP' });
+    // Documento da pasta que o cliente pediu (Fabio 19/11, Deborah: "Vc pode me passar o ônus do imóvel" — estava na pasta): sai logo depois da resposta.
+    if (genResult.sendDocs?.length) {
+      await (require('./ai-send-docs.service') as typeof import('./ai-send-docs.service')).encaminharDocumentosDaIa(accountId, leadId, genResult.sendDocs, io as any)
+        .catch((e: any) => console.error('[IA] encaminhar documento falhou:', e?.message));
+    }
     // A IA prometeu voltar num horário ("te chamo às 16h"): o CRM agenda e cumpre (Fabio 04/11, qualquer etapa). Venda Futura/Sem Retorno com data, Perdido e ligação têm fluxo próprio.
     (require('./ai-promise.service') as typeof import('./ai-promise.service')).registrarPromessaDaIa(leadId, reply, { pular: !!(resumeOn || markLost || genResult.callRequest || /venda futura|sem retorno/i.test(String(moveToStage || ''))) }).catch((e: any) => console.error('[Retorno combinado]', e?.message));
     console.log(`[WhatsApp] Resposta de IA enviada automaticamente para lead ${leadId}`);

@@ -24,9 +24,10 @@ const PASTA_FORA = /^(DESNECESSARIO|MINUTA)/i;
 const NOME_FORA = /SIMULA|EVOLUCAO.?(DAS.?)?PARCELAS|FICHA CADASTRAL|MINUTA|^__OCR_TMP/i;
 const semAcento = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '');
 
-type Arq = { id: string; name: string; mimeType: string; size: number; path: string; createdTime: string; doCrm: boolean; outraConta: boolean };
+export type Arq = { id: string; name: string; mimeType: string; size: number; path: string; createdTime: string; doCrm: boolean; outraConta: boolean };
 
-async function listar(accountId: string, rootId: string): Promise<Arq[]> {
+/** Todos os arquivos da pasta do card (subpastas até 3 níveis; DESNECESSARIO e MINUTA ficam de fora). Também usado pela IA pra encaminhar documentos (ai-send-docs). */
+export async function listar(accountId: string, rootId: string): Promise<Arq[]> {
   const { getDrive } = require('./google.service') as typeof import('./google.service');
   const drive = await getDrive(accountId);
   const out: Arq[] = [];

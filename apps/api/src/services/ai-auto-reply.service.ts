@@ -462,7 +462,7 @@ export function parseResumeOn(raw: unknown, now = Date.now()): string | null {
 
 const OUTPUT_FORMAT = `FORMATO DE RESPOSTA — OBRIGATÓRIO:
 Responda SOMENTE com um JSON válido, sem markdown, sem texto antes ou depois, no formato exato:
-{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com UM banco ("SANTANDER" ou "INTER"; no Financiamento Habitacional também "BRADESCO" ou "ITAU"), ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF (e a linha SIMULAÇÃO EM PDF NO FINANCIAMENTO, quando houver)>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "pushColaborador": "<o que o cliente disse, ou null — só conforme a regra SIMULOU NO SITE do bloco CAIXA APROVOU; com ele preenchido NADA vai ao cliente>", "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>, "certidaoPorEndereco": <"TEM_MATRICULA", "NAO_SABE" ou null — só conforme a regra 3c dos documentos do imóvel (PELO ENDEREÇO DO IMÓVEL — SÓ EM ÚLTIMO CASO)>, "imovelSemRegistro": <true ou false — só conforme a regra 4 dos documentos do imóvel (o cliente disse que o imóvel NÃO é registrado em cartório)>, "caixaToken": <true ou false — só conforme a linha CAIXA — CLIENTE EM OUTRO CORRESPONDENTE do contexto: o cliente concordou AGORA em seguir com a gente e receber o código por SMS da CAIXA>, "replyTo": "<#número da mensagem do histórico que a sua resposta cita (responder em cima), ou null — só conforme a regra RESPONDER EM CIMA DE UMA MENSAGEM>"}`;
+{"reply": "<mensagem para o cliente, ou vazio se noReply>", "noReply": <true ou false>, "handoff": <true ou false>, "handoffReason": "<motivo curto do handoff, ou null>", "askTeam": "<pergunta pra equipe, ou null>", "moveToStage": "<Follow Up | Lead Sem Retorno | Pré-Análise | Prospecção | Venda Futura | Aguardando Documentação | null>", "markLost": "<motivo curto, ou null>", "stopFollowUp": <true ou false>, "moveReason": "<motivo da mudança de etapa, ou null>", "resumeOn": "<AAAA-MM-DD da retomada combinada (só conforme a regra VENDA FUTURA COM DATA), ou null>", "extractedFields": {<chave: valor, ou {} se nenhuma>}, "callRequest": <{"when": "...", "isoDateTime": "..."} ou null — só quando o bloco LIGAÇÃO PELO WHATSAPP mandar>, "runAnalysis": <true ou false — só conforme a regra RODAR A ANÁLISE>, "runBanks": <lista com "SANTANDER", "INTER" e/ou "CREDITAS", ou null — só conforme a regra BANCO QUE AINDA NÃO RODOU>, "sendSimulation": <lista com UM banco ("SANTANDER" ou "INTER"; no Financiamento Habitacional também "BRADESCO" ou "ITAU"), ou null — só conforme a regra MANDAR A SIMULAÇÃO EM PDF (e a linha SIMULAÇÃO EM PDF NO FINANCIAMENTO, quando houver)>, "sendApproval": <true ou false — só conforme a regra APRESENTAR A APROVAÇÃO>, "caixaPedido": <true ou false — só conforme a regra CAIXA, passo (1) ou (1b): o cliente quer seguir pela CAIXA (com ou sem aprovação) e você diz que vai consultar o cadastro dele na CAIXA, sem pedir documento>, "caixaRota": <true ou false — só conforme a regra CAIXA, passo (2): a consulta da CAIXA saiu SEM RESTRIÇÃO, o imóvel tem Habite-se e o bloco da CAIXA diz que pode pedir a documentação>, "caixaConcorrente": <true ou false — junto com "caixaPedido" (ou "caixaRota"), quando o cliente ia seguir pela CAIXA POR FORA (regra CAIXA, passo 1b)>, "pushColaborador": "<o que o cliente disse, ou null — só conforme a regra SIMULOU NO SITE do bloco CAIXA APROVOU; com ele preenchido NADA vai ao cliente>", "simulate": <{"prazo": nº de meses e/ou "valor": nº em reais} ou null — só conforme a regra NOVA PROPOSTA COM OUTRO PRAZO OU VALOR>, "chooseBank": <"INTER", "SANTANDER", "CREDITAS", "BRADESCO", "ITAU" (Bradesco/Itaú só no Financiamento Habitacional), "BRB" ou null — só conforme a regra CLIENTE ESCOLHEU A PROPOSTA; "BRB" quando o cliente disser CLARAMENTE que quer seguir pelo BRB — o CRM guarda as outras aprovações e avisa a equipe. A CAIXA NÃO vai aqui: é "caixaRota" (regra CAIXA)>, "certidaoPorEndereco": <"TEM_MATRICULA", "NAO_SABE" ou null — só conforme a regra 3c dos documentos do imóvel (PELO ENDEREÇO DO IMÓVEL — SÓ EM ÚLTIMO CASO)>, "imovelSemRegistro": <true ou false — só conforme a regra 4 dos documentos do imóvel (o cliente disse que o imóvel NÃO é registrado em cartório)>, "caixaToken": <true ou false — só conforme a linha CAIXA — CLIENTE EM OUTRO CORRESPONDENTE do contexto: o cliente concordou AGORA em seguir com a gente e receber o código por SMS da CAIXA>, "replyTo": "<#número da mensagem do histórico que a sua resposta cita (responder em cima), ou null — só conforme a regra RESPONDER EM CIMA DE UMA MENSAGEM>", "sendDocs": <lista com o NOME EXATO (com a pasta) de até 3 arquivos do bloco ARQUIVOS NA PASTA DO CLIENTE que o cliente pediu — o CRM manda logo depois da sua mensagem —, ou null>}`;
 
 /** "simulate" vindo do JSON da IA: {prazo?: meses (60 a 240), valor?: crédito em reais} (ou só o número do prazo); qualquer outra coisa = null. */
 function parseSimulate(raw: unknown): { prazo?: number; valor?: number } | null {
@@ -563,6 +563,8 @@ export interface AiAutoReplyResult {
   imovelSemRegistro?: boolean;
   /** Fabio 18/11 (Lucas): cliente em outro correspondente concordou em seguir com a gente — a extensão clica "Enviar Token" (o código vai por SMS). */
   caixaToken?: boolean;
+  /** Fabio 19/11 (Deborah): arquivos da pasta do card que o cliente pediu — o CRM manda no WhatsApp logo depois da resposta (ai-send-docs.service). */
+  sendDocs?: string[] | null;
   /** Número (#57 → "57") da mensagem do histórico que a resposta cita — "responder em cima" (Fabio 18/11). Cru, como a IA mandou; o resolvido vai em `citar`. */
   replyTo?: string | null;
   /** Mensagem que a resposta CITA (wamid + o que a Inbox mostra) — quem envia passa pro WhatsApp (context.message_id) e grava replyTo* na Message. null = sem citação. */
@@ -746,7 +748,7 @@ export async function generateAiAutoReply(
     ]);
     if (!ctx) return null;
 
-    const [analiseCredito, reentrada, cessao, combinados, escolhaPendente, documentos, scrCreditas, emailsProcesso, cadDiv, ocorrencias, vfLead] = await Promise.all([
+    const [analiseCredito, reentrada, cessao, combinados, escolhaPendente, documentos, scrCreditas, emailsProcesso, cadDiv, ocorrencias, vfLead, arquivosPasta] = await Promise.all([
       medir('analise', aiCreditContext(prisma, leadId).catch(() => '')),
       medir('reentrada', (require('./reentry.service') as typeof import('./reentry.service')).aiReentryContext(leadId).catch(() => '')),
       medir('cessao', (require('./reentry.service') as typeof import('./reentry.service')).aiCessaoContext(leadId).catch(() => '')),
@@ -758,6 +760,8 @@ export async function generateAiAutoReply(
       medir('cadDiv', (require('./cadastro-divergente.service') as typeof import('./cadastro-divergente.service')).aiCadDivContext(leadId).catch(() => '')),
       medir('ocorrencias', (require('./caixa-ocorrencias.service') as typeof import('./caixa-ocorrencias.service')).aiOcorrenciasContext(leadId).catch(() => '')),
       medir('vendaFutura', prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, stage: { select: { name: true } } } }).catch(() => null)),
+      // Cliente pedindo um documento: a lista da pasta do card vai pro prompt e a IA pode encaminhar o arquivo ("sendDocs" — Fabio 19/11, Deborah)
+      medir('arquivos', (require('./ai-send-docs.service') as typeof import('./ai-send-docs.service')).aiArquivosContext(accountId, leadId, incomingText).catch(() => '')),
     ]);
 
     const hojeTxt = new Date(Date.now() - 3 * 3_600_000).toISOString().slice(0, 10);
@@ -825,7 +829,9 @@ ${escolhaPendente}` : ''}${analiseCredito ? `
 
 ${analiseCredito}` : ''}${documentos ? `
 
-${documentos}` : ''}${scrCreditas ? `
+${documentos}` : ''}${arquivosPasta ? `
+
+${arquivosPasta}` : ''}${scrCreditas ? `
 
 ${scrCreditas}` : ''}${emailsProcesso ? `
 
@@ -1185,6 +1191,7 @@ function parseReply(raw: string): AiAutoReplyResult {
         imovelSemRegistro: parsed.imovelSemRegistro === true,
         caixaToken: parsed.caixaToken === true,
         replyTo: normalizarRefCitacao(parsed.replyTo),
+        sendDocs: (require('./ai-send-docs.service') as typeof import('./ai-send-docs.service')).parseSendDocs(parsed.sendDocs),
       };
     }
   } catch {
