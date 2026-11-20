@@ -1122,6 +1122,8 @@ model FichaLeitura {
   driveFileId String
   fileName    String
   leitura     Json
+  versao      String   @default("") // regra de leitura usada (hash do prompt): mudou a regra, lê de novo
+  tamanho     Int      @default(0)  // tamanho do arquivo no Drive: versão nova do mesmo arquivo, lê de novo
   createdAt   DateTime @default(now())
 
   @@id([leadId, driveFileId])

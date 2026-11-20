@@ -313,11 +313,18 @@ async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
 /** Lê os arquivos REAPROVEITANDO a leitura guardada (FichaLeitura, Fabio 20/11): só o arquivo que este card ainda não leu vai pra IA, 4 de cada vez. A organização
  *  da pasta só MOVE o arquivo no Drive (o id não muda), então a mesma leitura vale. `relerTudo` (botão da equipe): lê tudo de novo. Devolve na ordem de
  *  `arquivos`; `nova` = lida agora (guardar com `guardarLeituras` depois de conferir os nomes). */
+/** A leitura guardada só vale com a MESMA regra de leitura (hash dos prompts do leitor: mudou a regra no código, lê de novo) e o MESMO arquivo (versão nova
+ *  no Drive mantém o id mas muda o tamanho; anexo da conversa vem sem tamanho e não compara). */
+let versaoCache = '';
+const versaoLeitura = () => versaoCache || (versaoCache = require('crypto').createHash('sha1').update(`${SYSTEM_DOC}\n${SYSTEM_NOMES}`).digest('hex').slice(0, 12));
+const leituraValida = (r: { versao: string; tamanho: number }, f: Arquivo) => r.versao === versaoLeitura() && (!(r.tamanho > 0 && f.size > 0) || r.tamanho === f.size);
+
 async function lerComReaproveitamento(accountId: string, leadId: string, arquivos: Arquivo[], relerTudo = false): Promise<{ f: Arquivo; leitura: any | null; nova: boolean }[]> {
   const salvas = new Map<string, unknown>();
   if (!relerTudo && arquivos.length) {
-    const rows = await prisma.fichaLeitura.findMany({ where: { leadId, driveFileId: { in: arquivos.map((f) => f.id) } }, select: { driveFileId: true, leitura: true } }).catch(() => []);
-    for (const r of rows) salvas.set(r.driveFileId, r.leitura);
+    const rows = await prisma.fichaLeitura.findMany({ where: { leadId, driveFileId: { in: arquivos.map((f) => f.id) } }, select: { driveFileId: true, leitura: true, versao: true, tamanho: true } }).catch(() => []);
+    const porId = new Map(arquivos.map((f) => [f.id, f]));
+    for (const r of rows) { const f = porId.get(r.driveFileId); if (f && leituraValida(r, f)) salvas.set(r.driveFileId, r.leitura); }
   }
   const novas = new Map<string, any>();
   const faltam = arquivos.filter((f) => !salvas.has(f.id));
@@ -333,7 +340,7 @@ async function lerComReaproveitamento(accountId: string, leadId: string, arquivo
 async function guardarLeituras(leadId: string, itens: { f: Arquivo; leitura: any; nova: boolean }[]): Promise<void> {
   for (const x of itens) {
     if (!x.nova || !x.leitura || !Array.isArray(x.leitura.pessoas)) continue;
-    const data = { fileName: x.f.name.slice(0, 250), leitura: x.leitura };
+    const data = { fileName: x.f.name.slice(0, 250), leitura: x.leitura, versao: versaoLeitura(), tamanho: Math.max(0, Math.round(x.f.size || 0)) };
     await prisma.fichaLeitura.upsert({ where: { leadId_driveFileId: { leadId, driveFileId: x.f.id } }, create: { leadId, driveFileId: x.f.id, ...data }, update: { ...data, createdAt: new Date() } })
       .catch((e: any) => console.error('[Ficha cadastral] guardar leitura:', e?.message));
   }
@@ -358,8 +365,10 @@ async function temArquivoNovo(accountId: string, leadId: string): Promise<boolea
     const { arquivos } = await arquivosDaFicha(accountId, leadId, cf);
     if (!arquivos.length) return false;
     const tentados = Array.isArray(cf._fichaCadastral?.naoLidosIds) ? (cf._fichaCadastral.naoLidosIds as unknown[]).map(String) : [];
-    const conhecidos = new Set<string>([...(await prisma.fichaLeitura.findMany({ where: { leadId }, select: { driveFileId: true } })).map((x) => x.driveFileId), ...tentados]);
-    return arquivos.some((f) => !conhecidos.has(f.id));
+    // Conhecido = já lido (e o arquivo não mudou de versão) ou tentado na última ficha. Regra de leitura nova não dispara releitura sozinha — vale na próxima ficha.
+    const rows = new Map((await prisma.fichaLeitura.findMany({ where: { leadId }, select: { driveFileId: true, tamanho: true } })).map((x) => [x.driveFileId, x.tamanho]));
+    const conhecido = (f: Arquivo) => tentados.includes(f.id) || (rows.has(f.id) && (!(rows.get(f.id)! > 0 && f.size > 0) || rows.get(f.id) === f.size));
+    return arquivos.some((f) => !conhecido(f));
   } catch (e: any) {
     console.error('[Ficha cadastral] arquivo novo?', e?.message);
     return true;
