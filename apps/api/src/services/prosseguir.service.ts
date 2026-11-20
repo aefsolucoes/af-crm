@@ -30,9 +30,31 @@ export type ProsseguirState = { enviadoAt?: string; vezes?: number; simAt?: stri
 const norm = (s: string) => (s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const emHorario = (ms = Date.now()) => { const h = new Date(ms + BRT).getUTCHours(); return h >= 7 && h < 21; };
 
-/** Manda o template e guarda no card (`_prosseguir`). */
-export async function sendProsseguir(accountId: string, leadId: string, motivo: string, io?: Io): Promise<boolean> {
-  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName: PROSSEGUIR_TEMPLATE, language: 'pt_BR', bodyParams: [], previewText: PROSSEGUIR_PREVIEW, io: io || undefined });
+/* VERSÃO DE UTILIDADE PRA QUEM ESTÁ EM AGUARDANDO DOCUMENTAÇÃO (Fabio 20/11, "tem como reduzir mais, alterando só templates e colocando utilidades?" → "sim, cria"):
+ * o ainda_deseja_prosseguir foi criado como Utilidade e a Meta passou pra Marketing ("Sim, tenho interesse" soa como oferta) — era o Marketing que mais saía (432 em
+ * novembro, 1 em 4 barrado pelo limite de Marketing por pessoa). Este fala do processo parado, como o docs_lembrete_1 (aprovado como Utilidade). Só no loop de documentação:
+ * no Follow Up (quem ainda não mandou a proposta) continua o antigo. Enquanto a Meta não aprovar, sai o antigo. */
+export const PROSSEGUIR_TEMPLATE_DOCS = 'docs_deseja_continuar';
+export const PROSSEGUIR_DOCS_BOTOES = ['Sim, continuar', 'Não quero continuar'];
+export const prosseguirDocsTexto = (nome: string) => `Olá, ${nome}! Seu processo de crédito está parado aguardando a sua documentação. Deseja continuar com ele?`;
+
+/** Manda o template e guarda no card (`_prosseguir`). `docs` = card em Aguardando Documentação (vai a versão de Utilidade, se aprovada). */
+export async function sendProsseguir(accountId: string, leadId: string, motivo: string, io?: Io, opts: { docs?: boolean } = {}): Promise<boolean> {
+  let templateName = PROSSEGUIR_TEMPLATE;
+  let bodyParams: string[] = [];
+  let previewText = PROSSEGUIR_PREVIEW;
+  let texto = PROSSEGUIR_TEXT;
+  if (opts.docs && (await aprovadoNaMeta(accountId, PROSSEGUIR_TEMPLATE_DOCS))) {
+    const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
+    const cf0 = (l?.customFields || {}) as Record<string, any>;
+    const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+    const nome = callableFirstName(cf0.falando_com, cf0.nome_social_1, cf0.participante_1, l?.name) || 'tudo bem';
+    templateName = PROSSEGUIR_TEMPLATE_DOCS;
+    bodyParams = [nome];
+    texto = prosseguirDocsTexto(nome);
+    previewText = `${texto}\n\n${PROSSEGUIR_DOCS_BOTOES.map((b) => `[${b}]`).join('  ')}`;
+  }
+  const r = await sendOutboundWhatsAppTemplate({ accountId, leadId, templateName, language: 'pt_BR', bodyParams, previewText, io: io || undefined });
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
   const p = (cf._prosseguir || {}) as ProsseguirState;
@@ -44,7 +66,7 @@ export async function sendProsseguir(accountId: string, leadId: string, motivo: 
   }
   cf._prosseguir = { enviadoAt: new Date().toISOString(), vezes: (p.vezes || 0) + 1, simAt: null };
   await prisma.lead.update({ where: { id: leadId }, data: { customFields: cf as any } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📨 Mandei o template "${PROSSEGUIR_TEXT}" (botões Sim / Não) — ${motivo}.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `📨 Mandei o template "${texto}" (botões Sim / Não) — ${motivo}.` } }).catch(() => {});
   return true;
 }
 
@@ -62,9 +84,9 @@ export async function tagAprovadoSemAndamento(leadId: string, estavaEm: string, 
   await prisma.lead.update({ where: { id: leadId }, data: { tags: [...l.tags, TAG_APROVADO_SEM_ANDAMENTO] } });
 }
 
-/** "Sim, tenho interesse" ao template: liga a IA e confere a documentação. `responderComIa` = a resposta normal da IA (quando a conferência não tem o que dizer). */
+/** "Sim, tenho interesse" (ou "Sim, continuar", da versão de Utilidade) ao template: liga a IA e confere a documentação. `responderComIa` = a resposta normal da IA (quando a conferência não tem o que dizer). */
 export async function handleProsseguirYes(accountId: string, leadId: string, text: string, io: Io, responderComIa: () => Promise<unknown>): Promise<boolean> {
-  if (!/^sim,?\s*tenho interesse[.!]?$/i.test(text.trim())) return false;
+  if (!/^sim,?\s*(tenho interesse|continuar)[.!]?$/i.test(text.trim())) return false;
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { id: true, name: true, customFields: true, stage: { select: { name: true } } } });
   if (!lead) return false;
   const cf = { ...((lead.customFields || {}) as Record<string, any>) };
@@ -72,7 +94,7 @@ export async function handleProsseguirYes(accountId: string, leadId: string, tex
   if (cf._autoPaused) return false; // STOP TOTAL: ninguém responde sozinho
   cf._prosseguir = { ...cf._prosseguir, simAt: new Date().toISOString() };
   await prisma.lead.update({ where: { id: leadId }, data: { aiAutoReplyActive: true, customFields: cf as any } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cliente respondeu "Sim, tenho interesse" ao "${PROSSEGUIR_TEXT}". IA do card ligada; conferindo a documentação pra dizer o que falta.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Cliente respondeu "${text.trim()}" ao "Ainda deseja prosseguir" (ou "Deseja continuar"). IA do card ligada; conferindo a documentação pra dizer o que falta.` } }).catch(() => {});
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: 'cliente quer prosseguir: IA ligada e documentação conferida' });
   // Áudio não é documento (Fabio 11/11, Ivânia: o único arquivo era um áudio e o cliente ouviu "vou conferir os documentos que você já mandou" sem ter mandado nenhum).
   const arquivos = await prisma.messageAttachment.count({ where: { leadId, message: { direction: 'INBOUND' }, NOT: { mimeType: { startsWith: 'audio/' } } } });
@@ -89,19 +111,21 @@ export async function handleProsseguirYes(accountId: string, leadId: string, tex
   return true;
 }
 
-let aprovadoNaMeta = false;
-let ultimaConsultaMeta = 0;
-async function templateAprovado(accountId: string): Promise<boolean> {
-  if (aprovadoNaMeta) return true;
-  if (Date.now() - ultimaConsultaMeta < 15 * 60_000) return false;
-  ultimaConsultaMeta = Date.now();
+/** Template APROVADO na Meta? (cache de 15 min por nome; depois de aprovado não consulta mais) */
+const aprovados = new Set<string>();
+const consultadoEm = new Map<string, number>();
+async function aprovadoNaMeta(accountId: string, nome: string): Promise<boolean> {
+  if (aprovados.has(nome)) return true;
+  if (Date.now() - (consultadoEm.get(nome) || 0) < 15 * 60_000) return false;
+  consultadoEm.set(nome, Date.now());
   try {
     const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
-    const t = (await listMetaTemplates(accountId)).find((x: any) => x?.name === PROSSEGUIR_TEMPLATE);
-    aprovadoNaMeta = String(t?.status || '').toUpperCase() === 'APPROVED';
-  } catch (e: any) { console.error('[Prosseguir] status do template na Meta:', e?.message || e); }
-  return aprovadoNaMeta;
+    const t = (await listMetaTemplates(accountId)).find((x: any) => x?.name === nome);
+    if (String(t?.status || '').toUpperCase() === 'APPROVED') aprovados.add(nome);
+  } catch (e: any) { console.error(`[Prosseguir] status do template ${nome} na Meta:`, e?.message || e); }
+  return aprovados.has(nome);
 }
+const templateAprovado = (accountId: string) => aprovadoNaMeta(accountId, PROSSEGUIR_TEMPLATE);
 
 /** Poller (1 min): a campanha de 28/10 e o reenvio depois de 3 lembretes de documentação sem resposta. */
 let botoesAcertados = false;
@@ -141,7 +165,7 @@ export async function processProsseguir(accountId: string, io?: Io): Promise<voi
       if (lembretes.length < LEMBRETES_ANTES_DE_REPETIR || Date.now() - lembretes[0].createdAt.getTime() < 3 * DIA || conversando) continue;
       motivo = `${lembretes.length} lembretes de documentação depois do "Sim" e a documentação não completou`;
     } else continue; // já perguntou e ele ainda não respondeu: o lembrete de documentos de sempre segue
-    if (await sendProsseguir(accountId, l.id, motivo, io)) enviados++;
+    if (await sendProsseguir(accountId, l.id, motivo, io, { docs: true })) enviados++;
     await new Promise((r) => setTimeout(r, 1500));
   }
   if (enviados) console.log(`[Prosseguir] ${enviados} template(s) "${PROSSEGUIR_TEXT}" enviado(s)`);

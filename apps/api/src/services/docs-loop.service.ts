@@ -7,7 +7,7 @@ import { logActivity } from './activity.service';
  *  - Dia 3 na etapa: Template 1 · dia 6: Template 2 · dia 9: Template 3 · dias 12, 13 e 14: "Ainda deseja prosseguir?" · espera 3 dias · Template 1 de novo…
  *  - Conversa de verdade no meio (mensagem do cliente no WhatsApp ou da equipe escrita à mão): o loop recomeça do Template 1 depois de 2 dias parado.
  *  - Cliente disse até quando manda (`_docsPrazo`, ver docs-checker.maybeScheduleDocsFollowUp): espera essa data.
- *  - "Não tenho interesse" → Perdido (no-interest.service); "Sim, tenho interesse" é conversa (recomeça); pediu pra parar → sai do loop (prosseguir.processPediuParar).
+ *  - "Não tenho interesse" / "Não quero continuar" → Perdido (no-interest.service); "Sim, tenho interesse" / "Sim, continuar" é conversa (recomeça); pediu pra parar → sai do loop (prosseguir.processPediuParar).
  *  - Só entra no ar quando a Meta aprovar os 3 templates de Utilidade; a partir daí as automações antigas de lembrete (regras INACTIVITY de Aguardando
  *    Documentação) e a campanha do "Ainda deseja prosseguir?" param sozinhas (docLoopAtivo).
  *  Cada Template vai com um e-mail com visual próprio. Com a janela de 24 h aberta, o texto sai como mensagem comum com os mesmos botões (não paga template). */
@@ -141,7 +141,7 @@ export async function clienteEsperandoResposta(leadId: string): Promise<{ id: st
 }
 
 /** Entrega do lembrete automático mandado em `ultimo` (o "aceito" da API pode virar FAILED depois, pelo webhook): 'FALHOU' com o motivo, 'CHEGOU' (entregue/lido) ou 'ESPERA' (ainda só enviado). */
-const TEMPLATES_DO_LOOP = new Set<string>([...LEMBRETES.map((l) => l.template), 'ainda_deseja_prosseguir']);
+const TEMPLATES_DO_LOOP = new Set<string>([...LEMBRETES.map((l) => l.template), 'ainda_deseja_prosseguir', 'docs_deseja_continuar']);
 async function entregaDoLembrete(leadId: string, ultimo: Date): Promise<{ r: 'FALHOU'; motivo: string } | { r: 'CHEGOU' | 'ESPERA' }> {
   // Só a mensagem do PRÓPRIO lembrete (template do loop ou o texto dele com a janela aberta), enviada antes de `ultimoAt` (que é gravado depois do WhatsApp e do e-mail):
   // a resposta da IA a um botão tocado logo depois não conta.
@@ -276,7 +276,7 @@ export async function processDocLoop(accountId: string, io?: Io): Promise<void> 
 async function enviarPasso(accountId: string, leadId: string, leadName: string, cf: Record<string, any>, passo: Passo, io: Io): Promise<boolean> {
   if (passo.tipo === 'PROSSEGUIR') {
     const { sendProsseguir } = require('./prosseguir.service') as typeof import('./prosseguir.service');
-    return sendProsseguir(accountId, leadId, 'loop de lembretes de documentação', io);
+    return sendProsseguir(accountId, leadId, 'loop de lembretes de documentação', io, { docs: true });
   }
   const lembrete = LEMBRETES[passo.tipo];
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');

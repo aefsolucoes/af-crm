@@ -17,7 +17,8 @@ import { logActivity } from './activity.service';
  */
 
 
-const NO_INTEREST_RE = /^n[ãa]o,?\s*(tenho\s+(mais\s+)?interesse|obrigad[oa])\b/i;
+// "Não quero continuar" = botão do docs_deseja_continuar (versão de Utilidade do "Ainda deseja prosseguir", Fabio 20/11).
+const NO_INTEREST_RE = /^n[ãa]o,?\s*(tenho\s+(mais\s+)?interesse|obrigad[oa]|quero\s+continuar)\b/i;
 // Trecho da pergunta do motivo (a mesma frase que o Fabio usa à mão).
 const REASON_QUESTION_MARK = 'motivo do seu desinteresse';
 
