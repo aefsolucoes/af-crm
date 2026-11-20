@@ -1114,6 +1114,19 @@ model CertidaoRequest {
 
 // Uso da API da Anthropic por dia × função × modelo (Fabio 16/10: "por que anda cobrando tanto?"). Alimentado por lib/anthropic-usage.ts a cada chamada
 // (agregado em memória, gravado a cada minuto). "feature" vem do arquivo/função que chamou (ex.: ai-auto-reply:generateAiAutoReply). Dia em Brasília.
+// Leitura de cada documento pela ficha de cadastro (Fabio 20/11, "corrige"): a ficha relida e a dos vendedores reaproveitam a leitura do arquivo que já leram
+// (mesmo arquivo do Drive — a organização da pasta só move, o id não muda) e só mandam pra IA o arquivo novo. Antes cada ficha relia a pasta inteira do zero
+// (Fernanda Karita: 44 fichas × 28 arquivos em novembro). `leitura` = o JSON do leitor, já com os nomes conferidos da identidade.
+model FichaLeitura {
+  leadId      String
+  driveFileId String
+  fileName    String
+  leitura     Json
+  createdAt   DateTime @default(now())
+
+  @@id([leadId, driveFileId])
+}
+
 model AiUsage {
   day              String
   feature          String

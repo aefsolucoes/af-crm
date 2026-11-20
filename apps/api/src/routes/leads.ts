@@ -1274,7 +1274,8 @@ router.post('/:id/ficha-cadastral', async (req: AuthRequest, res: Response) => {
   if (!lead) return res.status(404).json({ error: 'Lead não encontrado' });
   // Leva 1–3 min (um arquivo por vez na IA): responde já e a anotação aparece no card quando terminar.
   res.status(202).json({ started: true });
-  gerarFichaCadastral(req.user!.accountId, lead.id, { userId: req.user!.id, io: req.app.get('io') })
+  // Botão da equipe: relê TODOS os arquivos (a releitura automática reaproveita a leitura guardada de cada arquivo — Fabio 20/11).
+  gerarFichaCadastral(req.user!.accountId, lead.id, { userId: req.user!.id, io: req.app.get('io'), relerTudo: true })
     .then((erro) => { if (erro && !/sendo lida/.test(erro)) prisma.note.create({ data: { leadId: lead.id, userId: req.user!.id, type: 'COMMENT', content: `📋 Ficha de cadastro não gerada: ${erro}.` } }).catch(() => {}); })
     .catch((e) => console.error('[Ficha cadastral]', e?.message));
 });

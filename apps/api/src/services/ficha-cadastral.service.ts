@@ -11,7 +11,9 @@ import { comEmissaoDoRg } from './rg-emissao';
  *    Sem pasta: os anexos que o cliente mandou na conversa (Fabio 31/10).
  *  - Cada arquivo é lido sozinho (o que está escrito, nunca inventado); depois uma consolidação junta por pessoa, aponta o que falta e o que diverge.
  *  - Grava `_fichaCadastral` no card (o que a extensão lê) e uma ANOTAÇÃO legível com os mesmos dados. Telefone/e-mail vêm do card (documento não tem).
- *  - Roda sozinho quando o card chega em "Documentação Recebida" (uma vez) e pelo botão/rota (POST /api/leads/:id/ficha-cadastral) quando chegar documento novo. */
+ *  - Roda sozinho quando o card chega em "Documentação Recebida" (uma vez) e pelo botão/rota (POST /api/leads/:id/ficha-cadastral) quando chegar documento novo.
+ *  - A leitura de cada arquivo fica guardada (tabela FichaLeitura, por card × arquivo do Drive): ficha relida só manda pra IA o arquivo novo, e a releitura
+ *    automática só acontece com arquivo pessoal que o card ainda não leu (Fabio 20/11: "corrige" — a ficha relia a pasta inteira a cada reorganização). */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 type Arquivo = { id: string; name: string; mimeType: string; path: string; size: number };
@@ -308,6 +310,62 @@ async function lerArquivo(accountId: string, f: Arquivo): Promise<any | null> {
   return chamarIA(SYSTEM_DOC, content, 8192);
 }
 
+/** Lê os arquivos REAPROVEITANDO a leitura guardada (FichaLeitura, Fabio 20/11): só o arquivo que este card ainda não leu vai pra IA, 4 de cada vez. A organização
+ *  da pasta só MOVE o arquivo no Drive (o id não muda), então a mesma leitura vale. `relerTudo` (botão da equipe): lê tudo de novo. Devolve na ordem de
+ *  `arquivos`; `nova` = lida agora (guardar com `guardarLeituras` depois de conferir os nomes). */
+async function lerComReaproveitamento(accountId: string, leadId: string, arquivos: Arquivo[], relerTudo = false): Promise<{ f: Arquivo; leitura: any | null; nova: boolean }[]> {
+  const salvas = new Map<string, unknown>();
+  if (!relerTudo && arquivos.length) {
+    const rows = await prisma.fichaLeitura.findMany({ where: { leadId, driveFileId: { in: arquivos.map((f) => f.id) } }, select: { driveFileId: true, leitura: true } }).catch(() => []);
+    for (const r of rows) salvas.set(r.driveFileId, r.leitura);
+  }
+  const novas = new Map<string, any>();
+  const faltam = arquivos.filter((f) => !salvas.has(f.id));
+  for (let i = 0; i < faltam.length; i += 4) {
+    const lote = faltam.slice(i, i + 4);
+    const r = await Promise.all(lote.map((f) => lerArquivo(accountId, f).catch(() => null)));
+    lote.forEach((f, k) => novas.set(f.id, r[k]));
+  }
+  return arquivos.map((f) => (salvas.has(f.id) ? { f, leitura: JSON.parse(JSON.stringify(salvas.get(f.id))), nova: false } : { f, leitura: novas.get(f.id) ?? null, nova: true }));
+}
+
+/** Guarda as leituras NOVAS que deram certo (com `pessoas`). A que falhou não fica: tenta de novo na próxima ficha. */
+async function guardarLeituras(leadId: string, itens: { f: Arquivo; leitura: any; nova: boolean }[]): Promise<void> {
+  for (const x of itens) {
+    if (!x.nova || !x.leitura || !Array.isArray(x.leitura.pessoas)) continue;
+    const data = { fileName: x.f.name.slice(0, 250), leitura: x.leitura };
+    await prisma.fichaLeitura.upsert({ where: { leadId_driveFileId: { leadId, driveFileId: x.f.id } }, create: { leadId, driveFileId: x.f.id, ...data }, update: { ...data, createdAt: new Date() } })
+      .catch((e: any) => console.error('[Ficha cadastral] guardar leitura:', e?.message));
+  }
+}
+
+/** Os arquivos pessoais que a ficha lê: da pasta do Drive ou, sem ela (ou com a pasta do cadastro ainda crua), os da conversa + os que a equipe anexou. */
+async function arquivosDaFicha(accountId: string, leadId: string, cf: Record<string, any>): Promise<{ arquivos: Arquivo[]; link: string }> {
+  // Link "cru" (a pasta dos anexos ligada ao card pro cadastro da CAIXA): lê como card sem pasta — conversa + o que a equipe anexou.
+  const link = pastaDoCadastroCrua(cf) ? '' : String(cf.link_pasta_drive || '').trim();
+  const google = await import('./google.service');
+  // Com a pasta, os anexos da conversa já estão nela (organizados). Sem a pasta (Fabio 31/10: "o CRM deve coletar os dados para o cadastro através da
+  // documentação encaminhada na própria conversa"): os anexos que o cliente mandou na conversa, que ficam no Drive pelo driveFileId.
+  const todos: Arquivo[] = link ? await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3) : [...(await anexosDaConversa(leadId)), ...documentosDaEquipe(cf)];
+  return { arquivos: arquivosPessoais(todos), link };
+}
+
+/** Ficha já feita: tem arquivo pessoal que o card ainda não leu (nem tentou ler na última ficha)? Erro no Drive = sim (segue o caminho antigo). */
+async function temArquivoNovo(accountId: string, leadId: string): Promise<boolean> {
+  try {
+    const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+    const cf = (lead?.customFields || {}) as Record<string, any>;
+    const { arquivos } = await arquivosDaFicha(accountId, leadId, cf);
+    if (!arquivos.length) return false;
+    const tentados = Array.isArray(cf._fichaCadastral?.naoLidosIds) ? (cf._fichaCadastral.naoLidosIds as unknown[]).map(String) : [];
+    const conhecidos = new Set<string>([...(await prisma.fichaLeitura.findMany({ where: { leadId }, select: { driveFileId: true } })).map((x) => x.driveFileId), ...tentados]);
+    return arquivos.some((f) => !conhecidos.has(f.id));
+  } catch (e: any) {
+    console.error('[Ficha cadastral] arquivo novo?', e?.message);
+    return true;
+  }
+}
+
 const SYSTEM_NOMES = `Você confere a GRAFIA dos nomes impressos num documento de identidade brasileiro (RG, CIN ou CNH). As imagens são recortes ampliados do MESMO documento em quatro orientações (0°, 90°, 180° e 270°): o RG antigo aberto costuma vir deitado, com o texto de cada página virado pra um lado. Use SÓ os recortes em que o texto que você vai ler está DE PÉ e leia LETRA POR LETRA — letras parecidas enganam (m/n, rn/m, i/l, u/v, c/e, a/o, h/b). Copie o que está impresso, sem corrigir nem completar, mesmo que o nome pareça incomum.
 Responda SOMENTE com JSON, sem texto antes ou depois:
 {"soletrado":{"nome":"<letra por letra, com hífen entre as letras e espaço entre as palavras>","pai":"...","mae":"..."},"nome":"<nome do titular>","pai":"<nome do pai>","mae":"<nome da mãe>"}
@@ -317,10 +375,11 @@ Nome que o documento não traz ou que você não consegue ler com segurança = n
  *  a releitura e o que os outros documentos trazem (Fabio 12/11: o RG escaneado deitado foi lido "Rosa Belen" duas vezes; no documento, na certidão de casamento
  *  e na CAIXA é "Rosa Belem" — a ficha ficava com o erro e o cadastro ia trocar o nome certo da CAIXA). Corrige a própria leitura, antes da junção; o que mudou
  *  vai na observação dela. PDF de texto (CNH digital) não tem foto pra reler e fica como está. */
-export async function conferirNomesDasIdentidades(accountId: string, lidos: { f: Arquivo; leitura: any }[], nomesDoCard: string[]): Promise<void> {
+export async function conferirNomesDasIdentidades(accountId: string, lidos: { f: Arquivo; leitura: any }[], nomesDoCard: string[], soArquivos?: Set<string>): Promise<void> {
   const { recortesDePe, grafiaMaisVotada, mesmoNome, quaseOMesmoNome } = require('./identidade-de-pe') as typeof import('./identidade-de-pe');
   const google = await import('./google.service');
   const ids = lidos
+    .filter((x) => !soArquivos || soArquivos.has(x.f.id)) // a leitura guardada já foi conferida (Fabio 20/11)
     .filter((x) => /^(RG|CNH)$/i.test(String(x.leitura?.tipo || '').trim()) && Array.isArray(x.leitura.pessoas) && x.leitura.pessoas.length === 1)
     .filter((x) => (x.f.mimeType === 'application/pdf' ? x.f.size <= MAX_PDF : /^image\//.test(x.f.mimeType)))
     .slice(0, 6);
@@ -495,7 +554,7 @@ export function conferirDatasECargo(participantes: any[]): string[] {
   return out;
 }
 
-export async function gerarFichaCadastral(accountId: string, leadId: string, opts: { userId?: string | null; io?: Io } = {}): Promise<string | null> {
+export async function gerarFichaCadastral(accountId: string, leadId: string, opts: { userId?: string | null; io?: Io; relerTudo?: boolean } = {}): Promise<string | null> {
   if (!process.env.ANTHROPIC_API_KEY) return 'IA indisponível';
   if (emAndamento.has(leadId)) return 'A ficha deste cliente já está sendo lida';
   emAndamento.add(leadId);
@@ -505,27 +564,24 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     const cf = (lead.customFields || {}) as Record<string, any>;
     // Cônjuge como participante da ficha só no cadastro da CAIXA (Fabio 12/11) — fora dele (Inter, Santander, Creditas, Itaú…) a ficha fica só com os participantes do card.
     const cadastroCaixa = !!cf._caixaRota || !!cf._caixaCadastro || !!cf._optouCaixa?.banco || !!cf._fhDocsCompradorAt || !!cf._caixaDocsAt || /^an[aá]lise\s+caixa/i.test(String(lead.stage?.name || ''));
-    // Link "cru" (a pasta dos anexos ligada ao card pro cadastro da CAIXA): lê como card sem pasta — conversa + o que a equipe anexou.
-    const link = pastaDoCadastroCrua(cf) ? '' : String(cf.link_pasta_drive || '').trim();
-    const google = await import('./google.service');
-    // Com a pasta, os anexos da conversa já estão nela (organizados). Sem a pasta (Fabio 31/10: "o CRM deve coletar os dados para o cadastro através da
-    // documentação encaminhada na própria conversa"): os anexos que o cliente mandou na conversa, que ficam no Drive pelo driveFileId.
-    const todos: Arquivo[] = link ? await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3) : [...(await anexosDaConversa(leadId)), ...documentosDaEquipe(cf)];
-    const arquivos = arquivosPessoais(todos);
+    const { arquivos, link } = await arquivosDaFicha(accountId, leadId, cf);
     if (!arquivos.length) return link ? 'Não achei documento pessoal (PDF/foto) na pasta do Drive' : 'O card não tem a pasta do Drive nem documento (PDF/foto) na conversa';
     const origem = link ? 'da pasta do Drive' : documentosDaEquipe(cf).length ? 'anexados pela equipe/enviados na conversa' : 'enviados na conversa';
 
-    // 1) Cada arquivo sozinho, 4 de cada vez.
+    // 1) Cada arquivo sozinho, 4 de cada vez — o que este card já leu (mesmo arquivo do Drive) vem guardado, sem IA (Fabio 20/11: cada ficha relia a pasta
+    //    inteira; Fernanda Karita teve 44 fichas × 28 arquivos em novembro). O botão da equipe (relerTudo) lê tudo de novo.
+    const lidosAgora = await lerComReaproveitamento(accountId, leadId, arquivos, !!opts.relerTudo);
     const leituras: { arquivo: string; leitura: any }[] = [];
     const comArquivo: { f: Arquivo; leitura: any }[] = [];
     const naoLidos: string[] = [];
-    for (let i = 0; i < arquivos.length; i += 4) {
-      const lote = arquivos.slice(i, i + 4);
-      const r = await Promise.all(lote.map((f) => lerArquivo(accountId, f).catch(() => null)));
-      r.forEach((leitura, k) => { if (leitura && Array.isArray(leitura.pessoas)) { leituras.push({ arquivo: lote[k].name, leitura }); comArquivo.push({ f: lote[k], leitura }); } else naoLidos.push(lote[k].name); });
+    const naoLidosIds: string[] = [];
+    for (const { f, leitura } of lidosAgora) {
+      if (leitura && Array.isArray(leitura.pessoas)) { leituras.push({ arquivo: f.name, leitura }); comArquivo.push({ f, leitura }); } else { naoLidos.push(f.name); naoLidosIds.push(f.id); }
     }
-    // 1b) RG/CNH em foto: os nomes (titular, pai e mãe) relidos com o documento de pé e ampliado, antes de juntar (Fabio 12/11: "Belem" lido "Belen").
-    await conferirNomesDasIdentidades(accountId, comArquivo, [1, 2, 3].map((n) => String(cf[`participante_${n}`] || '')).filter(Boolean));
+    // 1b) RG/CNH em foto: os nomes (titular, pai e mãe) relidos com o documento de pé e ampliado, antes de juntar (Fabio 12/11: "Belem" lido "Belen"). Só os lidos
+    //     agora — a leitura guardada já saiu conferida. Depois guarda as novas (já com os nomes corrigidos).
+    await conferirNomesDasIdentidades(accountId, comArquivo, [1, 2, 3].map((n) => String(cf[`participante_${n}`] || '')).filter(Boolean), new Set(lidosAgora.filter((x) => x.nova).map((x) => x.f.id)));
+    await guardarLeituras(leadId, lidosAgora);
     const pessoais = leituras.filter((x) => !/DOCUMENTO DO IMOVEL/i.test(String(x.leitura.tipo || '')));
     if (!pessoais.length) return 'Não consegui ler nenhum documento pessoal da pasta';
 
@@ -551,7 +607,7 @@ export async function gerarFichaCadastral(accountId: string, leadId: string, opt
     ficha.conflitos.push(...conferirDatasECargo(ficha.participantes));
 
     const agora = new Date();
-    const registro = { at: agora.toISOString(), usaFgts, participantes: ficha.participantes, conflitos: Array.isArray(ficha.conflitos) ? ficha.conflitos : [], observacao: String(ficha.observacao || ''), arquivos: pessoais.map((x) => ({ nome: x.arquivo, tipo: x.leitura.tipo })), naoLidos };
+    const registro = { at: agora.toISOString(), usaFgts, participantes: ficha.participantes, conflitos: Array.isArray(ficha.conflitos) ? ficha.conflitos : [], observacao: String(ficha.observacao || ''), arquivos: pessoais.map((x) => ({ nome: x.arquivo, tipo: x.leitura.tipo })), naoLidos, naoLidosIds };
     const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...((fresh?.customFields || {}) as Record<string, unknown>), _fichaCadastral: registro } as any } });
     // A renda bruta lida dos comprovantes vai pro card (Fabio 05/11).
@@ -696,7 +752,8 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
         AND COALESCE(l."customFields"->>'link_pasta_drive', '') LIKE 'http%'
         AND ((s.name ILIKE '%Documentação Recebida%' AND l."customFields"->'_fichaCadastral' IS NULL)
           -- Ficha com dado faltando + documento novo organizado na pasta depois dela → lê de novo, em qualquer etapa da contratação (Fabio 29/10: RG/CNH da Bianca chegando depois).
-          OR (l."customFields"->>'_driveOrganizedAt' > l."customFields"->'_fichaCadastral'->>'at'
+          -- (_fichaSemNovoAt: o CRM já olhou a pasta depois da ficha e não tinha arquivo novo — Fabio 20/11)
+          OR (l."customFields"->>'_driveOrganizedAt' > GREATEST(l."customFields"->'_fichaCadastral'->>'at', COALESCE(l."customFields"->>'_fichaSemNovoAt', ''))
             AND jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
             AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
               WHERE jsonb_typeof(fp->'faltando') = 'array' AND jsonb_array_length(fp->'faltando') > 0))))
@@ -716,10 +773,10 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
         OR (l."customFields"->'_fichaCadastral'->>'at' IS NOT NULL
           AND (l."customFields"->'_caixaRota' IS NOT NULL OR s.name ILIKE 'An_lise CAIXA%' OR l."customFields"->'_rendaCasal'->>'status' = 'OS_DOIS')
           AND (EXISTS (SELECT 1 FROM "MessageAttachment" a JOIN "Message" m ON m.id = a."messageId"
-              WHERE a."leadId" = l.id AND m.direction = 'INBOUND' AND a."mimeType" !~ '^(audio|video)/' AND a."createdAt" > (l."customFields"->'_fichaCadastral'->>'at')::timestamptz)
+              WHERE a."leadId" = l.id AND m.direction = 'INBOUND' AND a."mimeType" !~ '^(audio|video)/' AND a."createdAt" > NULLIF(GREATEST(l."customFields"->'_fichaCadastral'->>'at', COALESCE(l."customFields"->>'_fichaSemNovoAt', '')), '')::timestamptz)
             -- documento que a equipe anexou no card depois da ficha (datas em ISO: comparam como texto)
             OR (jsonb_typeof(l."customFields"->'_documentosEquipe') = 'array'
-              AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_documentosEquipe') de WHERE de->>'em' > l."customFields"->'_fichaCadastral'->>'at')))
+              AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_documentosEquipe') de WHERE de->>'em' > GREATEST(l."customFields"->'_fichaCadastral'->>'at', COALESCE(l."customFields"->>'_fichaSemNovoAt', '')))))
           AND (l."customFields"->'_rendaCasal'->>'status' = 'OS_DOIS'
             OR (jsonb_typeof(l."customFields"->'_fichaCadastral'->'participantes') = 'array'
               AND EXISTS (SELECT 1 FROM jsonb_array_elements(l."customFields"->'_fichaCadastral'->'participantes') fp
@@ -734,6 +791,12 @@ export async function processFichasCadastrais(accountId: string, io?: Io): Promi
 async function rodar(accountId: string, leadId: string, io: Io): Promise<void> {
   const antes = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const psAntes = ((antes?.customFields || {}) as Record<string, any>)._fichaCadastral?.participantes;
+  // Ficha já feita (releitura automática): só gera de novo com arquivo pessoal que o card ainda não leu (Fabio 20/11 — a pasta é reorganizada a cada conferência
+  // de documentos e a ficha relia tudo mesmo sem documento novo). Sem arquivo novo: marca `_fichaSemNovoAt` e o poller só volta quando mexerem na pasta de novo.
+  if (Array.isArray(psAntes) && !(await temArquivoNovo(accountId, leadId))) {
+    await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_fichaSemNovoAt}', ${JSON.stringify(new Date().toISOString())}::jsonb, true) WHERE id = ${leadId}`.catch(() => {});
+    return;
+  }
   const erro = await gerarFichaCadastral(accountId, leadId, { io }).catch((e: any) => e?.message || 'erro');
   if (!erro) {
     if (Array.isArray(psAntes)) {
@@ -761,7 +824,10 @@ export async function lerVendedores(accountId: string, leadId: string): Promise<
   const todos = (await google.listAllFilesInFolderTree(accountId, google.extractFolderId(link), 3)) as Arquivo[];
   const arquivos = todos.filter((f) => /vendedor/.test(norm(f.path)) && /pdf|^image\//.test(f.mimeType)).slice(0, 12);
   if (!arquivos.length) return null;
-  const leituras = (await Promise.all(arquivos.map((f) => lerArquivo(accountId, f).catch(() => null)))).filter((l) => l && Array.isArray(l.pessoas));
+  // Leitura guardada por arquivo (Fabio 20/11): só o documento do vendedor que ainda não foi lido vai pra IA.
+  const lidosV = await lerComReaproveitamento(accountId, leadId, arquivos);
+  await guardarLeituras(leadId, lidosV);
+  const leituras = lidosV.map((x) => x.leitura).filter((l) => l && Array.isArray(l.pessoas));
   const porPessoa = new Map<string, any>();
   const funde = (a: any, b: any): any => {
     if (a === null || a === undefined || a === '') return b;
