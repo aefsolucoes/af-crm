@@ -603,7 +603,12 @@ export function bancoDoEmail(texto: string): 'INTER' | 'CREDITAS' | 'CREDIMORAR'
 }
 
 
-export function buildContextBlocks(ctx: SharedAiContext): string {
+/** Bloco das respostas rápidas do setor (mesmo texto na resposta ao cliente, onde vai pro cache, e nos outros usos). */
+export const respostasRapidasBloco = (texto: string) => `--- RESPOSTAS RÁPIDAS (modelos prontos da equipe — use o conteúdo fielmente quando bater) ---
+${texto}`;
+
+/** `semRespostasRapidas`: a resposta ao cliente põe as respostas rápidas no bloco em cache (iguais pra todo o setor — Fabio 20/11); os outros usos seguem com elas aqui. */
+export function buildContextBlocks(ctx: SharedAiContext, opts: { semRespostasRapidas?: boolean } = {}): string {
   return `--- ${todayContextLine()} ---
 
 --- NOME DO CLIENTE ---
@@ -631,10 +636,9 @@ ${ctx.estiloTexto}
 --- BASE DE CONHECIMENTO (material de referência) ---
 ${ctx.contextoTexto}
 
---- RESPOSTAS RÁPIDAS (modelos prontos da equipe — use o conteúdo fielmente quando bater) ---
-${ctx.respostasRapidasTexto}
+${opts.semRespostasRapidas ? '' : `${respostasRapidasBloco(ctx.respostasRapidasTexto)}
 
---- HISTÓRICO DESTA CONVERSA ---
+`}--- HISTÓRICO DESTA CONVERSA ---
 ${ctx.historicoTexto}`;
 }
 

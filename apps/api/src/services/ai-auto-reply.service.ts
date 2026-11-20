@@ -2,7 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { fixedRule, fixedRules } from './fixed-rules.service';
 import { cachedSystem } from '../lib/anthropic-usage';
-import { buildSharedAiContext, buildContextBlocks, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
+import { buildSharedAiContext, buildContextBlocks, respostasRapidasBloco, buildFillableFieldsText, aiEmailsContext, EMAIL_RELAY_RULES, CORE_RULES, stripOpeningInterjection } from './ai-shared.service';
 import { type AlvoCitacao, normalizarRefCitacao, resolverCitacao, semRefsNoTexto } from './ai-citacao';
 import { aiCreditContext, refreshAnalysesForAi } from './credit-analysis.service';
 import { teamQuestionsContext } from './ai-team-question.service';
@@ -813,11 +813,7 @@ ${R.NO_REPLY_RULES}
 ${R.REPLY_QUOTE_RULES}`;
     const systemDynamic = `${opts.retomada ? `${opts.retomada}\n\n` : opts.sugestao ? 'MODO SUGESTÃO: a equipe pediu uma sugestão de resposta pra mandar à mão. Escreva SEMPRE a "reply" com a melhor mensagem pro cliente agora ("noReply": false), mesmo que normalmente você ficasse quieta ou levasse a dúvida pra equipe — nesse caso escreva o que a equipe pode responder. As ações do JSON não serão aplicadas.\n\n' : ''}${ventaFuturaRules(hojeTxt, retomadaTxt, naVendaFutura, vfAprovado, String(((vfLead?.customFields || {}) as Record<string, any>)._vendaFuturaDe || '') || null)}
 
-${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildFillFieldsRules(camposTexto)}
-
-${OUTPUT_FORMAT}
-
-${buildContextBlocks(ctx)}${reentrada ? `
+${chegando ? R.DOCS_ARRIVING_RULES + '\n\n' : ''}${documentos ? DOCS_REVIEW_RULES + '\n\n' : ''}${buildContextBlocks(ctx, { semRespostasRapidas: true })}${reentrada ? `
 
 ${reentrada}` : ''}${cessao ? `
 
@@ -848,7 +844,14 @@ ${duvidasEquipe}` : ''}${ligacao ? `
 ${ligacao}` : ''}${conversasPorTelefone ? `
 
 ${conversasPorTelefone}` : ''}`;
-    const systemPrompt = `${systemFixed}\n\n${systemDynamic}`; // texto completo (só pra referência)
+    // Parte IGUAL PRA TODO O SETOR (Fabio 20/11, "onde mais dá pra economizar"): campos do card, formato da resposta e respostas rápidas — ~7 mil tokens que iam
+    // sem cache em toda resposta. Vai num 2º bloco em cache, logo depois das regras fixas (as regras seguem valendo pra todos os setores).
+    const systemSetor = `${buildFillFieldsRules(camposTexto)}
+
+${OUTPUT_FORMAT}
+
+${respostasRapidasBloco(ctx.respostasRapidasTexto)}`;
+    const systemPrompt = `${systemFixed}\n\n${systemSetor}\n\n${systemDynamic}`; // texto completo (só pra referência)
 
     // Até 2 tentativas: resposta fora do formato (sem JSON, JSON quebrado) ou com cara de RACIOCÍNIO INTERNO nunca vai ao cliente (Fabio 26/10, Selma: "isso não deve existir de forma alguma").
     const { pareceRaciocinio } = require('./ai-shared.service') as typeof import('./ai-shared.service');
@@ -877,7 +880,7 @@ ${conversasPorTelefone}` : ''}`;
           ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
           ...(opts.esforco ? { output_config: { effort: opts.esforco } } : estourou ? { output_config: { effort: 'low' } } : {}),
           // Regras fixas no cache por 1 h (Fabio 20/11, "faz o cache"): com 5 min, 1 em cada 3 respostas pagava pra gravar as ~38 mil palavras das regras de novo.
-          system: cachedSystem(systemFixed, systemDynamic, '1h'),
+          system: cachedSystem([systemFixed, systemSetor], systemDynamic, '1h'),
           messages: [{
             role: 'user',
             content: images.length

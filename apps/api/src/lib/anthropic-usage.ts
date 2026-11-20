@@ -12,9 +12,11 @@ type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'epheme
 
 /** `system` com a parte fixa em cache. Se não houver parte dinâmica, devolve só o bloco fixo.
  *  `ttl: '1h'`: o cache dura 1 hora em vez de 5 min — gravar custa 2× (em vez de 1,25×), mas quase não regrava. Vale pra quem chama várias vezes por hora
- *  (resposta ao cliente: só 6% das respostas vêm mais de 1 h depois da anterior, contra 26% depois de mais de 5 min — medido em 20/11). */
-export function cachedSystem(fixed: string, dynamic?: string, ttl?: '1h'): SystemBlock[] {
-  const out: SystemBlock[] = [{ type: 'text', text: fixed, cache_control: ttl ? { type: 'ephemeral', ttl } : { type: 'ephemeral' } }];
+ *  (resposta ao cliente: só 6% das respostas vêm mais de 1 h depois da anterior, contra 26% depois de mais de 5 min — medido em 20/11).
+ *  `fixed` em lista = um ponto de cache por bloco (até 3), do mais geral pro mais específico: ex.: regras iguais pra todos → bloco igual por setor (Fabio 20/11). */
+export function cachedSystem(fixed: string | string[], dynamic?: string, ttl?: '1h'): SystemBlock[] {
+  const out: SystemBlock[] = (Array.isArray(fixed) ? fixed : [fixed]).filter((t) => t && t.trim()).slice(0, 3)
+    .map((text) => ({ type: 'text' as const, text, cache_control: ttl ? { type: 'ephemeral' as const, ttl } : { type: 'ephemeral' as const } }));
   if (dynamic && dynamic.trim()) out.push({ type: 'text', text: dynamic });
   return out;
 }
