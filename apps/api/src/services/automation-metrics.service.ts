@@ -175,9 +175,10 @@ export async function automationMetrics(accountId: string, days: number) {
   const uso = await prisma.$queryRaw<any[]>(Prisma.sql`
     SELECT "feature", sum("calls")::int AS chamadas, sum("errors")::int AS erros, sum("inputTokens" + "cacheReadTokens" + "cacheWriteTokens")::bigint AS entrada, sum("outputTokens")::bigint AS saida
     FROM "AiUsage" WHERE "day" >= ${sinceDay} GROUP BY "feature" ORDER BY chamadas DESC LIMIT 12`);
-  // Gasto ESTIMADO com a Anthropic (preço de tabela suposto: Sonnet US$ 3/15 por milhão, Haiku 1/5; cache lido 10% e gravado 125% da entrada) — conferir o valor real no console da Anthropic.
+  // Gasto ESTIMADO com a Anthropic — mesmo preço do painel /custos (lib/anthropic-usage: Sonnet 5 US$ 2/10 por milhão calibrado no console em 20/11, Haiku 1/5; cache lido 10%, gravado 125%).
   const usoLinhas = await prisma.aiUsage.findMany({ where: { day: { gte: sinceDay } }, select: { day: true, feature: true, model: true, calls: true, inputTokens: true, outputTokens: true, cacheReadTokens: true, cacheWriteTokens: true } });
-  const usd = (r: (typeof usoLinhas)[number]) => { const pr = /haiku/i.test(r.model) ? { i: 1, o: 5 } : { i: 3, o: 15 }; return (r.inputTokens * pr.i + r.cacheReadTokens * pr.i * 0.1 + r.cacheWriteTokens * pr.i * 1.25 + r.outputTokens * pr.o) / 1e6; };
+  const { estimarUsd } = require('../lib/anthropic-usage') as typeof import('../lib/anthropic-usage');
+  const usd = (r: (typeof usoLinhas)[number]) => estimarUsd(r.model, r);
   const custoDia = new Map<string, { usd: number; calls: number }>();
   const custoFuncao = new Map<string, { usd: number; calls: number; entrada: number }>();
   for (const r of usoLinhas) {

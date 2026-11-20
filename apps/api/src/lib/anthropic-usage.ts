@@ -85,13 +85,22 @@ export async function flushAnthropicUsage(): Promise<void> {
   }
 }
 
-// Preço de tabela por 1 milhão de tokens (US$) — SUPOSIÇÃO pra estimar; confira no console da Anthropic. Leitura de cache = 10% da entrada, gravação = 125%.
+// Preço por 1 milhão de tokens (US$). Leitura de cache = 10% da entrada, gravação (5 min) = 125%.
+// Sonnet 5 = 2/10 — CALIBRADO no console da Anthropic (Fabio 20/11, "corrige a estimativa da tela de custos"): 1–20/11 o console mostrou 94,9 mi de entrada,
+// 57,4 mi de cache lido, 26,6 mi de cache gravado e 6,5 mi de saída = US$ 328,41 de tokens; com 2/10 dá US$ 332,71 (≈1% acima, a diferença é o Haiku, mais barato).
+// O 3/15 suposto antes dava US$ 499 — 46% acima. Os tokens que o CRM grava batem com o console (173 mi × 179 mi de entrada; o console inclui o próprio console).
+// Modelo com data no fim (claude-haiku-4-5-20251001) cai no preço da família pelo prefixo.
 const PRECO: Record<string, { in: number; out: number }> = {
-  'claude-sonnet-5': { in: 3, out: 15 },
+  'claude-sonnet-5': { in: 2, out: 10 },
   'claude-haiku-4-5': { in: 1, out: 5 },
 };
+export const precoDoModelo = (model: string) => {
+  const m = String(model || '');
+  const k = Object.keys(PRECO).find((x) => m === x || m.startsWith(`${x}-`));
+  return PRECO[k || ''] || (/haiku/i.test(m) ? PRECO['claude-haiku-4-5'] : PRECO['claude-sonnet-5']);
+};
 export const estimarUsd = (model: string, r: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheWriteTokens: number }) => {
-  const p = PRECO[model] || PRECO['claude-sonnet-5'];
+  const p = precoDoModelo(model);
   return (r.inputTokens * p.in + r.cacheReadTokens * p.in * 0.1 + r.cacheWriteTokens * p.in * 1.25 + r.outputTokens * p.out) / 1_000_000;
 };
 

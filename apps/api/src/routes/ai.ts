@@ -37,7 +37,7 @@ Não reescreva: mantenha as palavras, a ordem, o tom e o tamanho do texto; mude 
 Devolva SOMENTE o texto corrigido, sem aspas e sem explicação.`,
 };
 
-// Uso da API da Anthropic por dia × função × modelo (só administrador) — ver lib/anthropic-usage.ts. `estUsd` usa preço de tabela SUPOSTO (confira no console da Anthropic).
+// Uso da API da Anthropic por dia × função × modelo (só administrador) — ver lib/anthropic-usage.ts. `estUsd` usa o preço calibrado no console da Anthropic (lib/anthropic-usage, 20/11).
 router.get('/usage', async (req: AuthRequest, res: Response) => {
   if (req.user?.role !== 'ADMIN') { res.status(403).json({ error: 'Só administrador' }); return; }
   try { res.json(await usageReport(Number(req.query.days) || 7)); } catch (err: any) { res.status(500).json({ error: err?.message || 'Erro ao ler o uso' }); }
