@@ -876,7 +876,8 @@ ${conversasPorTelefone}` : ''}`;
           max_tokens: 8192,
           ...(semCorte ? {} : { stop_sequences: ['"noReply"'] }),
           ...(opts.esforco ? { output_config: { effort: opts.esforco } } : estourou ? { output_config: { effort: 'low' } } : {}),
-          system: cachedSystem(systemFixed, systemDynamic),
+          // Regras fixas no cache por 1 h (Fabio 20/11, "faz o cache"): com 5 min, 1 em cada 3 respostas pagava pra gravar as ~38 mil palavras das regras de novo.
+          system: cachedSystem(systemFixed, systemDynamic, '1h'),
           messages: [{
             role: 'user',
             content: images.length
