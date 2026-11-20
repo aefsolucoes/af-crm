@@ -631,3 +631,22 @@ export async function costsOverview(accountId: string, month: string, months = 6
     },
   };
 }
+
+// ── WhatsApp: envios por template no mês (Fabio 20/11, "tem como reduzir mais, alterando só templates e colocando utilidades?") ──
+/** Quantos envios cada template teve no mês (mensagens do CRM com templateName) + a categoria dele na Meta (MARKETING custa ~10× a UTILITY). */
+export async function whatsappTemplateSends(accountId: string, month: string): Promise<{ name: string; category: string | null; sent: number; failed: number }[]> {
+  const [y, m] = month.split('-').map(Number);
+  const from = new Date(Date.UTC(y, m - 1, 1, 3));
+  const to = new Date(Date.UTC(y, m, 1, 3));
+  const rows = await prisma.$queryRaw<{ name: string; sent: bigint; failed: bigint }[]>`
+    SELECT m."templateName" AS name, count(*) AS sent, count(*) FILTER (WHERE m.status = 'FAILED') AS failed
+    FROM "Message" m JOIN "Lead" l ON l.id = m."leadId"
+    WHERE l."accountId" = ${accountId} AND m.direction = 'OUTBOUND' AND m."templateName" IS NOT NULL AND m."createdAt" >= ${from} AND m."createdAt" < ${to}
+    GROUP BY 1 ORDER BY 2 DESC`;
+  const cats = new Map<string, string>();
+  try {
+    const { listMetaTemplates } = require('./whatsapp.service') as typeof import('./whatsapp.service');
+    for (const t of await listMetaTemplates(accountId)) cats.set(String(t.name), String(t.category || ''));
+  } catch { /* sem a Meta: categoria fica vazia */ }
+  return rows.map((r) => ({ name: r.name, category: cats.get(r.name) || null, sent: Number(r.sent), failed: Number(r.failed) }));
+}

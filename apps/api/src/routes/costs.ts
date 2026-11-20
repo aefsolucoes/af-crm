@@ -1,6 +1,6 @@
 import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
-import { costsOverview, createEntry, updateEntry, deleteEntry, setSettings, currentMonth, validMonth } from '../services/costs.service';
+import { costsOverview, whatsappTemplateSends, createEntry, updateEntry, deleteEntry, setSettings, currentMonth, validMonth } from '../services/costs.service';
 
 /** Painel de custos — só administrador (Fabio 22/10). */
 const router = Router();
@@ -22,6 +22,13 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   } catch (err) { fail(res, err, 'Erro ao calcular os custos'); }
 });
 
+// Envios por template de WhatsApp no mês, com a categoria na Meta (onde trocar Marketing por Utilidade).
+router.get('/whatsapp-templates', async (req: AuthRequest, res: Response) => {
+  try {
+    const month = validMonth(req.query.month) ? String(req.query.month) : currentMonth();
+    res.json(await whatsappTemplateSends(req.user!.accountId, month));
+  } catch (err) { fail(res, err, 'Erro ao contar os templates'); }
+});
 router.post('/entries', async (req: AuthRequest, res: Response) => {
   try { res.status(201).json(await createEntry(req.user!.accountId, req.user!.id, req.body || {})); } catch (err) { fail(res, err, 'Erro ao salvar o lançamento', 400); }
 });
