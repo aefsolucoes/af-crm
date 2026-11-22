@@ -1,5 +1,5 @@
 import { PrismaClient } from '@prisma/client';
-import { prisma } from '../lib/prisma';
+import { prisma, SEM_LIGACAO_TESTE } from '../lib/prisma';
 import { voiceNoteForAi } from './speech-to-text.service';
 import { searchKnowledge } from './knowledge.service';
 import { parseMoneyOrNumber } from './campaign-detection.service';
@@ -151,7 +151,7 @@ export async function buildSharedAiContext(
   // de cessão de direitos estava 4 dias e 12+ mensagens antes): a conversa inteira, do começo, com o dia de cada trecho e quem da EQUIPE escreveu.
   // Mensagem muito longa (proposta do site colada, texto de e-mail) entra cortada; num caso extremo, acima do teto, ficam as mais recentes.
   const recent = await prisma.message.findMany({
-    where: { leadId, channel: { not: 'EMAIL' } },
+    where: { leadId, channel: { not: 'EMAIL' }, ...SEM_LIGACAO_TESTE }, // ligação de teste (Fabio 21/11) não entra na conversa que a IA lê
     orderBy: { createdAt: 'desc' },
     take: opts.fullHistory ? 1500 : historyTake,
     ...(opts.fullHistory || opts.citaveis ? { include: { sentBy: { select: { name: true } } } } : {}),

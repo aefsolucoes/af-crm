@@ -1,15 +1,16 @@
-import { prisma } from '../lib/prisma';
+import { prisma, LIGACAO_TESTE_PREFIXO } from '../lib/prisma';
 import { sendPushToAccount } from './push.service';
 
 /* LIGAÇÃO RECEBIDA DE TESTE (Fabio 21/11: "quero que seja um card real, apenas uma simulação, colocando o CRM para tocar" — "só para Fabio";
  * "não precisa falar nada, apenas tocar até atender, quando atender, desliga").
  * O CRM toca como se o cliente do card estivesse ligando — a tela de ligação recebida e o push "Ligação recebida" — só nos aparelhos de quem disparou (administrador).
- * Nada vai pra Meta nem pro cliente: sem registro de ligação (Call) e sem mensagem na conversa — assim a "perdida" nunca manda o "vi sua ligação" pro cliente
- * e o histórico do card não muda. Atender ou recusar encerra; ninguém atendendo em 60 s, encerra sozinha. */
+ * Nada vai pra Meta nem pro cliente e não cria registro de ligação (Call) — assim a "perdida" nunca manda o "vi sua ligação" pro cliente.
+ * Fica registrada na conversa do card como uma ligação de verdade ("não deixe de registrar a ligação no inbox do cliente", "como se fosse uma ligação real") e numa
+ * nota; as regras automáticas e a IA não a enxergam (lib/prisma: SEM_LIGACAO_TESTE). Atender ou recusar encerra; ninguém atendendo em 60 s, encerra sozinha. */
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 export type LigacaoSimulada = { callId: string; waCallId: string; leadId: string; leadName: string; contactPhone: string; sdp: string; simulado: true };
-type Ativa = { payload: LigacaoSimulada; accountId: string; userId: string; timer: ReturnType<typeof setTimeout> };
+type Ativa = { payload: LigacaoSimulada; accountId: string; userId: string; timer: ReturnType<typeof setTimeout>; inicio: number };
 
 const TOCA_MS = 60_000;
 /** Uma por usuário (a nova substitui a anterior). */
@@ -20,11 +21,17 @@ export async function simularLigacaoRecebida(accountId: string, userId: string, 
   if (!lead) return null;
   const anterior = ativas.get(userId);
   if (anterior) await encerrarLigacaoSimulada(userId, anterior.payload.waCallId, 'Ligação de teste substituída', io);
-  const waCallId = `simulada_${Date.now().toString(36)}`;
+  const waCallId = `${LIGACAO_TESTE_PREFIXO}${Date.now().toString(36)}`;
   const leadName = lead.contact?.name || lead.name;
   const payload: LigacaoSimulada = { callId: waCallId, waCallId, leadId, leadName, contactPhone: String(lead.contact?.phone || ''), sdp: '', simulado: true };
   const timer = setTimeout(() => { encerrarLigacaoSimulada(userId, waCallId, 'Ligação de teste não atendida', io).catch(() => {}); }, TOCA_MS);
-  ativas.set(userId, { payload, accountId, userId, timer });
+  ativas.set(userId, { payload, accountId, userId, timer, inicio: Date.now() });
+  // Na conversa do card, igual à ligação recebida de verdade ("📞 Ligação de voz" chamando). Já lida: a equipe não ganha "não lida" de um teste.
+  const msg = await prisma.message.create({
+    data: { content: '📞 Ligação de voz', direction: 'INBOUND', channel: 'WHATSAPP', leadId, callWaCallId: waCallId, callStatus: 'RINGING', status: 'DELIVERED', read: true },
+    include: { attachments: true },
+  }).catch((e) => { console.error('[Ligação de teste] mensagem na conversa:', e?.message); return null; });
+  if (msg) io?.to(`lead:${leadId}`).emit('new_message', msg);
   io?.to(`user_${userId}`).emit('incoming_call', payload);
   sendPushToAccount(accountId, { title: 'Ligação recebida', body: leadName, leadId, type: 'call' }, [userId]).catch(() => {});
   console.log(`[Ligação de teste] tocando pro usuário ${userId.slice(-6)} com o card ${leadId}`);
@@ -43,6 +50,20 @@ export async function encerrarLigacaoSimulada(userId: string, waCallId: string, 
   clearTimeout(a.timer);
   ativas.delete(userId);
   io?.to(`user_${userId}`).emit('call_ended', { waCallId });
+  // Resultado na conversa (igual à de verdade) + nota no card dizendo que foi teste.
+  const atendida = /atendida/.test(motivo) && !/n[aã]o atendida/.test(motivo);
+  const recusada = /recusada/.test(motivo);
+  const callStatus = atendida ? 'ENDED' : recusada ? 'REJECTED' : 'MISSED';
+  const content = atendida ? '📞 Ligação de voz encerrada' : recusada ? '📞 Ligação de voz recusada' : '📞 Ligação de voz perdida';
+  const n = await prisma.message.updateMany({ where: { callWaCallId: waCallId }, data: { callStatus, callDurationSec: 0, content } }).catch(() => ({ count: 0 }));
+  if (n.count) {
+    const upd = { waCallId, callStatus, callDurationSec: 0, content };
+    io?.to(`lead:${a.payload.leadId}`).emit('call_message_updated', upd);
+    io?.to(`account_${a.accountId}`).emit('call_message_updated', upd);
+  }
+  const quem = (await prisma.user.findUnique({ where: { id: userId }, select: { name: true } }).catch(() => null))?.name || 'administrador';
+  const resultado = atendida ? `atendida por ${quem} e desligada` : recusada ? `recusada por ${quem}` : 'ninguém atendeu em 60 s';
+  await prisma.note.create({ data: { leadId: a.payload.leadId, type: 'CALL', userId, content: `📞 Ligação de TESTE recebida (simulada pelo CRM, ${quem}) — ${resultado}. O cliente não ligou e nada foi pra Meta nem pro cliente.` } }).catch(() => {});
   await sendPushToAccount(a.accountId, { title: a.payload.leadName, body: motivo, leadId: a.payload.leadId, type: 'call_cancel' }, [userId]).catch(() => {});
   console.log(`[Ligação de teste] ${motivo} (usuário ${userId.slice(-6)})`);
   return true;

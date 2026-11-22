@@ -14,6 +14,26 @@ function urlComPool(): string | undefined {
   return u.toString();
 }
 
+/** LIGAÇÃO RECEBIDA DE TESTE (Fabio 21/11, call-simulada.service): aparece na conversa do card como uma ligação de verdade, mas as regras automáticas não podem achar que
+ *  o cliente falou com a gente (janela de 24 h, "última conversa" dos lembretes, cliente esperando resposta…). O waCallId dela começa com este prefixo. */
+export const LIGACAO_TESTE_PREFIXO = 'simulada_';
+/** Filtro de Message que tira as ligações de teste (callWaCallId nulo também passa — NOT sozinho tiraria os nulos). */
+export const SEM_LIGACAO_TESTE = { OR: [{ callWaCallId: null }, { NOT: { callWaCallId: { startsWith: LIGACAO_TESTE_PREFIXO } } }] };
+const LEITURAS = new Set(['findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);
+
+function criar(): PrismaClient {
+  const url = urlComPool();
+  const c = url ? new PrismaClient({ datasources: { db: { url } } }) : new PrismaClient();
+  // Toda leitura de Message que filtra mensagens RECEBIDAS (direction INBOUND em qualquer ponto do where) ignora as ligações de teste — são ~40 regras
+  // (janela de 24 h, última conversa, resposta do cliente…). A conversa da Inbox lê sem filtro de direção, então a ligação de teste continua aparecendo lá.
+  c.$use(async (params, next) => {
+    if (params.model === 'Message' && LEITURAS.has(params.action) && params.args?.where && JSON.stringify(params.args.where).includes('"INBOUND"')) {
+      params.args = { ...params.args, where: { AND: [params.args.where, SEM_LIGACAO_TESTE] } };
+    }
+    return next(params);
+  });
+  return c;
+}
+
 const g = globalThis as unknown as { __afPrisma?: PrismaClient };
-const url = urlComPool();
-export const prisma: PrismaClient = g.__afPrisma || (g.__afPrisma = url ? new PrismaClient({ datasources: { db: { url } } }) : new PrismaClient());
+export const prisma: PrismaClient = g.__afPrisma || (g.__afPrisma = criar());
