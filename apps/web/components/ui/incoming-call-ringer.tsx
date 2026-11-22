@@ -18,6 +18,8 @@ interface IncomingCallEvent {
   leadName: string;
   contactPhone: string;
   sdp: string;
+  /** Ligação de TESTE (Fabio 21/11, POST /api/calls/simular-recebida): só toca; atender/recusar só encerra — nada vai pra Meta. */
+  simulado?: boolean;
 }
 
 type Stage = 'ringing' | 'connecting' | 'connected';
@@ -130,19 +132,36 @@ export function IncomingCallRinger() {
     };
   }, [active, endActiveCall]);
 
+  // Ligação de teste tocando quando esta tela abriu (ex.: o celular aberto pelo push): entra na fila também.
+  useEffect(() => {
+    api.get('/api/calls/simulada')
+      .then(({ data }) => { if (data?.waCallId) setQueue((q) => (q.some((x) => x.waCallId === data.waCallId) ? q : [...q, data])); })
+      .catch(() => {});
+  }, []);
+
   const dismissCurrent = useCallback(() => setQueue((q) => q.slice(1)), []);
+
+  /** Ligação de teste: atender ou recusar só encerra (para de tocar em todas as suas telas). */
+  const fimSimulada = useCallback((call: IncomingCallEvent, como: 'atendida' | 'recusada') => {
+    dismissCurrent();
+    closeCallNotifications();
+    toast(como === 'atendida' ? 'Ligação de teste atendida — desliguei' : 'Ligação de teste recusada', 'success');
+    api.post(`/api/calls/simulada/${call.waCallId}/fim`, { como }).catch(() => {});
+  }, [dismissCurrent]);
 
   const reject = useCallback(async () => {
     if (!current) return;
     const call = current;
+    if (call.simulado) return fimSimulada(call, 'recusada');
     dismissCurrent();
     closeCallNotifications();
     try { await api.post(`/api/calls/${call.waCallId}/reject`); } catch { /* melhor esforço */ }
-  }, [current, dismissCurrent]);
+  }, [current, dismissCurrent, fimSimulada]);
 
   const answer = useCallback(async () => {
     if (!current) return;
     const call = current;
+    if (call.simulado) return fimSimulada(call, 'atendida');
     dismissCurrent();
     setActive({ call, stage: 'connecting', muted: false, connectedAt: 0 });
     closeCallNotifications();
@@ -225,7 +244,7 @@ export function IncomingCallRinger() {
       setActive(null);
       try { await api.post(`/api/calls/${call.waCallId}/reject`); } catch { /* melhor esforço */ }
     }
-  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall]);
+  }, [current, dismissCurrent, cleanupPeerConnection, endActiveCall, fimSimulada]);
 
   const hangup = useCallback(async () => {
     if (!active) return;
@@ -258,7 +277,7 @@ export function IncomingCallRinger() {
             </div>
             <div className="text-center">
               <p className="text-lg font-semibold">{current.leadName}</p>
-              <p className="text-sm text-slate-400">Ligação de WhatsApp recebida</p>
+              <p className="text-sm text-slate-400">Ligação de WhatsApp recebida{current.simulado ? ' · teste' : ''}</p>
               {queue.length > 1 && <p className="text-xs text-slate-400 mt-1">+{queue.length - 1} outra(s) na fila</p>}
             </div>
             <button onClick={goToLead} className="text-xs text-[#3b82f6] hover:underline">Ver conversa</button>

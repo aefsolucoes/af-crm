@@ -289,6 +289,28 @@ router.post('/ai-outbound', validate(leadIdSchema), async (req: AuthRequest, res
   res.json(result);
 });
 
+// LIGAÇÃO RECEBIDA DE TESTE (Fabio 21/11) — ver call-simulada.service. Toca só pra quem disparou; nada vai pra Meta nem pro cliente.
+// POST /api/calls/simular-recebida { leadId } (administrador)
+router.post('/simular-recebida', validate(leadIdSchema), async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores podem simular ligação' });
+  const { simularLigacaoRecebida } = require('../services/call-simulada.service') as typeof import('../services/call-simulada.service');
+  const r = await simularLigacaoRecebida(req.user!.accountId, req.user!.id, req.body.leadId, (req as any).app.get('io'));
+  if (!r) return res.status(404).json({ error: 'Card não encontrado' });
+  res.json({ ok: true, waCallId: r.waCallId, leadName: r.leadName });
+});
+// GET /api/calls/simulada — a ligação de teste tocando pra mim agora (ou null)
+router.get('/simulada', (req: AuthRequest, res: Response) => {
+  const { ligacaoSimuladaAtiva } = require('../services/call-simulada.service') as typeof import('../services/call-simulada.service');
+  res.json(ligacaoSimuladaAtiva(req.user!.id));
+});
+// POST /api/calls/simulada/:waCallId/fim { como: 'atendida' | 'recusada' }
+router.post('/simulada/:waCallId/fim', async (req: AuthRequest, res: Response) => {
+  const { encerrarLigacaoSimulada } = require('../services/call-simulada.service') as typeof import('../services/call-simulada.service');
+  const motivo = req.body?.como === 'recusada' ? 'Ligação de teste recusada' : 'Ligação de teste atendida e desligada';
+  const ok = await encerrarLigacaoSimulada(req.user!.id, req.params.waCallId, motivo, (req as any).app.get('io'));
+  res.json({ ok });
+});
+
 // GET /api/calls/history?leadId=
 router.get('/history', async (req: AuthRequest, res: Response) => {
   const leadId = req.query.leadId as string | undefined;
