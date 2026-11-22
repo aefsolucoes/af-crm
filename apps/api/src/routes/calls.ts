@@ -298,6 +298,14 @@ router.post('/simular-recebida', validate(leadIdSchema), async (req: AuthRequest
   if (!r) return res.status(404).json({ error: 'Card não encontrado' });
   res.json({ ok: true, waCallId: r.waCallId, leadName: r.leadName });
 });
+// POST /api/calls/lembrete-ultima { leadId } (administrador) — lembrete da última ligação do card pra equipe toda, 2x, sem tocar (Fabio 21/11)
+router.post('/lembrete-ultima', validate(leadIdSchema), async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores' });
+  const { lembreteUltimaLigacao } = require('../services/call-simulada.service') as typeof import('../services/call-simulada.service');
+  const r = await lembreteUltimaLigacao(req.user!.accountId, req.body.leadId);
+  if (!r) return res.status(404).json({ error: 'Card sem ligação' });
+  res.json({ ok: true, ...r });
+});
 // GET /api/calls/simulada — a ligação de teste tocando pra mim agora (ou null)
 router.get('/simulada', (req: AuthRequest, res: Response) => {
   const { ligacaoSimuladaAtiva } = require('../services/call-simulada.service') as typeof import('../services/call-simulada.service');

@@ -74,3 +74,21 @@ export async function encerrarLigacaoSimulada(userId: string, waCallId: string, 
   console.log(`[Ligação de teste] ${motivo} (usuário ${userId.slice(-6)})`);
   return true;
 }
+
+/** LEMBRETE DA ÚLTIMA LIGAÇÃO do card, sem tocar (Fabio 21/11: "não precisa tocar, apenas aparece o lembrete da última ligação, 2x" — "pode mostrar o lembrete para
+ *  todos"): push comum (aparece na tela, no celular e na sineta) pra equipe toda, 2 vezes com 10 s de intervalo. Ligação de teste vai marcada "(teste)". */
+export async function lembreteUltimaLigacao(accountId: string, leadId: string): Promise<{ title: string; body: string } | null> {
+  const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, contact: { select: { name: true } } } });
+  if (!lead) return null;
+  const m = await prisma.message.findFirst({ where: { leadId, callWaCallId: { not: null } }, orderBy: { createdAt: 'desc' }, select: { content: true, createdAt: true, direction: true, callWaCallId: true } });
+  if (!m) return null;
+  const hora = new Date(m.createdAt.getTime() - 3 * 3_600_000).toISOString().slice(11, 16);
+  const dia = new Date(m.createdAt.getTime() - 3 * 3_600_000).toISOString().slice(5, 10).split('-').reverse().join('/');
+  const teste = String(m.callWaCallId).startsWith(LIGACAO_TESTE_PREFIXO);
+  const resultado = String(m.content || '').replace(/^📞\s*Ligação de voz\s*/i, '').replace(/^—\s*/, '') || 'chamando';
+  const title = `📞 ${m.direction === 'INBOUND' ? 'Ligação recebida' : 'Ligação feita'} — ${lead.contact?.name || lead.name}`.slice(0, 90);
+  const body = `${dia} às ${hora} · ${resultado}${teste ? ' (teste)' : ''}`.slice(0, 140);
+  await sendPushToAccount(accountId, { title, body, leadId });
+  setTimeout(() => { sendPushToAccount(accountId, { title, body, leadId }).catch(() => {}); }, 10_000);
+  return { title, body };
+}
