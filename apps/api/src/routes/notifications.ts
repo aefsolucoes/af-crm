@@ -30,4 +30,22 @@ router.post('/read', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// POST /api/notifications/apagar { contem, desde, ate } (administrador) — apaga da sineta de TODOS da conta os avisos com esse texto (título ou corpo) nesse intervalo
+// (Fabio 21/11: "tira os avisos que contenham teste… que você mandou antes… apaga eles do CRM"). Intervalo obrigatório e de no máximo 1 dia: nunca apaga o histórico inteiro.
+router.post('/apagar', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores' });
+  const { contem, desde, ate } = (req.body || {}) as { contem?: string; desde?: string; ate?: string };
+  const de = new Date(String(desde || ''));
+  const atE = new Date(String(ate || ''));
+  const texto = String(contem || '').trim();
+  if (texto.length < 3 || isNaN(de.getTime()) || isNaN(atE.getTime()) || atE <= de || atE.getTime() - de.getTime() > 86_400_000) {
+    return res.status(400).json({ error: 'Informe contem (3+ letras), desde e ate (intervalo de até 1 dia)' });
+  }
+  const { prisma } = require('../lib/prisma') as typeof import('../lib/prisma');
+  const r = await prisma.userNotification.deleteMany({
+    where: { accountId: req.user!.accountId, createdAt: { gte: de, lte: atE }, OR: [{ title: { contains: texto, mode: 'insensitive' } }, { body: { contains: texto, mode: 'insensitive' } }] },
+  });
+  res.json({ ok: true, apagados: r.count });
+});
+
 export default router;
