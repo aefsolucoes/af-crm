@@ -3,7 +3,9 @@ import { sendPushToAccount } from './push.service';
 
 /* LIGAÇÃO RECEBIDA DE TESTE (Fabio 21/11: "quero que seja um card real, apenas uma simulação, colocando o CRM para tocar" — "só para Fabio";
  * "não precisa falar nada, apenas tocar até atender, quando atender, desliga").
- * O CRM toca como se o cliente do card estivesse ligando — a tela de ligação recebida e o push "Ligação recebida" — só nos aparelhos de quem disparou (administrador).
+ * O CRM toca como se o cliente do card estivesse ligando — a tela de ligação recebida só nas telas de quem disparou (administrador). O LEMBRETE (push "Ligação recebida"
+ * no celular) vai pra EQUIPE TODA e aparece 2 vezes, com 10 s de intervalo (Fabio 21/11: "pode mostrar o lembrete para todos, mostra ele umas 2x na tela do celular" —
+ * "somente o lembrete": a tela de ligação continua só pra ele).
  * Nada vai pra Meta nem pro cliente e não cria registro de ligação (Call) — assim a "perdida" nunca manda o "vi sua ligação" pro cliente.
  * Fica registrada na conversa do card como uma ligação de verdade ("não deixe de registrar a ligação no inbox do cliente", "como se fosse uma ligação real") e numa
  * nota; as regras automáticas e a IA não a enxergam (lib/prisma: SEM_LIGACAO_TESTE). Atender ou recusar encerra; ninguém atendendo em 60 s, encerra sozinha. */
@@ -13,6 +15,7 @@ export type LigacaoSimulada = { callId: string; waCallId: string; leadId: string
 type Ativa = { payload: LigacaoSimulada; accountId: string; userId: string; timer: ReturnType<typeof setTimeout>; inicio: number };
 
 const TOCA_MS = 60_000;
+const LEMBRETE_DE_NOVO_MS = 10_000;
 /** Uma por usuário (a nova substitui a anterior). */
 const ativas = new Map<string, Ativa>();
 
@@ -33,7 +36,9 @@ export async function simularLigacaoRecebida(accountId: string, userId: string, 
   }).catch((e) => { console.error('[Ligação de teste] mensagem na conversa:', e?.message); return null; });
   if (msg) io?.to(`lead:${leadId}`).emit('new_message', msg);
   io?.to(`user_${userId}`).emit('incoming_call', payload);
-  sendPushToAccount(accountId, { title: 'Ligação recebida', body: leadName, leadId, type: 'call' }, [userId]).catch(() => {});
+  const lembrete = { title: 'Ligação recebida', body: leadName, leadId, type: 'call' as const };
+  sendPushToAccount(accountId, lembrete).catch(() => {});
+  setTimeout(() => { if (ativas.get(userId)?.payload.waCallId === waCallId) sendPushToAccount(accountId, lembrete).catch(() => {}); }, LEMBRETE_DE_NOVO_MS);
   console.log(`[Ligação de teste] tocando pro usuário ${userId.slice(-6)} com o card ${leadId}`);
   return payload;
 }
@@ -64,7 +69,8 @@ export async function encerrarLigacaoSimulada(userId: string, waCallId: string, 
   const quem = (await prisma.user.findUnique({ where: { id: userId }, select: { name: true } }).catch(() => null))?.name || 'administrador';
   const resultado = atendida ? `atendida por ${quem} e desligada` : recusada ? `recusada por ${quem}` : 'ninguém atendeu em 60 s';
   await prisma.note.create({ data: { leadId: a.payload.leadId, type: 'CALL', userId, content: `📞 Ligação de TESTE recebida (simulada pelo CRM, ${quem}) — ${resultado}. O cliente não ligou e nada foi pra Meta nem pro cliente.` } }).catch(() => {});
-  await sendPushToAccount(a.accountId, { title: a.payload.leadName, body: motivo, leadId: a.payload.leadId, type: 'call_cancel' }, [userId]).catch(() => {});
+  // O lembrete foi pra equipe toda: o "tocando" sai de todos os celulares.
+  await sendPushToAccount(a.accountId, { title: a.payload.leadName, body: motivo, leadId: a.payload.leadId, type: 'call_cancel' }).catch(() => {});
   console.log(`[Ligação de teste] ${motivo} (usuário ${userId.slice(-6)})`);
   return true;
 }
