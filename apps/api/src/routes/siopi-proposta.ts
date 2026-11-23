@@ -37,7 +37,8 @@ router.post('/:leadId/complementar', requirePermission('funnel_manage'), async (
 router.post('/:leadId/imovel', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const b = req.body || {};
-  const erro = await pedirImovelSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, codigo: b.codigo ? String(b.codigo) : undefined }).catch((e) => e?.message || 'erro');
+  const cad = b.cadastro && typeof b.cadastro === 'object' ? { inscricao: b.cadastro.inscricao ? String(b.cadastro.inscricao) : undefined, elevador: b.cadastro.elevador === 'S' || b.cadastro.elevador === 'N' ? b.cadastro.elevador : undefined, andar: b.cadastro.andar !== undefined && b.cadastro.andar !== '' ? Number(b.cadastro.andar) : undefined } as { inscricao?: string; elevador?: 'S' | 'N'; andar?: number } : undefined;
+  const erro = await pedirImovelSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, codigo: b.codigo ? String(b.codigo) : undefined, cadastro: cad, depoisValores: b.depoisValores === true }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
