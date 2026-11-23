@@ -144,9 +144,12 @@ export async function dadosDoCard(leadId: string, accountId: string, contaInform
   const pessoa = (p: any) => ({ nome: String(p.nome || '').toUpperCase(), cpf: fmtCpf(p.cpf) });
   const seguro = [q.tomador, ...q.incluir].filter((p) => p && so(p.cpf).length === 11).slice(0, 4).map(pessoa);
   const participantes = ps.filter((p) => so(p.cpf).length === 11).slice(0, 4).map(pessoa);
+  // Local = cidade/UF (Fabio 23/11), o mesmo dos outros formulários da CAIXA.
+  const { localDaAssinatura, textoDoLocal } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+  const localCard = textoDoLocal(await localDaAssinatura(leadId, cf, [])).toUpperCase();
   const cidade = semAcento(String(cf.cidade_imovel || cf.cidade || 'BRASILIA')).toUpperCase().trim();
   const uf = String(cf.uf_imovel || cf.uf || 'DF').toUpperCase().trim().slice(0, 2);
-  return { cliente: String(t.nome).toUpperCase(), cpf: fmtCpf(t.cpf), agencia, conta, telefone: fmtFone(tel), debito: true, cancelarDebito: false, whatsapp: true, tarifa: false, seguro, participantes, local: `${cidade}-${uf}`, data: hojeBR() };
+  return { cliente: String(t.nome).toUpperCase(), cpf: fmtCpf(t.cpf), agencia, conta, telefone: fmtFone(tel), debito: true, cancelarDebito: false, whatsapp: true, tarifa: false, seguro, participantes, local: localCard || `${cidade}/${uf}`, data: hojeBR() };
 }
 
 /** Gera o MO30844 do card e guarda na pasta FORMULARIOS (o anterior vai pra FORMULARIOS ANTIGOS). Erro em texto. */

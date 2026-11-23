@@ -75,6 +75,18 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   }
   if (!docs.length) return 'a pasta FORMULARIOS não tem fichas, propostas da conta/cartão nem o MO30844';
   docs.sort((a, b) => a.ordem - b.ordem);
+  // Local e Data (Fabio 23/11: "todos os formulários que contenham local e data o CRM deve preencher… cidade/UF"): cidade/UF do card e a data de hoje, nos
+  // lugares em branco de cada formulário (o MO30844 já sai preenchido do CRM).
+  const { localDaAssinatura, textoDoLocal } = require('./endereco-imovel.service') as typeof import('./endereco-imovel.service');
+  const local = textoDoLocal(await localDaAssinatura(leadId, cf, [])).toUpperCase();
+  if (!local) return 'não achei a cidade/UF do card pro "Local e Data" dos formulários — preencha a cidade do imóvel (ou o CEP) no card';
+  const { preencherLocalData } = require('./local-data-caixa') as typeof import('./local-data-caixa');
+  const semLocal: string[] = [];
+  for (const d of docs) {
+    if (d.chave === 'mo30844') continue;
+    const r = await preencherLocalData(d.buf, local).catch(() => null);
+    if (r && r.linhas) d.buf = r.pdf; else semLocal.push(d.titulo);
+  }
 
   const nomes = ps.map((p) => chamar(p.nome));
   const chamada = nomes.length > 1 ? `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}` : nomes[0] || '';
@@ -94,7 +106,7 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   const legenda = (d: Doc) => (d.ordem === 12 && ps.length > 1
     ? `${d.titulo} — ${listaPaginas(d.paginas)}, assinam os dois: ${ps.map((p, i) => `${chamar(p.nome)} na linha do ${i + 1}º participante`).join(' e ')}.`
     : `${d.titulo} — ${d.quem ? `assinada ${ela(d.quem) ? 'pela' : 'pelo'} ${d.quem}` : 'assinatura do cliente'} ${listaPaginas(d.paginas)}${d.paginas.length === 1 && d.paginas[0] === d.total ? ' (a última)' : ''}, ${d.onde}${d.paginas.length > 1 ? ` — no gov.br, assine ${d.paginas.length === 2 ? 'duas' : d.paginas.length} vezes, uma em cada página (a 1ª página também precisa)` : ''}.`);
-  if (previa) { previa(`${docs.map((d) => `[${d.nome} — ${d.total} pág.] ${legenda(d)}`).join('\n')}\n\n${intro}`); return null; } // só mostra o que sairia (nada é enviado)
+  if (previa) { previa(`Local e Data: ${local}${semLocal.length ? ` (não achei a linha em: ${semLocal.join(', ')})` : ''}\n\n${docs.map((d) => `[${d.nome} — ${d.total} pág.] ${legenda(d)}`).join('\n')}\n\n${intro}`); return null; } // só mostra o que sairia (nada é enviado)
   const { sendOutboundWhatsApp, sendOutboundMedia } = await import('./message.service');
   // Fabio 23/11: "tem que ir todos os formulários de uma vez e depois a msg informando que precisa assinar pelo gov" — os PDFs primeiro, a instrução no fim.
   const enviados: string[] = [];
