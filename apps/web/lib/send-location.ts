@@ -6,6 +6,12 @@ import { useSendLocationNoticeStore } from '@/store/send-location-notice.store';
  * Localização) marca "não autorizou". Com a chave ligada pra pessoa (Fabio 28/10), na 1ª vez no aparelho aparece o aviso do CRM e depois o pedido
  * do aparelho; "Não Permitir" = "negou". */
 
+/** A aba Configurações → Localização é só do Fabio (Fabio 23/11: "deixa a aba localizacao mostrando apenas para mim, fabio"). A API confere a mesma regra. */
+export const LOCALIZACAO_EMAILS = ['fabio@aefsolucoesfinanceiras.com.br'];
+export function podeVerLocalizacao(u?: { email?: string | null; role?: string } | null): boolean {
+  return !!u && u.role === 'ADMIN' && LOCALIZACAO_EMAILS.includes(String(u.email || '').trim().toLowerCase());
+}
+
 export type SendLocationReading = {
   status: 'OK' | 'NAO_AUTORIZOU' | 'NEGOU' | 'INDISPONIVEL' | 'ERRO';
   latitude?: number;

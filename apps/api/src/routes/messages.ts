@@ -13,6 +13,15 @@ import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { recordSendOrigin, saveSendLocation, listSendLocations, getSendLocationSetting, promptAllowedFor, setSendLocationSetting, recordLocationPing, listLocationEvents } from '../services/send-location.service';
 
+/* Localização da equipe (Configurações → Localização): só o Fabio vê e mexe (Fabio 23/11: "deixa a aba localizacao mostrando apenas para mim, fabio").
+ * Outros admins (Andreia) ficam de fora. LOCALIZACAO_EMAILS no ambiente troca a lista (vírgula). O front esconde a aba pela mesma regra. */
+const LOCALIZACAO_EMAILS = (process.env.LOCALIZACAO_EMAILS || 'fabio@aefsolucoesfinanceiras.com.br').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
+async function podeVerLocalizacao(req: AuthRequest): Promise<boolean> {
+  if (req.user!.role !== 'ADMIN') return false;
+  const u = await prisma.user.findUnique({ where: { id: req.user!.id }, select: { email: true } }).catch(() => null);
+  return !!u?.email && LOCALIZACAO_EMAILS.includes(u.email.trim().toLowerCase());
+}
+
 
 /** Registro silencioso: "Fulano respondeu <cliente>". Fire-and-forget.
  *  Também desliga a IA da conversa (pedido do Fabio): alguém do time
@@ -465,7 +474,7 @@ router.get('/send-location-config', async (req: AuthRequest, res: Response) => {
 
 // Chaves do pedido de permissão (Configurações → Localização) — só admin.
 router.get('/send-location-settings', async (req: AuthRequest, res: Response) => {
-  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores mexem no pedido de localização' });
+  if (!(await podeVerLocalizacao(req))) return res.status(403).json({ error: 'A localização da equipe é só do Fabio' });
   try {
     const [setting, users] = await Promise.all([
       getSendLocationSetting(req.user!.accountId),
@@ -478,7 +487,7 @@ router.get('/send-location-settings', async (req: AuthRequest, res: Response) =>
 });
 
 router.put('/send-location-settings', async (req: AuthRequest, res: Response) => {
-  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores mexem no pedido de localização' });
+  if (!(await podeVerLocalizacao(req))) return res.status(403).json({ error: 'A localização da equipe é só do Fabio' });
   try {
     res.json(await setSendLocationSetting(req.user!.accountId, req.body || {}, req.user!.id));
   } catch {
@@ -498,7 +507,7 @@ router.post('/location-ping', async (req: AuthRequest, res: Response) => {
 
 // Trajeto (abrir o CRM + enviar mensagem) — só admin.
 router.get('/location-events', async (req: AuthRequest, res: Response) => {
-  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores veem o trajeto da equipe' });
+  if (!(await podeVerLocalizacao(req))) return res.status(403).json({ error: 'A localização da equipe é só do Fabio' });
   try {
     const d = (v: unknown) => { const t = v ? new Date(String(v)) : null; return t && !isNaN(t.getTime()) ? t : undefined; };
     res.json(await listLocationEvents(req.user!.accountId, { from: d(req.query.from), to: d(req.query.to), userId: req.query.userId ? String(req.query.userId) : undefined }));
@@ -509,7 +518,7 @@ router.get('/location-events', async (req: AuthRequest, res: Response) => {
 
 // Relatório de localização dos envios (Configurações → Localização) — só admin.
 router.get('/send-locations', async (req: AuthRequest, res: Response) => {
-  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores veem a localização dos envios' });
+  if (!(await podeVerLocalizacao(req))) return res.status(403).json({ error: 'A localização da equipe é só do Fabio' });
   try {
     const d = (v: unknown) => { const t = v ? new Date(String(v)) : null; return t && !isNaN(t.getTime()) ? t : undefined; };
     res.json(await listSendLocations(req.user!.accountId, { from: d(req.query.from), to: d(req.query.to), userId: req.query.userId ? String(req.query.userId) : undefined }));
