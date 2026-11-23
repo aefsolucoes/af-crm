@@ -1393,6 +1393,20 @@ export async function moveDriveItem(accountId: string, itemId: string, newParent
   return { id: res.data.id!, name: res.data.name! };
 }
 
+/** Formulário refeito (Fabio 23/11: "as fichas cadastrais que foram atualizadas devem ficar em uma pasta dentro da pasta formularios escrito formularios
+ *  antigos"): o de mesmo nome sai da pasta FORMULARIOS pra subpasta "FORMULARIOS ANTIGOS", com a data dele no nome — nunca pra lixeira. Devolve quantos moveu. */
+export async function arquivarFormulariosAntigos(accountId: string, pastaFormulariosId: string, nome: string): Promise<number> {
+  const velhos = (await listFolderContents(accountId, pastaFormulariosId)).filter((f) => !f.isFolder && f.name === nome);
+  if (!velhos.length) return 0;
+  const antigos = await createFolder(accountId, 'FORMULARIOS ANTIGOS', pastaFormulariosId);
+  const ext = /\.[a-z0-9]{2,5}$/i.exec(nome)?.[0] || '';
+  for (const v of velhos) {
+    const data = new Date(v.modifiedTime || Date.now()).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }).replace(/\//g, '-');
+    await putFileInFolder(accountId, v.id, antigos.id, `${ext ? nome.slice(0, -ext.length) : nome} - ${data}${ext}`);
+  }
+  return velhos.length;
+}
+
 /** Move um arquivo/pasta do Drive para a lixeira (o CRM trata como irreversível,
  *  mesmo que o Google mantenha por ~30 dias — exige dupla confirmação no chat). */
 export async function trashDriveItem(accountId: string, itemId: string): Promise<{ id: string; name: string }> {

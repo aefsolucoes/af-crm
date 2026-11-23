@@ -666,7 +666,7 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
   const nome = `FICHA CADASTRAL CAIXA - ${ehVend ? 'VENDEDOR ' : ''}${quem}.pdf`;
   const google = await import('./google.service');
   const pasta = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
-  for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
+  await google.arquivarFormulariosAntigos(accountId, pasta.id, nome).catch(() => 0); // o anterior vai pra FORMULARIOS ANTIGOS (Fabio 23/11), nunca pra lixeira
   const up = await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data });
   if (ehVend) await vend.marcarFormularioVendedor(leadId, ordem, up.id);
   else await salvar(leadId, (x) => { x.cadastros = { ...(x.cadastros || {}), [ordem]: { ...(x.cadastros?.[ordem] || {}), formulario: up.id } }; });

@@ -134,7 +134,7 @@ export async function gravarProdutosCaixa(accountId: string, leadId: string, r: 
 }
 
 /** PDF do "Imprimir Formulário" da conta ou do cartão (a extensão manda) → pasta FORMULARIOS do Drive do card (Fabio 23/11 "pode salvar"; mesmo lugar da ficha
- *  cadastral). Substitui o de mesmo nome. Erro em texto. */
+ *  cadastral). O anterior de mesmo nome vai pra FORMULARIOS ANTIGOS. Erro em texto. */
 export async function salvarFormularioProduto(accountId: string, leadId: string, qual: 'conta' | 'cartao', pdfBase64: string, proposta?: string): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
@@ -148,7 +148,7 @@ export async function salvarFormularioProduto(accountId: string, leadId: string,
   const nome = `${qual === 'conta' ? 'PROPOSTA ABERTURA DE CONTA CAIXA' : 'PROPOSTA CARTAO DE CREDITO CAIXA'} - ${quem}.pdf`;
   const google = await import('./google.service');
   const pasta = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
-  for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
+  await google.arquivarFormulariosAntigos(accountId, pasta.id, nome).catch(() => 0); // o anterior vai pra FORMULARIOS ANTIGOS (Fabio 23/11), nunca pra lixeira
   const up = await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data });
   await salvarProd(leadId, (x) => { x.arquivos = { ...(x.arquivos || {}), [qual]: { id: up.id, nome, proposta: proposta ? String(proposta).replace(/\D/g, '').slice(0, 20) : undefined, em: new Date().toISOString() } }; });
   await note(leadId, `📄 Formulário da ${qual === 'conta' ? 'abertura de conta' : 'proposta do cartão de crédito'} CAIXA de ${quem}${proposta ? ` (proposta ${String(proposta).replace(/\D/g, '')})` : ''} salvo na pasta FORMULARIOS do Drive (${nome}).`);
