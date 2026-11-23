@@ -93,7 +93,7 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   ].join('\n');
   const legenda = (d: Doc) => (d.ordem === 12 && ps.length > 1
     ? `${d.titulo} — ${listaPaginas(d.paginas)}, assinam os dois: ${ps.map((p, i) => `${chamar(p.nome)} na linha do ${i + 1}º participante`).join(' e ')}.`
-    : `${d.titulo} — ${d.quem ? `assinada ${ela(d.quem) ? 'pela' : 'pelo'} ${d.quem}` : 'assinatura do cliente'} ${listaPaginas(d.paginas)}${d.paginas.length === 1 && d.paginas[0] === d.total ? ' (a última)' : ''}, ${d.onde}.`);
+    : `${d.titulo} — ${d.quem ? `assinada ${ela(d.quem) ? 'pela' : 'pelo'} ${d.quem}` : 'assinatura do cliente'} ${listaPaginas(d.paginas)}${d.paginas.length === 1 && d.paginas[0] === d.total ? ' (a última)' : ''}, ${d.onde}${d.paginas.length > 1 ? ` — no gov.br, assine ${d.paginas.length === 2 ? 'duas' : d.paginas.length} vezes, uma em cada página (a 1ª página também precisa)` : ''}.`);
   if (previa) { previa(`${docs.map((d) => `[${d.nome} — ${d.total} pág.] ${legenda(d)}`).join('\n')}\n\n${intro}`); return null; } // só mostra o que sairia (nada é enviado)
   const { sendOutboundWhatsApp, sendOutboundMedia } = await import('./message.service');
   // Fabio 23/11: "tem que ir todos os formulários de uma vez e depois a msg informando que precisa assinar pelo gov" — os PDFs primeiro, a instrução no fim.
@@ -182,10 +182,10 @@ export function assinaturasDoPdf(bytes: Buffer): { cert: string; govbr: boolean 
   });
 }
 /** Essa pessoa assinou? CPF no certificado (ICP-Brasil/gov.br guarda nascimento+CPF juntos) ou o nome completo. Pura. */
-export function assinou(assin: { cert: string }[], p: { nome?: string; cpf?: string }): boolean {
+export function assinou(assin: { cert: string }[], p: { nome?: string; cpf?: string }, vezes = 1): boolean {
   const cpf = so(p.cpf);
   const nome = norm(String(p.nome || '')).replace(/[^A-Z ]/g, '');
-  return assin.some((a) => (cpf.length === 11 && a.cert.includes(cpf)) || (nome.length > 8 && norm(a.cert).includes(nome)));
+  return assin.filter((a) => (cpf.length === 11 && a.cert.includes(cpf)) || (nome.length > 8 && norm(a.cert).includes(nome))).length >= vezes;
 }
 /** Qual formulário é, pelo texto (sem espaços — o gov.br às vezes quebra as palavras). Pura. */
 export function qualFormulario(texto: string): { chave: string; cpf?: string } | null {
@@ -246,10 +246,13 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
     if (!doc) continue; // formulário que não foi pedido neste envio
     const precisam: any[] = q.chave === 'mo30844' ? ps : q.chave === 'ficha' ? [p] : titular ? [titular] : [];
     const assin = assinaturasDoPdf(bytes);
-    const faltam = precisam.filter((x) => !assinou(assin, x));
+    // Assinatura em mais de uma página (proposta da conta: páginas 1 e 4 — Fabio 23/11 "o cliente também precisa assinar na primeira folha"): uma assinatura do
+    // gov.br por página. O MO30844 tem uma página só pros dois: uma de cada.
+    const vezes = q.chave === 'mo30844' ? 1 : Math.max(1, (doc.paginas || []).length);
+    const faltam = precisam.filter((x) => !assinou(assin, x, vezes));
     if (!assin.length || faltam.length) {
-      const k = `${chave}:${assin.length ? 'falta' : 'sem'}`;
-      if (!avisos[k]) { avisos[k] = new Date().toISOString(); linhas.push(`⚠️ ${doc.titulo} voltou ${assin.length ? `assinado só em parte — falta a assinatura de ${faltam.map((x) => chamar(x.nome)).join(' e ')}` : 'SEM a assinatura digital do gov.br'} (${a.fileName}).`); }
+      const k = `${chave}:${assin.length ? `falta${assin.length}` : 'sem'}`;
+      if (!avisos[k]) { avisos[k] = new Date().toISOString(); linhas.push(`⚠️ ${doc.titulo} voltou ${assin.length ? `assinado só em parte — falta a assinatura de ${faltam.map((x) => chamar(x.nome)).join(' e ')}${vezes > 1 ? ` (são ${vezes}: uma em cada página — ${listaPaginas(doc.paginas)})` : ''}` : 'SEM a assinatura digital do gov.br'} (${a.fileName}).`); }
       continue;
     }
     if (assinados[chave]) continue; // já guardado
