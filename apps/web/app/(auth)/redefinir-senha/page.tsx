@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import api from '@/lib/api';
 import { LayoutDashboard, CheckCircle2, ArrowLeft } from 'lucide-react';
+import { EMPRESA_NOME } from '@/lib/empresa';
 
 /** Página do link do e-mail: cria a senha nova (token de uso único, 30 min). */
 function RedefinirSenha() {
@@ -84,7 +85,7 @@ export default function RedefinirSenhaPage() {
             <LayoutDashboard size={32} className="text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">AF CRM</h1>
-          <p className="text-slate-300 text-sm mt-1">A&F Soluções Financeiras</p>
+          <p className="text-slate-300 text-sm mt-1">{EMPRESA_NOME}</p>
         </div>
         <div className="bg-white rounded-2xl shadow-2xl p-8">
           <Suspense fallback={<p className="text-sm text-slate-400">Carregando...</p>}>

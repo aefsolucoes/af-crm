@@ -8,6 +8,7 @@ import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
 import { useFunilSectorStore } from '@/store/funil-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { EMPRESA_CURTO } from '@/lib/empresa';
 import { ANALISE_HREF, lerProdutoEscolhido } from '@/components/credit/produto-switch';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
@@ -213,7 +214,7 @@ export function Sidebar() {
           {!collapsed && (
             <div className="min-w-0">
               <p className="text-white font-bold text-sm leading-tight truncate">AF CRM</p>
-              <p className="text-slate-400 text-xs truncate">A&F Soluções</p>
+              <p className="text-slate-400 text-xs truncate">{EMPRESA_CURTO}</p>
             </div>
           )}
         </div>
@@ -318,7 +319,7 @@ export function Sidebar() {
               </div>
               <div className="min-w-0">
                 <p className="text-white font-bold text-sm leading-tight truncate">AF CRM</p>
-                <p className="text-slate-400 text-xs truncate">A&F Soluções</p>
+                <p className="text-slate-400 text-xs truncate">{EMPRESA_CURTO}</p>
               </div>
             </div>
             <button onClick={closeMobile} className="text-slate-400 hover:text-white transition-colors flex-shrink-0" title="Fechar">

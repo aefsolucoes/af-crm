@@ -1,4 +1,5 @@
 import { google } from 'googleapis';
+import crypto from 'crypto';
 import { Readable } from 'stream';
 import { PrismaClient } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -65,14 +66,35 @@ async function clearGoogleTokenInvalid(accountId: string): Promise<void> {
   }).catch(() => {});
 }
 
-/** URL de consentimento — o accountId vai no state para vincular no callback */
+/* O state do OAuth vai ASSINADO (accountId.validade.assinatura, HMAC com o JWT_SECRET, vale 30 min) — antes ia o accountId puro e qualquer um que
+ * soubesse o id de uma conta podia ligar o PRÓPRIO Google nela (plano do piloto 23/11: furos de segurança antes de abrir o CRM pra outra empresa). */
+const ESTADO_VALIDADE_MS = 30 * 60_000;
+function assinaturaEstado(corpo: string): string {
+  return crypto.createHmac('sha256', String(process.env.JWT_SECRET || '')).update(`google-oauth:${corpo}`).digest('base64url');
+}
+function assinarEstado(accountId: string): string {
+  const corpo = `${accountId}.${Date.now() + ESTADO_VALIDADE_MS}`;
+  return `${corpo}.${assinaturaEstado(corpo)}`;
+}
+/** accountId do state, ou null se a assinatura não bate ou passou de 30 min. */
+export function lerEstadoOAuth(state: string): string | null {
+  const partes = String(state || '').split('.');
+  if (partes.length !== 3 || !process.env.JWT_SECRET) return null;
+  const [accountId, validade, assinatura] = partes;
+  const esperada = assinaturaEstado(`${accountId}.${validade}`);
+  if (assinatura.length !== esperada.length || !crypto.timingSafeEqual(Buffer.from(assinatura), Buffer.from(esperada))) return null;
+  if (!(Number(validade) > Date.now())) return null;
+  return accountId || null;
+}
+
+/** URL de consentimento — o accountId vai no state (assinado) para vincular no callback */
 export function getAuthUrl(accountId: string): string {
   const oauth2 = getOAuthClient();
   return oauth2.generateAuthUrl({
     access_type: 'offline',        // garante refresh_token
     prompt: 'consent',             // força emitir refresh_token
     scope: SCOPES,
-    state: accountId,
+    state: assinarEstado(accountId),
   });
 }
 

@@ -8,6 +8,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
+import { DadosEmpresa, EMPRESA_AF, dadosDaConta } from '../lib/empresa';
 import { emailJaEnviado, enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
 import { EmailLink, htmlComLinks, linksDoHtml, textoComLinks } from './email-links';
 import { isCommissionEmail } from './commission-email';
@@ -127,8 +128,8 @@ export async function ensureCompanyMailbox(accountId: string): Promise<void> {
 }
 
 /** Assinatura padrão (quando a caixa não tem uma própria). */
-function defaultSignature(acc: { userId: string | null }, userName?: string | null): string {
-  return acc.userId ? `${userName || ''}\nA & F Soluções Financeiras`.trim() : companySignatureText();
+function defaultSignature(acc: { userId: string | null }, userName?: string | null, e: DadosEmpresa = EMPRESA_AF): string {
+  return acc.userId ? `${userName || ''}\n${e.nomeAssinatura}`.trim() : companySignatureText(e);
 }
 
 /** Site, e-mail e telefone da assinatura viram link clicável (pedido do
@@ -178,11 +179,12 @@ export async function listVisibleEmailAccounts(accountId: string, userId: string
     where: { emailAccountId: { in: accounts.map((a) => a.id) }, folder: 'INBOX', seen: false },
     _count: { _all: true },
   });
+  const empresa = await dadosDaConta(accountId);
   return accounts.map((a) => ({
     ...a,
     shared: !a.userId,
     unread: unread.find((u) => u.emailAccountId === a.id)?._count._all || 0,
-    defaultSignature: defaultSignature(a, me?.name),
+    defaultSignature: defaultSignature(a, me?.name, empresa),
   }));
 }
 
@@ -211,12 +213,13 @@ export async function listSendableEmailAccounts(accountId: string, user: { id: s
     select: { id: true, userId: true, address: true, displayName: true, smtpHost: true, smtpPort: true, lastSyncAt: true, lastError: true, signature: true, user: { select: { name: true } } },
   });
   const me = await prisma.user.findUnique({ where: { id: user.id }, select: { name: true } });
+  const empresa = await dadosDaConta(accountId);
   return accounts.map(({ user: dono, ...a }) => ({
     ...a,
     shared: !a.userId,
     ownerName: a.userId && a.userId !== user.id ? dono?.name || null : null,
     // Quem escreve é quem está logado: sem assinatura gravada na caixa, vai o nome dele.
-    defaultSignature: defaultSignature(a, me?.name),
+    defaultSignature: defaultSignature(a, me?.name, empresa),
   }));
 }
 
@@ -891,7 +894,7 @@ export async function sendEmailFrom(params: {
   const paragraphs = body.split('\n').map((line) => line.trim() ? `<p style="margin:0 0 12px">${linkUrls(escapeHtml(line))}</p>` : '<br>').join('');
   const signature = acc.signature?.trim()
     ? signatureHtml(acc.signature)
-    : acc.userId ? signatureHtml(defaultSignature(acc, user?.name)) : companySignatureHtml();
+    : acc.userId ? signatureHtml(defaultSignature(acc, user?.name, await dadosDaConta(acc.accountId))) : companySignatureHtml(await dadosDaConta(acc.accountId));
   // Resposta: cita o e-mail original embaixo, como qualquer cliente de e-mail.
   // Com o histórico que o original já trazia (Fabio 18/11: "abra o restante dos e-mails") — antes cortava em 5 mil caracteres e o fio antigo sumia.
   const parentText = parent ? (parent.textBody || (parent.htmlBody ? htmlToText(parent.htmlBody) : '')).slice(0, 20000) : '';

@@ -46,8 +46,8 @@ type Leitura = {
   inscricao: string; matricula: string; valorCompraVenda: number | null; valorFinanciado: number | null; numeroContrato: string; instituicao: string; imovelNovo: boolean | null; endereco: string; observacao: string;
 };
 
-/** Declarante: a A&F (dados de contato que a tela pede no 1º passo). */
-export const ITBI_DECLARANTE = { telefone: '61981721313', email: 'comercial@aefsolucoesfinanceiras.com.br' };
+/** Declarante: a empresa da conta (dados de contato que a tela pede no 1º passo) — lib/empresa.ts (plano do piloto 23/11); sem nada gravado = a A&F. */
+const declaranteDa = async (accountId: string) => { const e = await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId); return { telefone: e.telefoneContato, email: e.emailComercial }; };
 const JOB_STUCK_MS = 20 * 60_000;
 
 const dig = (s: unknown) => String(s ?? '').replace(/\D/g, '');
@@ -265,7 +265,7 @@ export async function claimItbi(accountId: string) {
   if (!d) { await salvarChave(leadId, '_itbi', { ...it, status: it.modo === 'CONFERIR' ? 'CALCULADO' : 'DONE' }); return null; }
   await salvarChave(leadId, '_itbi', { ...it, status: 'RUNNING', claimedAt: new Date().toISOString(), lastProgress: new Date().toISOString(), claimedIdx: d.idx });
   return {
-    leadId, leadName: name, modo: it.modo, natureza: it.natureza, declarante: ITBI_DECLARANTE, idx: d.idx, total: it.declaracoes.length,
+    leadId, leadName: name, modo: it.modo, natureza: it.natureza, declarante: await declaranteDa(accountId), idx: d.idx, total: it.declaracoes.length,
     transmitente: d.transmitente, adquirente: d.adquirente, percentual: d.percentual, valorPactuado: d.valorPactuado, inscricao: it.inscricao,
     // "Transmitente não proprietário" → a extensão tenta os outros vendedores (Fabio 06/11)
     outrosVendedores: it.vendedores.filter((v) => v.cpf !== d.transmitente.cpf),

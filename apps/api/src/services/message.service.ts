@@ -436,7 +436,7 @@ export async function sendOutboundEmail(params: {
   if (bloqueio) return { success: false, code: 'EMAIL_BLOCKED', error: `E-mail não enviado: ${bloqueio}.` };
 
   try {
-    await sendGenericEmail(to, subject, body, html);
+    await sendGenericEmail(to, subject, body, html, accountId);
   } catch (err) {
     return { success: false, error: (err as Error)?.message || 'Falha ao enviar o e-mail' };
   }

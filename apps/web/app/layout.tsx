@@ -3,6 +3,7 @@ import './globals.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth.store';
+import { EMPRESA_NOME } from '@/lib/empresa';
 
 // Lê o tema direto do usuário logado (af_user), não de uma chave genérica —
 // cada conta tem sua própria aparência, mesmo compartilhando o navegador.
@@ -30,7 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <head>
-        <title>AF CRM — A&F Soluções Financeiras</title>
+        <title>{`AF CRM — ${EMPRESA_NOME}`}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#0d2545" />

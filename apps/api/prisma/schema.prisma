@@ -15,6 +15,8 @@ model Account {
   // site-lead e criar um lead sozinho — null até o admin gerar em
   // Configurações → Site. Ver services/site-lead.service.ts.
   leadIntakeApiKey   String?             @unique
+  // Dados da empresa (nome, assinatura dos e-mails, telefone, site, convênio CAIXA…) — plano do piloto 23/11. Campo ausente = o da A&F (lib/empresa.ts).
+  empresa            Json?
   users              User[]
   pipelines          Pipeline[]
   leads              Lead[]

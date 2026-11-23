@@ -1,4 +1,5 @@
 import nodemailer, { Transporter } from 'nodemailer';
+import { DadosEmpresa, EMPRESA_AF, dadosDaConta } from '../lib/empresa';
 
 // Envio de e-mail via SMTP genérico. Configure no ambiente (Railway):
 //   SMTP_HOST   ex.: smtp.gmail.com
@@ -50,36 +51,35 @@ function escapeHtml(s: string): string {
 // não em nome de um consultor específico). Pedido do usuário: telefone,
 // site e endereço, no mesmo estilo do cartão de assinatura pessoal que ele
 // já usa, só sem o nome.
-const COMPANY_PHONE = '(61) 9.9957-9754';
-const COMPANY_SITE = 'aefsolucoesfinanceiras.com.br';
-const COMPANY_ADDRESS = 'SCS Q. 1 Bloco M Sala 714 Ed. Gilberto Salomão — Asa Sul, Brasília';
-const COMPANY_SIGNATURE_HTML = `
-  <p style="font-size:14px;color:#334155;margin:28px 0 12px">Atenciosamente,</p>
-  <div style="border-left:3px solid #3b82f6;padding-left:14px">
-    <p style="font-size:13px;font-weight:700;letter-spacing:0.5px;color:#0d2545;margin:0 0 6px">A &amp; F SOLUÇÕES FINANCEIRAS</p>
-    <p style="font-size:12px;color:#475569;margin:0 0 3px">Telefone: <a href="tel:+5561999579754" style="color:#3b82f6;text-decoration:none">${COMPANY_PHONE}</a></p>
-    <p style="font-size:12px;color:#475569;margin:0 0 3px">Site: <a href="https://${COMPANY_SITE}" style="color:#3b82f6;text-decoration:none">${COMPANY_SITE}</a></p>
-    <p style="font-size:12px;color:#475569;margin:0">Endereço: ${COMPANY_ADDRESS}</p>
-  </div>`;
+// Nome, telefone, site e endereço vêm dos dados da empresa da conta (lib/empresa.ts — plano do piloto 23/11); sem conta = os da A&F, iguais aos de antes.
 
 /** Assinatura da empresa (HTML) — reaproveitada pela caixa de e-mail do CRM
  *  quando o envio sai da caixa comercial@. */
-export function companySignatureHtml(): string {
-  return COMPANY_SIGNATURE_HTML;
+export function companySignatureHtml(e: DadosEmpresa = EMPRESA_AF): string {
+  const tel = `+55${e.telefone.replace(/\D/g, '')}`;
+  return `
+  <p style="font-size:14px;color:#334155;margin:28px 0 12px">Atenciosamente,</p>
+  <div style="border-left:3px solid #3b82f6;padding-left:14px">
+    <p style="font-size:13px;font-weight:700;letter-spacing:0.5px;color:#0d2545;margin:0 0 6px">${escapeHtml(e.nomeAssinatura.toUpperCase())}</p>
+    <p style="font-size:12px;color:#475569;margin:0 0 3px">Telefone: <a href="tel:${tel}" style="color:#3b82f6;text-decoration:none">${escapeHtml(e.telefone)}</a></p>
+    <p style="font-size:12px;color:#475569;margin:0 0 3px">Site: <a href="https://${escapeHtml(e.site)}" style="color:#3b82f6;text-decoration:none">${escapeHtml(e.site)}</a></p>
+    <p style="font-size:12px;color:#475569;margin:0">Endereço: ${escapeHtml(e.endereco)}</p>
+  </div>`;
 }
 
 /** Mesma assinatura em texto — ponto de partida quando alguém vai editar a
  *  assinatura da caixa comercial@ na página E-mail. */
-export function companySignatureText(): string {
-  return `A & F SOLUÇÕES FINANCEIRAS\nTelefone: ${COMPANY_PHONE}\nSite: ${COMPANY_SITE}\nEndereço: ${COMPANY_ADDRESS}`;
+export function companySignatureText(e: DadosEmpresa = EMPRESA_AF): string {
+  return `${e.nomeAssinatura.toUpperCase()}\nTelefone: ${e.telefone}\nSite: ${e.site}\nEndereço: ${e.endereco}`;
 }
 
 /** E-mail com corpo livre (automações de follow-up) — cada linha em branco
- *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. */
-export async function sendGenericEmail(to: string, subject: string, bodyText: string, htmlPronto?: string): Promise<void> {
+ *  vira um parágrafo, igual quem escreveu enxerga no campo de texto. `accountId` escolhe os dados da empresa (nome, assinatura). */
+export async function sendGenericEmail(to: string, subject: string, bodyText: string, htmlPronto?: string, accountId?: string | null): Promise<void> {
   const transporter = getTransporter();
   if (!transporter) throw new Error('E-mail não configurado');
 
+  const e = await dadosDaConta(accountId);
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
   const paragraphs = bodyText
     .split('\n')
@@ -87,31 +87,31 @@ export async function sendGenericEmail(to: string, subject: string, bodyText: st
     .join('');
 
   await transporter.sendMail({
-    from: `A&F Soluções Financeiras <${from}>`,
+    from: `${e.nome} <${from}>`,
     to,
     subject,
-    text: `${bodyText}\n\n--\nA & F Soluções Financeiras\nTelefone: ${COMPANY_PHONE}\nSite: ${COMPANY_SITE}\nEndereço: ${COMPANY_ADDRESS}`,
+    text: `${bodyText}\n\n--\n${e.nomeAssinatura}\nTelefone: ${e.telefone}\nSite: ${e.site}\nEndereço: ${e.endereco}`,
     html: htmlPronto || `
 <div style="font-family:-apple-system,Segoe UI,sans-serif;max-width:480px;margin:0 auto;padding:24px;color:#1e293b">
   <div style="margin-bottom:24px">
-    <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">A&amp;F</div>
+    <div style="display:inline-block;background:#0d2545;color:#fff;font-weight:800;padding:10px 16px;border-radius:10px;font-size:18px">${escapeHtml(e.marca)}</div>
   </div>
   <div style="font-size:14px;line-height:1.5;color:#334155">${paragraphs}</div>
-  ${COMPANY_SIGNATURE_HTML}
+  ${companySignatureHtml(e)}
 </div>`,
   });
 }
 
 /** E-mail dos lembretes (Fabio 28/10: "refaz novos e-mails mais chamativos") — faixa azul da A&F, título grande, caixa de destaque e botão (padrão: WhatsApp
  *  da API Oficial, 61 8172-1313; o Follow Up passa o link da proposta). Usado pelos loops de Aguardando Documentação e de Follow Up. */
-export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos: string[]; destaque: string; cta?: { texto: string; url: string; rodape?: string } }): string {
-  const cta = p.cta || { texto: '📲 Enviar documentos pelo WhatsApp', url: 'https://wa.me/556181721313', rodape: 'ou responda este e-mail com os arquivos' };
+export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos: string[]; destaque: string; cta?: { texto: string; url: string; rodape?: string } }, e: DadosEmpresa = EMPRESA_AF): string {
+  const cta = p.cta || { texto: '📲 Enviar documentos pelo WhatsApp', url: e.whatsappLink, rodape: 'ou responda este e-mail com os arquivos' };
   return `
 <div style="background:#eef2f7;padding:24px 12px;font-family:-apple-system,Segoe UI,Roboto,sans-serif">
   <div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 18px rgba(13,37,69,.10)">
     <div style="background:linear-gradient(135deg,#0d2545,#1d4f91);padding:22px 28px">
-      <span style="display:inline-block;background:#ffffff;color:#0d2545;font-weight:800;padding:6px 12px;border-radius:8px;font-size:16px">A&amp;F</span>
-      <span style="color:#cfe0ff;font-size:13px;margin-left:10px">Soluções Financeiras</span>
+      <span style="display:inline-block;background:#ffffff;color:#0d2545;font-weight:800;padding:6px 12px;border-radius:8px;font-size:16px">${escapeHtml(e.marca)}</span>
+      <span style="color:#cfe0ff;font-size:13px;margin-left:10px">${escapeHtml(e.marcaSubtitulo)}</span>
     </div>
     <div style="padding:28px">
       <p style="margin:0 0 6px;color:#64748b;font-size:14px">Olá, ${escapeHtml(p.nome)}!</p>
@@ -123,7 +123,7 @@ export function emailLembreteDocs(p: { nome: string; titulo: string; paragrafos:
       </div>
       ${cta.rodape ? `<p style="margin:12px 0 0;text-align:center;color:#94a3b8;font-size:12px">${escapeHtml(cta.rodape)}</p>` : ''}
     </div>
-    <div style="padding:0 28px 24px">${COMPANY_SIGNATURE_HTML}</div>
+    <div style="padding:0 28px 24px">${companySignatureHtml(e)}</div>
   </div>
 </div>`;
 }

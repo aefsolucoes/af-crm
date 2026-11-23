@@ -12,7 +12,7 @@ import { logActivity } from './activity.service';
  *    pergunta o que melhorar; o comentário seguinte (também depois de "Boa") vira nota + push. Resposta por texto em vez do botão: nota + push. */
 
 export const FEEDBACK_TEMPLATES = { credito: 'processo_concluido_credito', habitacional: 'processo_concluido_habitacional' } as const;
-export const GOOGLE_REVIEW_LINK = 'https://g.page/r/CY5BwOMS2SDhEAI/review';
+// O link de avaliação no Google vem dos dados da empresa da conta (lib/empresa.ts, plano do piloto 23/11).
 const BOTOES = ['Ótima', 'Boa', 'Poderia ser melhor'] as const;
 type Botao = typeof BOTOES[number];
 const PERGUNTA = 'Como foi sua experiência com o nosso atendimento neste processo?';
@@ -131,12 +131,12 @@ function botaoDe(text: string): Botao | null {
   return BOTOES.find((b) => norm(b) === t) || null;
 }
 
-function agradecimento(botao: Botao, nome: string): string {
+function agradecimento(botao: Botao, nome: string, linkGoogle: string): string {
   const oi = nome ? `, ${nome}` : '';
-  const link = `Se puder, deixe sua avaliação no Google, ajuda muito a gente: ${GOOGLE_REVIEW_LINK}`;
+  const link = `Se puder, deixe sua avaliação no Google, ajuda muito a gente: ${linkGoogle}`;
   if (botao === 'Ótima') return `Que bom saber${oi}! Muito obrigado. ${link}`;
   if (botao === 'Boa') return `Obrigado pelo retorno${oi}! ${link}\n\nE se tiver algo que a gente possa melhorar, é só me contar por aqui.`;
-  return `Obrigado pela sinceridade${oi}. O que a gente poderia ter feito melhor? Pode me contar por aqui, vai direto pra nossa equipe.\n\nE se quiser, também pode deixar sua avaliação no Google: ${GOOGLE_REVIEW_LINK}`;
+  return `Obrigado pela sinceridade${oi}. O que a gente poderia ter feito melhor? Pode me contar por aqui, vai direto pra nossa equipe.\n\nE se quiser, também pode deixar sua avaliação no Google: ${linkGoogle}`;
 }
 
 /** Resposta do cliente ao template de feedback. true = tratada (nada mais responde essa mensagem). */
@@ -159,7 +159,7 @@ export async function maybeHandleFeedbackReply(accountId: string, leadId: string
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${ruim ? '⚠️' : '⭐'} Feedback do processo concluído: o cliente respondeu "${botao}".${primeira ? ` Mandei o agradecimento com o link de avaliação do Google${ruim || botao === 'Boa' ? ' e perguntei o que a gente pode melhorar' : ''}.` : ' (trocou a resposta)'}` } }).catch(() => {});
     logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'lead_edited', leadId, leadName: lead.name, summary: `feedback do processo concluído: "${botao}"` });
     if (ruim) push(accountId, `⚠️ Feedback ruim — ${lead.name}`, 'Respondeu "Poderia ser melhor" ao feedback do processo concluído. Perguntei o que melhorar.', leadId);
-    if (primeira) await sendOutboundWhatsApp({ accountId, leadId, content: agradecimento(botao, nome), io: io || undefined });
+    if (primeira) await sendOutboundWhatsApp({ accountId, leadId, content: agradecimento(botao, nome, (await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId)).avaliacaoGoogle), io: io || undefined });
     return true;
   }
 

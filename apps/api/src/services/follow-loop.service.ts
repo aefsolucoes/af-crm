@@ -186,7 +186,7 @@ async function executarPasso(
   }
   const he = /home equity/i.test(l.pipeline?.department?.name || '');
   const { emailLembreteDocs } = require('./email.service') as typeof import('./email.service');
-  const html = emailLembreteDocs({ nome, ...lembrete.email, cta: { texto: '📝 Concluir minha proposta', url: he ? LINK_PROPOSTA.he : LINK_PROPOSTA.fh, rodape: 'ou chame a gente no WhatsApp que ajudamos a preencher' } });
+  const html = emailLembreteDocs({ nome, ...lembrete.email, cta: { texto: '📝 Concluir minha proposta', url: he ? LINK_PROPOSTA.he : LINK_PROPOSTA.fh, rodape: 'ou chame a gente no WhatsApp que ajudamos a preencher' } }, await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId));
   const mail = await sendOutboundEmail({ accountId, leadId: l.id, subject: lembrete.email.assunto, body: [lembrete.email.titulo, ...lembrete.email.paragrafos, lembrete.email.destaque].join('\n\n'), html, io: io || undefined }).catch(() => null);
   const movido = passo.tipo === 0 && /^prospec/.test(norm(l.stage?.name || '')) ? await moverPara(accountId, l.id, l.pipelineId, /^follow up/, '1 dia sem resposta (Follow Up 1 enviado)', io) : null;
   await prisma.note.create({ data: { leadId: l.id, type: 'COMMENT', content: `🔁 Follow Up ${passo.tipo + 1} de 3${mail?.success ? ' + e-mail' : ''}${movido ? ` — card pra "${movido}"` : ''} (3 Follow Ups de 3 em 3 dias → "Ainda deseja prosseguir?" 3 dias seguidos → Lead Sem Retorno).` } }).catch(() => {});

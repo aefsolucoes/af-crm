@@ -147,8 +147,11 @@ router.patch('/by-key/:key', async (req: AuthRequest, res: Response) => {
 router.put('/:id', async (req: AuthRequest, res: Response) => {
   try {
     const { name, type, tab, options, order } = req.body;
+    // Só campo da PRÓPRIA conta (plano do piloto 23/11: antes o id bastava e uma conta mexia nos campos da outra).
+    const dono = await prisma.fieldDefinition.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!dono) return res.status(404).json({ error: 'Campo não encontrado' });
     const field = await prisma.fieldDefinition.update({
-      where: { id: req.params.id },
+      where: { id: dono.id },
       data: { name, type, tab, options, order },
     });
     res.json(field);
@@ -160,7 +163,9 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
 // DELETE /api/fields/:id
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
-    await prisma.fieldDefinition.delete({ where: { id: req.params.id } });
+    const dono = await prisma.fieldDefinition.findFirst({ where: { id: req.params.id, accountId: req.user!.accountId }, select: { id: true } });
+    if (!dono) return res.status(404).json({ error: 'Campo não encontrado' });
+    await prisma.fieldDefinition.delete({ where: { id: dono.id } });
     res.json({ success: true });
   } catch {
     res.status(500).json({ error: 'Erro ao excluir campo' });

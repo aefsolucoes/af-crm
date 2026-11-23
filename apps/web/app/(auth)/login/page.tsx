@@ -8,6 +8,7 @@ import { useAuthStore } from '@/store/auth.store';
 import api from '@/lib/api';
 import { postLoginTarget } from '@/lib/login-redirect';
 import { LayoutDashboard, MailCheck, ArrowLeft } from 'lucide-react';
+import { EMPRESA_NOME } from '@/lib/empresa';
 
 function errMsg(e: unknown, fallback: string) {
   const r = e as { response?: { data?: { error?: string } } };
@@ -94,7 +95,7 @@ export default function LoginPage() {
             <LayoutDashboard size={32} className="text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">AF CRM</h1>
-          <p className="text-slate-300 text-sm mt-1">A&F Soluções Financeiras</p>
+          <p className="text-slate-300 text-sm mt-1">{EMPRESA_NOME}</p>
         </div>
 
         {/* Card */}

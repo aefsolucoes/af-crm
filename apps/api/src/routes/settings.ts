@@ -393,4 +393,20 @@ router.post('/site-lead/regenerate', async (req: AuthRequest, res: Response) => 
 // Base de Conhecimento em routes/knowledge.ts) — tabela não é apagada sem
 // pedido explícito.
 
+// GET /api/settings/empresa — dados da empresa da conta (nome, assinatura, telefone, site, convênio CAIXA…); campo não gravado = o da A&F.
+// PUT /api/settings/empresa { campo: valor } (administrador) — texto vazio volta ao padrão. Plano do piloto (Fabio 23/11).
+router.get('/empresa', async (req: AuthRequest, res: Response) => {
+  const { dadosDaConta } = require('../lib/empresa') as typeof import('../lib/empresa');
+  res.json(await dadosDaConta(req.user!.accountId));
+});
+router.put('/empresa', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administradores' });
+  const { gravarDadosDaConta } = require('../lib/empresa') as typeof import('../lib/empresa');
+  try {
+    res.json(await gravarDadosDaConta(req.user!.accountId, (req.body || {}) as Record<string, unknown>));
+  } catch {
+    res.status(500).json({ error: 'Erro ao salvar os dados da empresa' });
+  }
+});
+
 export default router;

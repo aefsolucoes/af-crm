@@ -294,7 +294,7 @@ async function enviarPasso(accountId: string, leadId: string, leadName: string, 
     return false;
   }
   const { emailLembreteDocs } = require('./email.service') as typeof import('./email.service');
-  const html = emailLembreteDocs({ nome, ...lembrete.email });
+  const html = emailLembreteDocs({ nome, ...lembrete.email }, await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId));
   const mail = await sendOutboundEmail({ accountId, leadId, subject: lembrete.email.assunto, body: [lembrete.email.titulo, ...lembrete.email.paragrafos, lembrete.email.destaque].join('\n\n'), html, io: io || undefined }).catch(() => null);
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🔁 Lembrete de documentação ${passo.tipo + 1} de 3 (loop: 3 lembretes, 1 a cada 3 dias → "Ainda deseja prosseguir?" 3 dias seguidos → 3 dias de espera → recomeça)${mail?.success ? ' + e-mail' : ''}.` } }).catch(() => {});
   logActivity({ accountId, userId: null, userName: 'Assistente IA', action: 'ai_replied', leadId, leadName, summary: `lembrete de documentação ${passo.tipo + 1} de 3` });

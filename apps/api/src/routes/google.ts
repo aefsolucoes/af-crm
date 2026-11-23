@@ -4,7 +4,7 @@ import {
   getAuthUrl, handleOAuthCallback, getGoogleStatus, disconnectGoogle,
   listFolders, setRootFolder, setWhatsAppAttachmentsFolder, createFolder, isGoogleConfigured, bulkArchiveOldAttachments,
   reorganizeWhatsAppArchive, checkGoogleConnection,
-  getFolderName, extractFolderId, moveDriveItem,
+  getFolderName, extractFolderId, moveDriveItem, lerEstadoOAuth,
 } from '../services/google.service';
 
 const router = Router();
@@ -14,14 +14,18 @@ const FRONTEND_URL = process.env.PUBLIC_FRONTEND_URL || 'https://crm.aefsolucoes
 // ─── Callback do OAuth — PÚBLICO (é o Google que redireciona para cá) ───────
 router.get('/oauth/callback', async (req: Request, res: Response) => {
   const code = req.query.code as string | undefined;
-  const state = req.query.state as string | undefined; // accountId
+  const state = req.query.state as string | undefined; // accountId assinado (lerEstadoOAuth)
   const error = req.query.error as string | undefined;
 
   if (error || !code || !state) {
     return res.send(htmlClose(`Não foi possível conectar o Google Drive${error ? ` (${error})` : ''}.`, false));
   }
+  const accountId = lerEstadoOAuth(state);
+  if (!accountId) {
+    return res.send(htmlClose('O link de conexão venceu ou não é válido. Clique de novo em "Conectar Google Drive" nas Configurações.', false));
+  }
   try {
-    await handleOAuthCallback(code, state);
+    await handleOAuthCallback(code, accountId);
     res.send(htmlClose('Google Drive conectado com sucesso! Pode fechar esta aba.', true));
   } catch (err: any) {
     const googleErr = err?.response?.data?.error_description

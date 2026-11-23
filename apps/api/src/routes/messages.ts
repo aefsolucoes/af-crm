@@ -71,7 +71,9 @@ router.post('/debug/test-email', async (req: AuthRequest, res: Response) => {
     await sendGenericEmail(
       to,
       'Teste de envio — AF CRM',
-      'Este é um e-mail de teste do envio automático de follow-up do AF CRM.\n\nSe você recebeu isso, o SMTP está funcionando certinho.'
+      'Este é um e-mail de teste do envio automático de follow-up do AF CRM.\n\nSe você recebeu isso, o SMTP está funcionando certinho.',
+      undefined,
+      req.user!.accountId,
     );
     console.log(`[EmailTest] Enviado com sucesso pra ${to}`);
     res.json({ ok: true });

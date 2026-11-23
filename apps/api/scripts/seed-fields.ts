@@ -50,8 +50,11 @@ const fieldDefs: { tab: string; name: string; key: string; type: FieldType; opti
 ];
 
 async function main() {
-  const account = await prisma.account.findFirst();
-  if (!account) { console.error('Nenhuma conta encontrada'); process.exit(1); }
+  // Exige a conta (ACCOUNT_ID=... ou 1º argumento): com mais de uma conta, o findFirst podia APAGAR os campos da conta errada (plano do piloto 23/11).
+  const accountId = process.env.ACCOUNT_ID || process.argv[2];
+  if (!accountId) { console.error('Informe a conta: ACCOUNT_ID=<id> npx ts-node scripts/seed-fields.ts'); process.exit(1); }
+  const account = await prisma.account.findUnique({ where: { id: accountId } });
+  if (!account) { console.error('Conta não encontrada'); process.exit(1); }
 
   await prisma.fieldDefinition.deleteMany({ where: { accountId: account.id } });
   for (const fd of fieldDefs) {

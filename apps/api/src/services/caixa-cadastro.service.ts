@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma';
+import { EMPRESA_AF, dadosDaConta } from '../lib/empresa';
 import { logActivity } from './activity.service';
 import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr016';
 import { comEmissaoDoRg } from './rg-emissao';
@@ -271,17 +272,18 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
  * ("Cliente possui avaliação de risco em andamento 00067671 - 3"); o nosso aparece no rodapé ("Código do Convênio 00077001-9"). Código diferente = outro correspondente.
  * Lido do texto da consulta atual (`outroCcaDe` — vale pras consultas de antes desta regra); a Avaliação de Risco não vai pra CAIXA enquanto aparecer
  * (pedirAvaliacao/travaAnaliseCaixa). `_caixaOutroCca` (fora de _caixaCadastro, que a fila regrava) só guarda o aviso já dado (push + anotação, uma vez por consulta). */
-const CONVENIO_AF = '00077001-9';
+// O nosso convênio vem dos dados da empresa da conta (lib/empresa.ts, plano do piloto 23/11); o rodapé da própria consulta continua valendo primeiro.
+const CONVENIO_AF = EMPRESA_AF.caixaConvenio;
 const codigoCca = (v: string) => v.replace(/\s+/g, '');
 /** Códigos de convênio de OUTROS correspondentes na consulta (avaliação em andamento / proposta solicitada). Pura. */
-export function outrosCorrespondentes(textos: string[]): { codigo: string; tipo: string }[] {
+export function outrosCorrespondentes(textos: string[], nossoConvenio: string = CONVENIO_AF): { codigo: string; tipo: string }[] {
   const out: { codigo: string; tipo: string }[] = [];
   for (const t of textos) {
     const txt = String(t || '');
-    const nosso = codigoCca(/c[oó]digo do conv[eê]nio\s*([0-9]{8}\s*-\s*[0-9])/i.exec(txt)?.[1] || CONVENIO_AF);
+    const nosso = codigoCca(/c[oó]digo do conv[eê]nio\s*([0-9]{8}\s*-\s*[0-9])/i.exec(txt)?.[1] || nossoConvenio);
     for (const m of txt.matchAll(/possui (avalia[cç][aã]o de risco em andamento|proposta solicitada)\s+([0-9]{8}\s*-\s*[0-9])/gi)) {
       const codigo = codigoCca(m[2]);
-      if (codigo === nosso || codigoCca(CONVENIO_AF) === codigo) continue;
+      if (codigo === nosso || codigoCca(nossoConvenio) === codigo) continue;
       const tipo = /avalia/i.test(m[1]) ? 'avaliação de risco em andamento' : 'proposta solicitada';
       if (!out.some((x) => x.codigo === codigo && x.tipo === tipo)) out.push({ codigo, tipo });
     }
@@ -298,7 +300,7 @@ export const outroCcaDe = (cf: Cf) => {
 };
 const descreveOutroCca = (cods: { codigo: string; tipo: string }[]) => cods.map((x) => `${x.tipo} (convênio ${x.codigo})`).join('; ');
 async function avisarOutroCorrespondente(accountId: string, leadId: string, nome: string, c: Cf, todos: boolean): Promise<void> {
-  const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')));
+  const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')), (await dadosDaConta(accountId)).caixaConvenio);
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true } });
   const atual = ((l?.customFields || {}) as Cf)._caixaOutroCca as Cf | undefined;
   if (!cods.length) {
