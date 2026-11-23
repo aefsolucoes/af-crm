@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi, pedirImovelSiopi } from '../services/siopi-proposta.service';
+import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi, pedirImovelSiopi, pedirValoresSiopi } from '../services/siopi-proposta.service';
 
 // Proposta da contratação da CAIXA no SIOPI (Fabio 16/11 e 18/11) — usada pela extensão "SIOPI (A&F)".
 const router = Router();
@@ -38,6 +38,15 @@ router.post('/:leadId/imovel', requirePermission('funnel_manage'), async (req: A
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const b = req.body || {};
   const erro = await pedirImovelSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, codigo: b.codigo ? String(b.codigo) : undefined }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+// Etapa "Valores da Operação" (Fabio 23/11): laudo + prazo + valores do card. { salvar: true } grava; sem, só preenche.
+router.post('/:leadId/valores', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const b = req.body || {};
+  const erro = await pedirValoresSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, prazo: Number(b.prazo) || undefined, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, fgts: b.fgts === 'S' ? 'S' : undefined }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
