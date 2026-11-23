@@ -198,6 +198,66 @@ export function qualFormulario(texto: string): { chave: string; cpf?: string } |
   return null;
 }
 
+type Problema = { nome: string; pagina: number; texto: string; outraPagina?: number };
+/** Assinaturas do PDF com a PÁGINA de cada uma (o widget do campo /Sig) e o certificado. Sem widget achado → as do /Contents com página 0 (desconhecida). */
+export async function assinaturasComPagina(bytes: Buffer): Promise<{ pagina: number; cert: string }[]> {
+  const base = assinaturasDoPdf(bytes);
+  if (!base.length) return [];
+  try {
+    const { PDFDocument, PDFName, PDFDict, PDFArray, PDFHexString, PDFString } = await import('pdf-lib');
+    const doc = await PDFDocument.load(bytes, { ignoreEncryption: true, updateMetadata: false });
+    const out: { pagina: number; cert: string }[] = [];
+    doc.getPages().forEach((pg, i) => {
+      const annots = pg.node.lookup(PDFName.of('Annots'));
+      if (!(annots instanceof PDFArray)) return;
+      for (let k = 0; k < annots.size(); k++) {
+        const d = annots.lookup(k);
+        if (!(d instanceof PDFDict)) continue;
+        let fld: any = d;
+        if (!fld.get(PDFName.of('FT')) && fld.get(PDFName.of('Parent'))) fld = fld.lookup(PDFName.of('Parent'));
+        if (!(fld instanceof PDFDict) || String(fld.get(PDFName.of('FT')) || '') !== '/Sig') continue;
+        const v = fld.lookup(PDFName.of('V'));
+        if (!(v instanceof PDFDict)) continue;
+        const c = v.get(PDFName.of('Contents'));
+        const cert = c instanceof PDFHexString || c instanceof PDFString ? Buffer.from(c.asBytes()).toString('latin1') : '';
+        if (cert) out.push({ pagina: i + 1, cert });
+      }
+    });
+    return out.length >= base.length ? out : base.map((b) => ({ pagina: 0, cert: b.cert }));
+  } catch { return base.map((b) => ({ pagina: 0, cert: b.cert })); }
+}
+/** O que falta: cada pessoa em cada página exigida. Página 0 (desconhecida) conta como qualquer página. Pura. */
+export function conferirAssinaturas(assin: { pagina: number; cert: string }[], precisam: { nome?: string; cpf?: string }[], paginas: number[]): Problema[] {
+  const out: Problema[] = [];
+  for (const p of precisam) {
+    const dela = assin.filter((a) => assinou([a], p));
+    const usadas = new Set<number>();
+    for (const pg of paginas) {
+      const idx = dela.findIndex((a, i) => !usadas.has(i) && (a.pagina === pg || a.pagina === 0 || pg === 0));
+      if (idx >= 0) { usadas.add(idx); continue; }
+      const sobra = dela.find((a, i) => !usadas.has(i));
+      out.push({ nome: chamar(String(p.nome || '')), pagina: pg, outraPagina: sobra?.pagina || undefined, texto: `${chamar(String(p.nome || ''))} na página ${pg}${sobra?.pagina ? ` (a assinatura dele(a) ficou na página ${sobra.pagina})` : ''}` });
+    }
+  }
+  return out;
+}
+/** Mensagem ao cliente pedindo o que faltou (uma só pra todos os formulários). Pura. */
+export function textoPedidoDeNovo(ps: { nome?: string }[], pedidos: { titulo: string; semAssinatura: boolean; problemas: Problema[] }[]): string {
+  const nomes = [...new Set(pedidos.flatMap((x) => x.problemas.map((y) => y.nome)).filter(Boolean))];
+  const chamada = (nomes.length ? nomes : ps.map((p) => chamar(String(p.nome || '')))).filter(Boolean);
+  const abre = chamada.length > 1 ? `${chamada.slice(0, -1).join(', ')} e ${chamada[chamada.length - 1]}` : chamada[0] || '';
+  const itens = pedidos.map((x) => {
+    if (x.semAssinatura) return `• ${x.titulo}: voltou sem a assinatura digital do gov.br — ${x.problemas.map((y) => `${y.nome} na página ${y.pagina}`).join(', ')}`;
+    return `• ${x.titulo}: falta ${x.problemas.map((y) => (y.outraPagina ? `${y.nome} na página ${y.pagina} (a assinatura ficou na página ${y.outraPagina})` : `${y.nome} na página ${y.pagina}`)).join(', ')}`;
+  });
+  return [
+    `${abre ? `${abre}, a` : 'A'} gente conferiu os formulários que voltaram e ${pedidos.length > 1 ? 'alguns ainda precisam' : 'um ainda precisa'} de assinatura:`,
+    ...itens,
+    '',
+    'É pelo gov.br (assinador.iti.br), em cima do arquivo que já voltou assinado, escolhendo a página indicada. Assinatura à mão ou foto não vale pra CAIXA. Depois é só mandar por aqui de novo.',
+  ].join('\n');
+}
+
 async function bytesDoAnexo(accountId: string, a: { data: Uint8Array | Buffer | null; driveFileId: string | null; mimeType: string }): Promise<Buffer | null> {
   if (a.data && a.data.length) return Buffer.from(a.data);
   if (!a.driveFileId) return null;
@@ -239,6 +299,8 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
   });
   const assinados: Cf = { ...(st.assinados || {}) };
   const avisos: Cf = { ...(st.avisos || {}) };
+  const tentativas: Cf = { ...(st.tentativas || {}) };
+  const pedidos: { titulo: string; semAssinatura: boolean; problemas: Problema[]; vez: number }[] = [];
   const linhas: string[] = [];
   const google = await import('./google.service');
   for (const a of novos) {
@@ -254,18 +316,21 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
     const chave = q.chave === 'ficha' ? (p ? `ficha:${p.ordem}` : '') : q.chave;
     const doc = (st.docs as Cf[]).find((d) => d.chave === chave);
     if (!doc) continue; // formulário que não foi pedido neste envio
+    if (assinados[chave]) continue; // já guardado (uma versão certa já voltou)
     const precisam: any[] = q.chave === 'mo30844' ? ps : q.chave === 'ficha' ? [p] : titular ? [titular] : [];
-    const assin = assinaturasDoPdf(bytes);
-    // Assinatura em mais de uma página (proposta da conta: páginas 1 e 4 — Fabio 23/11 "o cliente também precisa assinar na primeira folha"): uma assinatura do
-    // gov.br por página. O MO30844 tem uma página só pros dois: uma de cada.
-    const vezes = q.chave === 'mo30844' ? 1 : Math.max(1, (doc.paginas || []).length);
-    const faltam = precisam.filter((x) => !assinou(assin, x, vezes));
-    if (!assin.length || faltam.length) {
-      const k = `${chave}:${assin.length ? `falta${assin.length}` : 'sem'}`;
-      if (!avisos[k]) { avisos[k] = new Date().toISOString(); linhas.push(`⚠️ ${doc.titulo} voltou ${assin.length ? `assinado só em parte — falta a assinatura de ${faltam.map((x) => chamar(x.nome)).join(' e ')}${vezes > 1 ? ` (são ${vezes}: uma em cada página — ${listaPaginas(doc.paginas)})` : ''}` : 'SEM a assinatura digital do gov.br'} (${a.fileName}).`); }
+    // CONFERE (Fabio 23/11 "confere e solicita a assinatura"): cada pessoa, em cada página onde ela assina — proposta da conta nas páginas 1 e 4 ("o cliente
+    // também precisa assinar na primeira folha"), MO30844 os dois na mesma página. Sem a página da assinatura no PDF, vale a contagem.
+    const assin = await assinaturasComPagina(bytes);
+    const paginasDoc: number[] = (doc.paginas || []).length ? doc.paginas : [0];
+    const problemas = conferirAssinaturas(assin, precisam, q.chave === 'mo30844' ? [paginasDoc[0]] : q.chave === 'ficha' ? [paginasDoc[paginasDoc.length - 1]] : paginasDoc);
+    if (problemas.length) {
+      const vez = (Number(tentativas[chave]) || 0) + 1;
+      tentativas[chave] = vez;
+      const desc = !assin.length ? 'SEM a assinatura digital do gov.br' : `faltando: ${problemas.map((x) => x.texto).join('; ')}`;
+      linhas.push(`⚠️ ${doc.titulo} voltou ${desc} (${a.fileName})${vez > 1 ? ` — ${vez}ª vez` : ''}.`);
+      pedidos.push({ titulo: String(doc.titulo), semAssinatura: !assin.length, problemas, vez });
       continue;
     }
-    if (assinados[chave]) continue; // já guardado
     const link = String(cf.link_pasta_drive || '').trim();
     if (!link) { linhas.push(`⚠️ ${doc.titulo} voltou assinado, mas o card não tem a pasta do Drive.`); continue; }
     const pastaF = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
@@ -280,7 +345,26 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
   }
   const faltando = (st.docs as Cf[]).filter((d) => !assinados[d.chave]);
   const status = !faltando.length ? 'ASSINADO' : Object.keys(assinados).length ? 'PARCIAL' : st.status;
-  await salvaEstado(leadId, { ...st, status, assinados, avisos, vistos: [...vistos].slice(-200), ...(status === 'ASSINADO' ? { assinadoEm: new Date().toISOString() } : {}) });
+  await salvaEstado(leadId, { ...st, status, assinados, avisos, tentativas, vistos: [...vistos].slice(-200), ...(status === 'ASSINADO' ? { assinadoEm: new Date().toISOString() } : {}) });
+  // SOLICITA (Fabio 23/11): pede ao cliente, numa mensagem só, o que faltou — quem, em que página; voltou errado DE NOVO → push pra equipe ("manda um push caso
+  // venha novamente sem a assinatura"). Até 3 pedidos por formulário; depois só a equipe.
+  if (pedidos.length) {
+    const pedir = pedidos.filter((x) => x.vez <= 3);
+    if (pedir.length) {
+      const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+      const texto = textoPedidoDeNovo(ps, pedir);
+      let saiu = false;
+      if (await an.whatsappWindowOpen(leadId)) {
+        const { sendOutboundWhatsApp } = await import('./message.service');
+        saiu = !!((await sendOutboundWhatsApp({ accountId, leadId, content: texto, io } as any)) as any)?.success;
+      }
+      linhas.push(saiu ? `📨 Pedi ao cliente a assinatura que faltou:\n${texto}` : `⚠️ Não consegui pedir ao cliente (conversa fechada ou falha no envio). Texto pronto:\n${texto}`);
+    }
+    const repetidos = pedidos.filter((x) => x.vez >= 2);
+    if (repetidos.length) {
+      try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `✍️ ${l.name}: voltou de novo sem assinatura`, body: repetidos.map((x) => `${x.titulo} (${x.vez}ª vez)`).join(' · ').slice(0, 170), leadId }).catch(() => {}); } catch { /* só aviso */ }
+    }
+  }
   if (linhas.length) {
     await nota(leadId, `✍️ Formulários da CAIXA que voltaram:\n${linhas.join('\n')}${faltando.length ? `\n\nAinda faltam: ${faltando.map((d) => d.titulo).join(', ')}.` : '\n\n🎉 Todos os formulários estão assinados.'}`);
     io?.to?.(`lead:${leadId}`).emit('lead_updated', { leadId });
