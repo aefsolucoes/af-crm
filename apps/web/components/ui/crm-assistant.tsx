@@ -661,8 +661,8 @@ export function CrmAssistant() {
       {!chatAberto && (
         <button
           onClick={() => setChatAberto(true)}
-          className={cn('fixed z-50 flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-[#2261a8] shadow-md hover:bg-slate-50', escondeCelular && 'hidden md:flex')}
-          style={{ left: pos.x - 8, top: pos.y - 8, transition: anda }}
+          className={cn('fixed z-[51] flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-[#2261a8] shadow-md hover:bg-slate-50', escondeCelular && 'hidden md:flex')}
+          style={{ left: pos.x - 14, top: pos.y - 14, transition: anda }}
           onMouseEnter={segura}
           onMouseLeave={solta}
           title="Abrir o chat do Jarvis (escrever, anexar documento)"
