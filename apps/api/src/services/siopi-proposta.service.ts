@@ -44,6 +44,21 @@ export function cpfsDaProposta(cf: Cf): string[] {
   return [q.tomador, ...q.incluir, ...ps].filter(Boolean).map((p: any) => String(p.cpf || '').replace(/\D/g, '')).filter((c, i, a) => c.length === 11 && a.indexOf(c) === i);
 }
 
+/** Casamento na vigência da Lei 6515/77 (publicada em 27/12/1977) — a pergunta do SIOPI no regime de bens. Sem data = 'S'. Pura. */
+export function lei6515(dataCasamento: unknown): 'S' | 'N' {
+  const m = String(dataCasamento || '').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+  if (!m) return 'S';
+  return Number(`${m[3]}${m[2]}${m[1]}`) >= 19771227 ? 'S' : 'N';
+}
+
+/** Vendedores (`_caixaVendedores`) pra etapa Participantes: na ordem da ficha, com o cônjuge (o 2º do casal é vinculado ao 1º no SIOPI). Pura. */
+export function pessoasDaProposta(cf: Cf, ordens?: number[]): { ordem: number; cpf: string; nome: string; conjugeCpf: string | null; conjugeNome: string | null; lei6515: 'S' | 'N' }[] {
+  const { vendedoresDaFicha } = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
+  return vendedoresDaFicha(cf).filter((p: any) => String(p.cpf || '').replace(/\D/g, '').length === 11 && (!ordens?.length || ordens.includes(Number(p.ordem))))
+    .sort((a: any, b: any) => Number(a.ordem) - Number(b.ordem))
+    .map((p: any) => ({ ordem: Number(p.ordem), cpf: String(p.cpf).replace(/\D/g, ''), nome: String(p.nome || ''), conjugeCpf: String(p.conjuge?.cpf || '').replace(/\D/g, '') || null, conjugeNome: p.conjuge?.nome || null, lei6515: lei6515(p.dataCasamento) }));
+}
+
 /** A equipe pede a proposta no SIOPI (passo "abrir"). Erro em texto. */
 export async function pedirPropostaSiopi(accountId: string, leadId: string, por: string, userId: string | null = null): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
@@ -86,6 +101,12 @@ export async function proximaPropostaSiopi(accountId: string): Promise<any | nul
       await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
       return { tipo: 'proposta', passo: 'valores', leadId: id, leadName: l!.name, numero: st.escolhida, dados: st.valores.dados, salvar: st.valores.salvar === true };
     }
+    if (st.passo === 'participantes') {
+      const pessoas = pessoasDaProposta(cf, st.participantes?.ordens);
+      if (!st.escolhida || !pessoas.length) { await salvarP(id, (x) => { x.status = 'ERRO'; x.erro = 'sem a proposta escolhida ou os vendedores com CPF'; x.fim = new Date().toISOString(); }); continue; }
+      await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
+      return { tipo: 'proposta', passo: 'participantes', leadId: id, leadName: l!.name, numero: st.participantes?.numero || st.escolhida, pessoas, papel: 'Vendedor', salvar: st.participantes?.salvar === true, alterarEtapa: st.participantes?.alterarEtapa === true, obsEtapa: 'Inclusão dos vendedores do imóvel na proposta' };
+    }
     if (st.passo === 'imovel') {
       const cod = String(st.imovel?.codigo || cf._vistoriaCaixa?.codigoImovel || '').replace(/\D/g, '');
       if (!st.escolhida || !cod) { await salvarP(id, (x) => { x.status = 'ERRO'; x.erro = 'sem a proposta escolhida ou o código do imóvel no SIOPI'; x.fim = new Date().toISOString(); }); continue; }
@@ -115,7 +136,13 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
     return;
   }
   await salvarP(leadId, (x) => {
-    x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU', 'COMPLEMENTADO', 'PREENCHIDO', 'IMOVEL_VINCULADO', 'IMOVEL_ACHADO', 'IMOVEL_CADASTRADO', 'IMOVEL_CADASTRO_PREENCHIDO', 'VALORES_SALVOS', 'VALORES_PREENCHIDOS'].includes(etapa) ? etapa : 'ERRO';
+    x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU', 'COMPLEMENTADO', 'PREENCHIDO', 'IMOVEL_VINCULADO', 'IMOVEL_ACHADO', 'IMOVEL_CADASTRADO', 'IMOVEL_CADASTRO_PREENCHIDO', 'VALORES_SALVOS', 'VALORES_PREENCHIDOS', 'PARTICIPANTES_INCLUIDOS', 'PARTICIPANTE_PREENCHIDO'].includes(etapa) ? etapa : 'ERRO';
+    if (b.passo === 'participantes') {
+      const bb = b as any;
+      x.participantes = { ...(x.participantes || {}), resultado: etapa, feitos: bb.feitos || [], jaEstavam: bb.jaEstavam || [], lista: bb.lista || [], avisos: bb.avisos || [], precisaEtapa: !!bb.precisaEtapa, etapaAtual: bb.etapaAtual || null, at: new Date().toISOString(), ...(bb.etapaAlterada ? { etapaAlterada: bb.etapaAlterada } : {}) };
+      // A proposta volta pra "Negociada" quando os Valores da Operação são salvos de novo (a inclusão foi em "Em Negociação").
+      if (etapa === 'PARTICIPANTES_INCLUIDOS' && (x.participantes.depoisValores || x.participantes.etapaAlterada) && x.valores?.dados) { x.status = 'FILA'; x.passo = 'valores'; x.pedidoEm = new Date().toISOString(); x.tentativas = 0; x.valores = { ...x.valores, salvar: true }; delete x.inicio; }
+    }
     if (b.passo === 'valores') x.valores = { ...(x.valores || {}), resultado: etapa, feito: (b as any).feito || null, calculo: (b as any).calculo || null, semAvaliacao: !!(b as any).semAvaliacao, avisos: (b as any).avisos || [], at: new Date().toISOString() };
     if (b.passo === 'imovel' && x.imovel?.cadastro) { x.imovel = { ...(x.imovel || {}), cadastroResultado: etapa, cadastroFeito: (b as any).feito || null, cadastroAvisos: (b as any).avisos || [], cadastroAt: new Date().toISOString() }; if (etapa === 'IMOVEL_CADASTRADO') { const depois = x.imovel.depoisValores && x.valores?.dados; delete x.imovel.cadastro; if (depois) { x.status = 'FILA'; x.passo = 'valores'; x.pedidoEm = new Date().toISOString(); x.tentativas = 0; x.valores = { ...x.valores, salvar: true }; delete x.inicio; } } }
     else if (b.passo === 'imovel') x.imovel = { ...(x.imovel || {}), resultado: etapa, dados: (b as any).imovel || null, avisos: (b as any).avisos || [], at: new Date().toISOString(), ...(etapa === 'IMOVEL_VINCULADO' ? { vinculadoEm: x.imovel?.vinculadoEm || new Date().toISOString() } : {}) };
@@ -137,12 +164,18 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
           const ROT: Record<string, string> = { valorAtribuido: 'valor atribuído (laudo)', prazo: 'prazo (meses)', compraVenda: 'compra e venda', financiamento: 'financiamento', cota: 'cota', valorOperacao: 'valor da operação', recursosProprios: 'recursos próprios', taxaEfetiva: 'taxa efetiva a.a.', taxaNominal: 'taxa nominal a.a.', encargo: 'encargo mensal', amortizacao: 'amortização', juros: 'juros', seguroDFI: 'seguro DFI', seguroMIP: 'seguro MIP', prestacao: 'PRESTAÇÃO', taxaAdm: 'taxa de administração', taxasFinanciadas: 'taxas financiadas', taxasAVista: 'taxas à vista' };
           return `Valores da Operação ${etapa === 'VALORES_SALVOS' ? 'SALVOS' : 'preenchidos (sem salvar)'}:\n${Object.entries(f).map(([k, v]) => `• ${k}: ${v}`).join('\n')}${Object.keys(c).length ? `\n\nCalculado pelo SIOPI:\n${Object.entries(c).map(([k, v]) => `• ${ROT[k] || k}: ${v}`).join('\n')}` : ''}${(b as any).semAvaliacao ? '\n⚠️ O SIOPI ainda mostra "Imóvel sem avaliação".' : ''}${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`;
         })()
+        : etapa === 'PARTICIPANTES_INCLUIDOS' || etapa === 'PARTICIPANTE_PREENCHIDO' ? (() => {
+          const bb = b as any; const fs = (bb.feitos || []) as any[];
+          const linhas = fs.map((f) => `• ${f.nome || f.cpf} (${f.cpf}) — ${f.papel || '?'}${f.conjuge ? `, cônjuge de ${f.conjuge}${f.lei6515 ? ` (Lei 6515: ${f.lei6515})` : ''}` : ''}${f.estadoCivil ? ` · ${f.estadoCivil}` : ''}${(f.vazios || []).length ? ` · ⚠️ obrigatórios vazios: ${f.vazios.join(', ')}` : ''}${!f.salvo && (f.opcoesPapel || []).length ? `\n  papéis do SIOPI: ${f.opcoesPapel.join(' | ')}` : ''}`);
+          const lista = ((bb.lista || []) as any[]).map((p) => `• ${p.nome || p.cpf} — ${p.papel}`);
+          return `${etapa === 'PARTICIPANTES_INCLUIDOS' ? 'participantes INCLUÍDOS e conferidos na lista da proposta' : 'participante preenchido (sem salvar)'}:\n${linhas.join('\n') || '• (já estavam na proposta)'}${(bb.jaEstavam || []).length ? `\nJá estavam: ${bb.jaEstavam.join(', ')}` : ''}${bb.etapaAlterada ? `\nEtapa da proposta: ${bb.etapaAlterada.antes} → ${bb.etapaAlterada.depois} (o SIOPI só inclui participante em "Em Negociação"); os Valores da Operação vão ser salvos de novo.` : ''}${lista.length ? `\n\nParticipantes da proposta agora:\n${lista.join('\n')}` : ''}${(bb.avisos || []).length ? `\nAvisos do SIOPI: ${(bb.avisos as string[]).join(' | ')}` : ''}`;
+        })()
         : etapa === 'IMOVEL_CADASTRADO' || etapa === 'IMOVEL_CADASTRO_PREENCHIDO' ? `cadastro do imóvel ${etapa === 'IMOVEL_CADASTRADO' ? 'SALVO no SIOPI e importado na proposta' : 'preenchido (sem salvar)'}: ${Object.entries(((b as any).feito || {}) as Record<string, unknown>).map(([k, v]) => `${k} ${v}`).join(', ')}.${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`
         : etapa === 'IMOVEL_VINCULADO' || etapa === 'IMOVEL_ACHADO' ? (() => { const im = ((b as any).imovel || {}) as Record<string, any>; return `imóvel ${im.codigo || ''} ${etapa === 'IMOVEL_ACHADO' ? 'achado (NÃO vinculado — só conferência)' : im.jaVinculado ? `já estava vinculado à proposta${im.igual === false ? ' — ⚠️ É OUTRO imóvel, não o da vistoria' : ''}` : 'VINCULADO à proposta e conferido'}: matrícula ${im.matricula || '?'}, ${im.cartorio || ''}; ${[im.logradouro, im.numero].filter(Boolean).join(' ')}${im.bairro ? `, ${im.bairro}` : ''}${im.municipio ? ` — ${im.municipio}` : ''}${im.compraVenda ? `; compra e venda R$ ${im.compraVenda}` : ''}.${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}${etapa === 'IMOVEL_VINCULADO' ? '\nPróximo: Valores da Operação (selecionar a avaliação/laudo do imóvel).' : ''}`; })()
         : etapa === 'COMPLEMENTADO' || etapa === 'PREENCHIDO' ? `Complementar Dados da ${(b as any).numero || 'proposta'} ${etapa === 'COMPLEMENTADO' ? 'SALVO' : 'preenchido (sem salvar)'}:\n${Object.entries(((b as any).feito || {}) as Record<string, string>).map(([k, v]) => `• ${k}: ${v}`).join('\n')}${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`
           : `PAROU — ${b.erro || 'erro'}${(b as any).feito ? `\n(preenchido até: ${Object.keys((b as any).feito).join(', ')})` : ''}${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`;
   await note(leadId, `🏠 SIOPI — proposta (${b.passo || 'abrir'}): ${resumo}${tela?.texto ? `\n\n${tela.texto.slice(0, 2500)}` : ''}${campos.length ? `\n\nCampos:\n${campos.join('\n')}` : ''}${botoes.length ? `\n\nBotões: ${botoes.join(' · ')}` : ''}`);
-  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'VALORES_SALVOS' ? `Valores da Operação salvos${((b as any).calculo || {}).prestacao ? ` — prestação ${(b as any).calculo.prestacao}` : ''}` : etapa === 'IMOVEL_VINCULADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} vinculado à proposta` : etapa === 'IMOVEL_ACHADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} achado (não vinculado)` : etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'PARTICIPANTES_INCLUIDOS' ? `vendedores incluídos na proposta: ${(((b as any).feitos || []) as any[]).map((f) => f.nome).join(', ') || 'já estavam'}` : (b as any).precisaEtapa ? `participantes: a proposta está "${(b as any).etapaAtual || 'Negociada'}" — precisa voltar pra Em Negociação` : etapa === 'VALORES_SALVOS' ? `Valores da Operação salvos${((b as any).calculo || {}).prestacao ? ` — prestação ${(b as any).calculo.prestacao}` : ''}` : etapa === 'IMOVEL_VINCULADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} vinculado à proposta` : etapa === 'IMOVEL_ACHADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} achado (não vinculado)` : etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
 }
 
 /** CAIXA aprovou (Fabio 18/11: "ele pode verificar isso quando aprovar o crédito"): anota se a proposta já existe no SIOPI. Propagada → a extensão só PROCURA a
@@ -255,5 +288,34 @@ export async function pedirValoresSiopi(accountId: string, leadId: string, por: 
   const dados = { prazo: String(prazo), compraVenda: br(cv), financiamento: br(fin), valorLaudo: laudo, fgts: d.fgts === 'S' ? 'S' : 'N' };
   await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'valores'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.valores = { dados, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
   await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Valores da Operação na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): avaliação = laudo R$ ${br(laudo)}, prazo ${prazo} meses, compra e venda R$ ${dados.compraVenda}, financiamento R$ ${dados.financiamento}, FGTS ${dados.fgts === 'S' ? 'Sim' : 'Não'}.`);
+  return null;
+}
+
+/** Etapa "Participantes" (Fabio 23/11, "Pode incluir"): os vendedores do imóvel entram na proposta (papel Vendedor; o 2º do casal vinculado como cônjuge do 1º).
+ *  Precisam estar GRAVADOS no Caixa Aqui (é o que os faz aparecer no SIOPI — Fabio 18/11). Proposta "Negociada" não aceita participante novo: `alterarEtapa` volta pra
+ *  "Em Negociação" (Alterar Etapa); depois de incluir, os Valores da Operação são salvos de novo. `salvar` false = só preenche o 1º. `numero` = outra proposta do
+ *  cliente, só pra conferir a tela (sem salvar). Erro em texto. */
+export async function pedirParticipantesSiopi(accountId: string, leadId: string, por: string, d: { salvar?: boolean; ordens?: number[]; numero?: string; alterarEtapa?: boolean } = {}): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const st = (cf._siopiProposta || {}) as Cf;
+  if (!st.escolhida) return 'O card ainda não tem a proposta do SIOPI escolhida';
+  if (st.status === 'RODANDO' && st.inicio && Date.now() - Date.parse(st.inicio) < LEASE_MS) return 'A extensão já está com a proposta deste card';
+  const pessoas = pessoasDaProposta(cf, d.ordens);
+  if (!pessoas.length) return 'O card não tem os vendedores com CPF (monte a ficha dos vendedores pela pasta VENDEDOR)';
+  const cad = (cf._caixaVendedores?.cadastros || {}) as Record<string, any>;
+  const semCadastro = pessoas.filter((p) => cad[p.ordem]?.status !== 'GRAVADO');
+  if (semCadastro.length) return `Cadastre no Caixa Aqui antes (sem cadastro o SIOPI não acha): ${semCadastro.map((p) => p.nome).join(', ')}`;
+  let numero: string | undefined;
+  if (d.numero) {
+    if (d.salvar) return 'Outra proposta só pra conferir a tela (sem salvar)';
+    if (!((st.propostas || []) as any[]).some((p) => p?.numero === d.numero)) return `A proposta ${d.numero} não está entre as do cliente`;
+    numero = d.numero;
+  }
+  const depoisValores = !numero && d.salvar === true && st.valores?.resultado === 'VALORES_SALVOS' && !!st.valores?.dados;
+  await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'participantes'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.participantes = { ...(d.ordens?.length ? { ordens: d.ordens } : {}), ...(numero ? { numero } : {}), salvar: d.salvar === true, alterarEtapa: d.alterarEtapa === true, depoisValores, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
+  const mc = (c: string) => `${c.slice(0, 3)}.***.***-${c.slice(9)}`;
+  await note(leadId, `🏠 SIOPI — proposta ${numero || st.escolhida}: Participantes na fila (${por}, ${d.salvar ? 'INCLUIR e conferir' : 'só preencher o 1º, sem salvar'}): ${pessoas.map((p, i) => `${p.nome} (${mc(p.cpf)}) como Vendedor${i > 0 && p.conjugeCpf && pessoas.some((q) => q.cpf === p.conjugeCpf) ? `, cônjuge de ${p.conjugeNome}` : ''}`).join('; ')}.${d.alterarEtapa ? ' Se a proposta estiver "Negociada", volta pra "Em Negociação" antes (Alterar Etapa).' : ''}${depoisValores ? ' Depois, os Valores da Operação de novo.' : ''}`);
   return null;
 }

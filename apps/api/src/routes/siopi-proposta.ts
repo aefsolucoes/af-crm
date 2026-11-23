@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi, pedirImovelSiopi, pedirValoresSiopi } from '../services/siopi-proposta.service';
+import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi, pedirImovelSiopi, pedirValoresSiopi, pedirParticipantesSiopi } from '../services/siopi-proposta.service';
 
 // Proposta da contratação da CAIXA no SIOPI (Fabio 16/11 e 18/11) — usada pela extensão "SIOPI (A&F)".
 const router = Router();
@@ -48,6 +48,15 @@ router.post('/:leadId/valores', requirePermission('funnel_manage'), async (req: 
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const b = req.body || {};
   const erro = await pedirValoresSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, prazo: Number(b.prazo) || undefined, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, fgts: b.fgts === 'S' ? 'S' : undefined }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+// Etapa "Participantes" (Fabio 23/11 "Pode incluir"): os vendedores na proposta. { salvar: true, alterarEtapa: true } inclui (voltando "Negociada" → "Em Negociação").
+router.post('/:leadId/participantes', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const b = req.body || {};
+  const erro = await pedirParticipantesSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, alterarEtapa: b.alterarEtapa === true, numero: b.numero ? String(b.numero) : undefined, ordens: Array.isArray(b.ordens) ? b.ordens.map(Number).filter((n: number) => n > 0) : undefined }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
