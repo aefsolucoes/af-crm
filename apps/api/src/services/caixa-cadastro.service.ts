@@ -663,6 +663,8 @@ export async function salvarFormularioCaixa(accountId: string, leadId: string, o
   if (data.length < 1000 || data.subarray(0, 4).toString('latin1') !== '%PDF') return 'O arquivo do formulário não é um PDF';
   const vend = require('./caixa-vendedores.service') as typeof import('./caixa-vendedores.service');
   const ehVend = vend.ehOrdemVendedor(ordem);
+  // Ficha do VENDEDOR não vai pro Drive (Fabio 23/11: "não precisa de ficha dos vendedores, somente compradores, não precisa nem ter salvo a ficha deles").
+  if (ehVend) return null;
   const p = (ehVend ? vend.vendedoresDaFicha(cf) : participantesDa(cf)).find((x) => x.ordem === Number(ordem));
   const quem = String(p?.nome || `${ordem}º participante`).toUpperCase();
   const nome = `FICHA CADASTRAL CAIXA - ${ehVend ? 'VENDEDOR ' : ''}${quem}.pdf`;
