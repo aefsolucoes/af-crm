@@ -42,9 +42,9 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   const cf = (l.customFields || {}) as Cf;
   const link = String(cf.link_pasta_drive || '').trim();
   if (!link) return 'O card não tem a pasta do Drive';
-  // Janela de 24 h do WhatsApp: fora dela a Meta recusa arquivo/texto livre (só template).
-  const ultima = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND' }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
-  if (!previa && (!ultima || Date.now() - ultima.createdAt.getTime() > 23.5 * 3600_000)) return `a conversa está fechada no WhatsApp (o cliente falou por último em ${ultima ? ultima.createdAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '—'}) — precisa do template antes de mandar os formulários`;
+  // Janela de 24 h do WhatsApp fechada: template de atualização agora e os formulários saem sozinhos quando o cliente responder (processAssinaturasAoAbrir).
+  const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!previa && !(await an.whatsappWindowOpen(leadId))) return aoAbrir(accountId, leadId, l.name, cf, por, io);
 
   const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const prod = require('./caixa-produtos.service') as typeof import('./caixa-produtos.service');
@@ -105,8 +105,63 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
     if (!r.success) { await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Assinaturas CAIXA: não consegui mandar "${d.nome}" (${r.error}). Mandados antes: ${enviados.join(', ') || 'nenhum'}.` } }).catch(() => {}); return `não consegui mandar "${d.nome}": ${r.error}`; }
     enviados.push(`${d.titulo} (${d.quem || 'cliente'}, ${listaPaginas(d.paginas)})`);
   }
-  const estado = JSON.stringify({ pedidoEm: new Date().toISOString(), por, docs: docs.map((d) => ({ id: d.id, nome: d.nome, quem: d.quem, paginas: d.paginas })) });
+  const estado = JSON.stringify({ status: 'ENVIADO', pedidoEm: new Date().toISOString(), por, docs: docs.map((d) => ({ id: d.id, nome: d.nome, quem: d.quem, paginas: d.paginas })) });
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAssinaturas}', ${estado}::jsonb, true) WHERE id = ${leadId}`;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✍️ Formulários da CAIXA mandados ao cliente pra assinar pelo gov.br (pedido de ${por}):\n${enviados.map((x) => `• ${x}`).join('\n')}` } }).catch(() => {});
   return null;
+}
+
+const VALIDADE_MS = 7 * 86_400_000;
+const ESPERA_IA_MS = 2 * 60_000;
+const nota = (leadId: string, content: string) => prisma.note.create({ data: { leadId, type: 'COMMENT', content } }).catch(() => {});
+async function salvaEstado(leadId: string, v: Cf) {
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAssinaturas}', ${JSON.stringify(v)}::jsonb, true) WHERE id = ${leadId}`;
+}
+/** Conversa fechada: guarda o pedido e chama o cliente pelo template de atualização (07h–21h; fora disso o poller manda). Devolve null = pedido aceito. */
+async function aoAbrir(accountId: string, leadId: string, leadName: string, cf: Cf, por: string, io?: any): Promise<string | null> {
+  const st: Cf = { status: 'AO_ABRIR', por, at: new Date().toISOString() };
+  await salvaEstado(leadId, st);
+  const t = await mandaTemplate(accountId, leadId, leadName, cf, io);
+  if (t === 'ok') { st.templateAt = new Date().toISOString(); await salvaEstado(leadId, st); }
+  await nota(leadId, `✍️ Formulários da CAIXA pra assinar pelo gov.br (pedido de ${por}): a conversa está fechada — ${t === 'ok' ? 'mandei o template de atualização' : t === 'horario' ? 'o template de atualização sai às 07h' : `o template de atualização não saiu (${t})`}. Os formulários (fichas, conta, cartão e MO30844) saem sozinhos quando o cliente responder.`);
+  return t === 'ok' || t === 'horario' ? null : `a conversa está fechada e o template de atualização não saiu (${t}) — os formulários ficaram guardados pra quando o cliente responder`;
+}
+async function mandaTemplate(accountId: string, leadId: string, leadName: string, cf: Cf, io?: any): Promise<string> {
+  const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  if (!an.inNoticeWindow()) return 'horario';
+  const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
+  const nome = callableFirstName(cf.falando_com, cf.nome_social_1, cf.participante_1, leadName) || 'cliente';
+  const { templateAtualizacaoDoLead } = require('./template-atualizacao') as typeof import('./template-atualizacao');
+  const msg = require('./message.service') as typeof import('./message.service');
+  const t = await msg.sendOutboundWhatsAppTemplate({ accountId, leadId, ...(await templateAtualizacaoDoLead(leadId, nome)), io });
+  return t.success ? 'ok' : String((t as any).error || 'erro');
+}
+
+/** Poller (credit-auto, 1 min): formulários esperando a conversa abrir. O cliente respondeu → 2 min (a IA responde primeiro) → manda tudo, uma vez. */
+export async function processAssinaturasAoAbrir(accountId: string, io: any): Promise<void> {
+  const ids = await prisma.$queryRaw<{ id: string }[]>`
+    SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "customFields"->'_caixaAssinaturas'->>'status' = 'AO_ABRIR' LIMIT 20`;
+  const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
+  for (const { id } of ids) {
+    try {
+      const l = await prisma.lead.findUnique({ where: { id }, select: { name: true, status: true, customFields: true } });
+      const cf = (l?.customFields || {}) as Cf;
+      const st = (cf._caixaAssinaturas || {}) as Cf;
+      if (!l || st.status !== 'AO_ABRIR' || !st.at) continue;
+      if (l.status !== 'OPEN' || Date.now() - Date.parse(st.at) > VALIDADE_MS) {
+        await salvaEstado(id, { ...st, status: 'SEM_RESPOSTA', fim: new Date().toISOString() });
+        await nota(id, `⚠️ Os formulários da CAIXA pra assinar não saíram: ${l.status !== 'OPEN' ? 'o card não está mais aberto' : 'o cliente não respondeu em 7 dias'}. Peça de novo quando ele voltar.`);
+        try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `✍️ ${l.name}: formulários não saíram`, body: 'O cliente não respondeu ao template em 7 dias.', leadId: id }).catch(() => {}); } catch { /* só aviso */ }
+        continue;
+      }
+      if (!st.templateAt) { const t = await mandaTemplate(accountId, id, l.name, cf, io); if (t === 'ok') await salvaEstado(id, { ...st, templateAt: new Date().toISOString() }); continue; }
+      const resp = await prisma.message.findFirst({ where: { leadId: id, direction: 'INBOUND', createdAt: { gt: new Date(st.at) } }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } });
+      if (!resp || Date.now() - resp.createdAt.getTime() < ESPERA_IA_MS) continue;
+      if (!an.inNoticeWindow() || !(await an.whatsappWindowOpen(id))) continue;
+      await salvaEstado(id, { ...st, status: 'ENVIANDO' }); // antes de mandar: nunca sai duas vezes
+      const erro = await pedirAssinaturasCaixa(accountId, id, st.por || 'equipe', undefined, io);
+      if (erro) { await salvaEstado(id, { ...st, status: 'ERRO', erro, fim: new Date().toISOString() }); await nota(id, `⚠️ O cliente respondeu, mas os formulários da CAIXA não saíram: ${erro}`); }
+      io?.to?.(`lead:${id}`).emit('lead_updated', { leadId: id });
+    } catch (e: any) { console.warn('[Assinaturas CAIXA]', e?.message); }
+  }
 }
