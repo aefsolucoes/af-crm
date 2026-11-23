@@ -1013,18 +1013,26 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
   // "a proposta foi descontinuada por falta de interação, quando a cliente quiser retornar, só avisar"). O portal mostra "Processamento e documentos / Rejeitado — A proposta foi
   // negada — Proposta fora da política interna: motivo não pode ser aberto". Com aprovação anterior da Creditas no card, a leitura vira STAND-BY: não conta como reprovado (sem
   // negativa, sem rodada nova), a aprovação continua valendo no que a IA vê e o card ganha a marca _creditasStandBy (a mesma do e-mail "descontinuada").
-  if (row.bank === 'CREDITAS' && !row.dryRun && next === 'REJECTED' && RX_CREDITAS_NEGADA_STANDBY.test(String(data.detail || '')) && !RX_CREDITAS_REPROVACAO_DE_FATO.test(String(data.detail || ''))) {
+  // A extensão (≥ 2026.11.23.1) já manda "verificar" com a marca quando a página da proposta mostra a negativa JUNTO das condições de aprovação.
+  const detStandBy = String(data.detail || '');
+  const standByDaExtensao = next === 'CHECK' && detStandBy.includes(STANDBY_CREDITAS_PREFIXO);
+  if (row.bank === 'CREDITAS' && !row.dryRun && (standByDaExtensao || (next === 'REJECTED' && RX_CREDITAS_NEGADA_STANDBY.test(detStandBy) && !RX_CREDITAS_REPROVACAO_DE_FATO.test(detStandBy)))) {
     const aprovadaAntes = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: 'CREDITAS', dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } });
-    if (aprovadaAntes) {
-      const lido = String(data.detail || '').replace(/^RESULTADO:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+    if (aprovadaAntes && !standByDaExtensao) {
+      const lido = detStandBy.replace(/^RESULTADO:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 300);
       next = 'CHECK';
       data = { ...data, status: 'CHECK', detail: `${STANDBY_CREDITAS_PREFIXO} a Creditas parou a proposta pré-aprovada por falta de movimentação — o portal mostra "${lido}". Quando o cliente quiser seguir (mandar a documentação), avise a Creditas no grupo do WhatsApp que eles resgatam a operação, sem novo cadastro.` };
+    }
+    if (next === 'CHECK') {
+      const NOTA_STANDBY = '⏸️ Creditas: o portal mostra a proposta NEGADA em "Processamento e documentos" — é STAND-BY por falta de movimentação, não reprovação (a pré-aprovação continua). Quando o cliente quiser seguir, avise a Creditas no grupo do WhatsApp que eles resgatam a operação (sem novo cadastro).';
       const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
       const sb = (lead?.customFields as any)?._creditasStandBy;
-      if (!sb?.at || new Date(sb.at).getTime() <= aprovadaAntes.updatedAt.getTime()) { // sem marca (ou marca mais velha que a aprovação): grava a do portal + nota
+      if (aprovadaAntes && (!sb?.at || new Date(sb.at).getTime() <= aprovadaAntes.updatedAt.getTime())) { // sem marca (ou marca mais velha que a aprovação): grava a do portal + nota
         const marca = JSON.stringify({ at: new Date().toISOString(), fonte: 'portal' });
         await db.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_creditasStandBy}', ${marca}::jsonb, true) WHERE id = ${row.leadId}`.catch(() => {});
-        await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⏸️ Creditas: o portal mostra a proposta NEGADA em "Processamento e documentos" — é STAND-BY por falta de movimentação, não reprovação (a pré-aprovação continua). Quando o cliente quiser seguir, avise a Creditas no grupo do WhatsApp que eles resgatam a operação (sem novo cadastro).' } }).catch(() => {});
+        await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: NOTA_STANDBY } }).catch(() => {});
+      } else if (!aprovadaAntes && !(await db.note.findFirst({ where: { leadId: row.leadId, content: NOTA_STANDBY, createdAt: { gt: new Date(Date.now() - 7 * 86_400_000) } }, select: { id: true } }))) {
+        await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: NOTA_STANDBY } }).catch(() => {});
       }
     }
   }
@@ -1160,7 +1168,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
     if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } }).catch(() => {});
   }
-  if (becameFinal && !updated.dryRun && next === 'CHECK' && !String(updated.detail || '').startsWith(STANDBY_CREDITAS_PREFIXO)) { // stand-by da Creditas já tem a nota própria
+  if (becameFinal && !updated.dryRun && next === 'CHECK' && !String(updated.detail || '').includes(STANDBY_CREDITAS_PREFIXO)) { // stand-by da Creditas já tem a nota própria
     const label = BANKS[updated.bank]?.label || updated.bank;
     const txt = String(updated.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/^conferir:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 360);
     if (txt) {
@@ -1265,7 +1273,7 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
     // Creditas em STAND-BY (Fabio 23/11): conferir de novo só repete a leitura — para aqui; volta quando o cliente quiser seguir e a Creditas resgatar.
-    if (row.status === 'CHECK' && String(row.detail || '').startsWith(STANDBY_CREDITAS_PREFIXO)) return db.creditAnalysis.update({ where: { id: row.id }, data: { attempt: CHECK_MAX_TRIES } });
+    if (row.status === 'CHECK' && String(row.detail || '').includes(STANDBY_CREDITAS_PREFIXO)) return db.creditAnalysis.update({ where: { id: row.id }, data: { attempt: CHECK_MAX_TRIES } });
     if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
     // Cadastro divergente (Santander): ler a lista de 10 em 10 min não adianta — o cliente não aparece até o cadastro ser corrigido. Para as conferências; o CRM pergunta ao cliente e refaz a análise quando ele corrige.
     const rodada = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'RUN', dryRun: false, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, select: { detail: true, conditions: true } });
@@ -2440,7 +2448,9 @@ export async function aiCreditContext(db: Db, leadId: string): Promise<string> {
         return 'ENVIADO ao banco, EM ANÁLISE — ainda sem resultado';
       }
       case 'INCOMPLETE': return 'EM ANÁLISE — o banco pediu mais dados do cliente (a equipe está completando)';
-      case 'CHECK': return 'EM ANÁLISE — ainda sem resultado conclusivo';
+      case 'CHECK': return String(r.detail || '').includes(STANDBY_CREDITAS_PREFIXO)
+        ? 'STAND-BY — a Creditas parou a proposta pré-aprovada por falta de movimentação (NÃO é reprovação). Volta a valer quando o cliente mandar a documentação (a equipe pede o resgate à Creditas). NÃO diga que foi reprovado nem confirme valor/parcela como liberado; diga que, pra seguir, precisamos dos documentos dele'
+        : 'EM ANÁLISE — ainda sem resultado conclusivo';
       default: return 'NÃO ANALISADO nesse banco (assunto interno: não explique o motivo ao cliente)';
     }
   };
