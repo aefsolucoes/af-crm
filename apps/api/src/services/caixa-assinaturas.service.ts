@@ -218,7 +218,8 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
   const cf = (l?.customFields || {}) as Cf;
   const st = (cf._caixaAssinaturas || {}) as Cf;
   if (!l || !st.pedidoEm || !Array.isArray(st.docs)) return;
-  const vistos = new Set<string>(st.vistos || []);
+  // Envio antigo (docs sem chave): os anexos marcados como vistos pela versão que não reconhecia os formulários são relidos uma vez.
+  const vistos = new Set<string>((st.docs as Cf[]).every((d) => d.chave) ? st.vistos || [] : []);
   const atts = await prisma.messageAttachment.findMany({ where: { leadId, createdAt: { gt: new Date(st.pedidoEm) }, message: { direction: 'INBOUND' }, OR: [{ mimeType: 'application/pdf' }, { fileName: { endsWith: '.pdf', mode: 'insensitive' } }] }, orderBy: { createdAt: 'asc' }, take: 40, select: { id: true, fileName: true, mimeType: true, data: true, driveFileId: true, createdAt: true } });
   const novos = atts.filter((a) => !vistos.has(a.id));
   if (!novos.length) return;
