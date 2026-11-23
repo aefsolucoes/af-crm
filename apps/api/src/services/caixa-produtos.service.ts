@@ -57,7 +57,7 @@ export function titularDosProdutos(cf: Cf, ordem?: number): { ordem: number; nom
 }
 
 /** A equipe pede a conta/cartão (1ª fase: só consulta). Erro em texto. */
-export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string; encaminhar?: boolean; regerar?: boolean } | null; cartao?: boolean | { solicitar?: boolean; bandeira?: string; vencimento?: string; limite?: string; variante?: string } } = {}): Promise<string | null> {
+export async function pedirProdutosCaixa(accountId: string, leadId: string, por: string, opts: { ordem?: number; modo?: 'olhar' | 'ate'; avancos?: number; conta?: { tipo: 'corrente'; cheque: boolean; gerar: boolean; limite?: string; encaminhar?: boolean; regerar?: boolean } | null; cartao?: boolean | { solicitar?: boolean; bandeira?: string; vencimento?: string; limite?: string; variante?: string }; formularios?: boolean } = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -74,11 +74,21 @@ export async function pedirProdutosCaixa(accountId: string, leadId: string, por:
   if (opts.conta && !opts.conta.gerar && opts.conta.encaminhar && !st.numeroConta) return 'A conta ainda não tem nº gerado — peça a conta (gerar) primeiro';
   if (opts.conta?.encaminhar && /^ENCAMINHADO/.test(String(st.contaStatus || ''))) return 'A proposta da conta já foi encaminhada';
   if (typeof opts.cartao === 'object' && opts.cartao.solicitar && /^SOLICITADO/.test(String(st.cartaoStatus || ''))) return 'O cartão já foi solicitado — não solicito outro';
+  // Formulários impressos (Fabio 23/11 "pode salvar"): só o "imprimir" das linhas da conta e do cartão em Formulários Enviados → PDF na pasta FORMULARIOS.
+  if (opts.formularios) {
+    await salvarProd(leadId, (x) => {
+      if (x.status && x.status !== 'FILA') x.anteriores = [...(x.anteriores || []), { status: x.status, fim: x.fim, modo: x.modo }].slice(-5);
+      Object.assign(x, { status: 'FILA', modo: 'formularios', imprimir: true, avancos: 0, conta: null, cartao: null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0 });
+      delete x.inicio; delete x.fim;
+    });
+    await note(leadId, `📄 Formulários da conta e do cartão CAIXA de ${t.nome} (proponente) pedidos por ${por} — a extensão abre Formulários Enviados, clica só no "imprimir" das linhas da conta e do cartão e salva o PDF na pasta FORMULARIOS do Drive (não clica em mais nada).`);
+    return null;
+  }
   // Com a conta definida (Fabio 19/11: "com cheque especial") a tela do endereço precisa ser avançada: no mínimo 1.
   const avancos = Math.max(opts.conta ? 1 : 0, Math.min(8, Number(opts.avancos) || 0));
   await salvarProd(leadId, (x) => {
     if (x.status && x.status !== 'FILA') x.anteriores = [...(x.anteriores || []), { status: x.status, fim: x.fim, modo: x.modo }].slice(-5);
-    Object.assign(x, { status: 'FILA', modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.cartao ? null : (opts.conta || null), cartao: opts.cartao ? { consultar: true, ...(typeof opts.cartao === 'object' && opts.cartao.solicitar ? { solicitar: true, bandeira: opts.cartao.bandeira || 'MASTERCARD', vencimento: opts.cartao.vencimento || '10', ...(opts.cartao.limite ? { limite: opts.cartao.limite } : {}), ...(opts.cartao.variante ? { variante: opts.cartao.variante } : {}) } : {}) } : null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
+    Object.assign(x, { status: 'FILA', imprimir: false, modo: opts.conta ? 'ate' : (opts.modo || 'olhar'), avancos, conta: opts.cartao ? null : (opts.conta || null), cartao: opts.cartao ? { consultar: true, ...(typeof opts.cartao === 'object' && opts.cartao.solicitar ? { solicitar: true, bandeira: opts.cartao.bandeira || 'MASTERCARD', vencimento: opts.cartao.vencimento || '10', ...(opts.cartao.limite ? { limite: opts.cartao.limite } : {}), ...(opts.cartao.variante ? { variante: opts.cartao.variante } : {}) } : {}) } : null, ordem: t.ordem, nome: t.nome, pedidoEm: new Date().toISOString(), por, tentativas: 0, aprovados });
     delete x.inicio; delete x.fim;
     if (opts.conta?.gerar && opts.conta.regerar && x.numeroConta) { x.numerosAnteriores = [...(x.numerosAnteriores || []), { numero: x.numeroConta, em: x.contaGeradaEm }].slice(-5); delete x.numeroConta; delete x.contaGeradaEm; delete x.contaStatus; }
   });
@@ -104,7 +114,7 @@ export async function proximoProdutosCaixa(accountId: string): Promise<any | nul
     const t = titularDosProdutos(cf, st.ordem);
     if ('erro' in t) { await salvarProd(id, (x) => { x.status = `PAROU: ${t.erro}`; x.fim = new Date().toISOString(); }); await note(id, `⏸️ Conta/cartão CAIXA: ${t.erro}.`); continue; }
     await salvarProd(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
-    return { tipo: 'produtos', modo: st.modo || 'olhar', avancos: Number(st.avancos) || 0, conta: st.conta || null, cartao: st.cartao ? { ...st.cartao, ...(st.cartao.solicitar ? { email: t.email } : {}) } : null, leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
+    return { tipo: 'produtos', formularios: st.imprimir === true, modo: st.modo || 'olhar', avancos: Number(st.avancos) || 0, conta: st.conta || null, cartao: st.cartao ? { ...st.cartao, ...(st.cartao.solicitar ? { email: t.email } : {}) } : null, leadId: id, leadName: l!.name, ordem: t.ordem, nome: t.nome, cpf: t.cpf };
   }
   return null;
 }
@@ -121,4 +131,26 @@ export async function gravarProdutosCaixa(accountId: string, leadId: string, r: 
   const st = await salvarProd(leadId, (x) => { if (propConta) x.contaProposta = propConta; x.status = status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 7000); x.mapa = r.mapa || null; x.botoes = (r.botoes || []).slice(0, 40); if (r.numeroConta) { x.numeroConta = String(r.numeroConta).slice(0, 40); x.contaGeradaEm = new Date().toISOString(); } if (x.cartao && /cart[aã]o/i.test(status)) { x.cartaoStatus = status; x.cartaoEm = new Date().toISOString(); } if (x.conta && /^(ENCAMINHADO|GERADO|CONFERIR: conta)/.test(status)) { x.contaStatus = status; x.contaEm = new Date().toISOString(); } });
   await note(leadId, `🏦 Conta + cartão CAIXA de ${st.nome || 'proponente'} — ${status}${r.numeroConta ? `\n💳 Nº da conta gerado no Caixa Aqui: ${r.numeroConta}` : ''}\n\n${String(r.texto || '').slice(0, 6000)}${(r.botoes || []).length ? `\n\nBotões na tela: ${(r.botoes || []).join(' | ')}` : ''}`);
   push(accountId, `🏦 ${l.name}: conta/cartão CAIXA`, status, leadId);
+}
+
+/** PDF do "Imprimir Formulário" da conta ou do cartão (a extensão manda) → pasta FORMULARIOS do Drive do card (Fabio 23/11 "pode salvar"; mesmo lugar da ficha
+ *  cadastral). Substitui o de mesmo nome. Erro em texto. */
+export async function salvarFormularioProduto(accountId: string, leadId: string, qual: 'conta' | 'cartao', pdfBase64: string, proposta?: string): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const link = String(cf.link_pasta_drive || '').trim();
+  if (!link) return 'O card não tem a pasta do Drive';
+  const data = Buffer.from(String(pdfBase64 || ''), 'base64');
+  if (data.length < 1000 || data.subarray(0, 4).toString('latin1') !== '%PDF') return 'O arquivo não é um PDF';
+  const st = cf._caixaProdutos || {};
+  const quem = String(st.nome || 'PROPONENTE').toUpperCase();
+  const nome = `${qual === 'conta' ? 'PROPOSTA ABERTURA DE CONTA CAIXA' : 'PROPOSTA CARTAO DE CREDITO CAIXA'} - ${quem}.pdf`;
+  const google = await import('./google.service');
+  const pasta = await google.createFolder(accountId, 'FORMULARIOS', google.extractFolderId(link));
+  for (const velho of (await google.listFolderContents(accountId, pasta.id)).filter((f) => f.name === nome)) await google.trashDriveItem(accountId, velho.id).catch(() => {});
+  const up = await google.uploadFile(accountId, { name: nome, mimeType: 'application/pdf', parentId: pasta.id, data });
+  await salvarProd(leadId, (x) => { x.arquivos = { ...(x.arquivos || {}), [qual]: { id: up.id, nome, proposta: proposta ? String(proposta).replace(/\D/g, '').slice(0, 20) : undefined, em: new Date().toISOString() } }; });
+  await note(leadId, `📄 Formulário da ${qual === 'conta' ? 'abertura de conta' : 'proposta do cartão de crédito'} CAIXA de ${quem}${proposta ? ` (proposta ${String(proposta).replace(/\D/g, '')})` : ''} salvo na pasta FORMULARIOS do Drive (${nome}).`);
+  return null;
 }

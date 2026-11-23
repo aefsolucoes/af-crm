@@ -6,7 +6,7 @@ import { pedirCadastroCaixa, proximaConsulta, gravarConsulta, consultaSemResulta
 import { pedirConsultaResultado, proximaConsultaResultado, gravarConsultaResultado, pedirAvisoPv } from '../services/caixa-resultado.service';
 import { verificarOcorrencias } from '../services/caixa-ocorrencias.service';
 import { pedirDesbloqueio, proximoDesbloqueio, gravarDesbloqueio, perguntarAoCliente, entregarCodigo } from '../services/caixa-desbloqueio.service';
-import { pedirProdutosCaixa, proximoProdutosCaixa, gravarProdutosCaixa, produtosDaAvaliacao } from '../services/caixa-produtos.service';
+import { pedirProdutosCaixa, proximoProdutosCaixa, gravarProdutosCaixa, salvarFormularioProduto, produtosDaAvaliacao } from '../services/caixa-produtos.service';
 
 // Fila do cadastro na CAIXA (Fabio 29/10: "quero que o CRM indique qual cliente rodar") — usada pela extensão "Cadastro CAIXA (Caixa Aqui)".
 const router = Router();
@@ -325,7 +325,15 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const ordem = Number(req.body?.ordem) || undefined;
   const modo = req.body?.modo === 'ate' ? 'ate' : 'olhar';
-  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo, avancos: Number(req.body?.avancos) || 0, conta: req.body?.conta ? { tipo: 'corrente', cheque: req.body.conta.cheque !== false, gerar: req.body.conta.gerar === true, ...(typeof req.body.conta.encaminhar === 'boolean' ? { encaminhar: req.body.conta.encaminhar } : {}), ...(req.body.conta.regerar === true ? { regerar: true } : {}), ...(/^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.conta.limite || '')) ? { limite: String(req.body.conta.limite) } : {}) } : null, cartao: req.body?.cartao === true ? true : (req.body?.cartao && typeof req.body.cartao === 'object' ? { solicitar: req.body.cartao.solicitar === true, bandeira: ['MASTERCARD', 'VISA', 'ELO'].includes(String(req.body.cartao.bandeira || '').toUpperCase()) ? String(req.body.cartao.bandeira).toUpperCase() : undefined, vencimento: /^([1-9]|1\d|2[0-8])$/.test(String(req.body.cartao.vencimento || '')) ? String(req.body.cartao.vencimento) : undefined, limite: /^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.cartao.limite || '')) ? String(req.body.cartao.limite) : undefined, variante: req.body.cartao.variante ? String(req.body.cartao.variante).slice(0, 60) : undefined } : undefined) }).catch((e) => e?.message || 'erro');
+  const erro = await pedirProdutosCaixa(req.user!.accountId, req.params.leadId, quem, { ordem, modo, formularios: req.body?.formularios === true, avancos: Number(req.body?.avancos) || 0, conta: req.body?.conta ? { tipo: 'corrente', cheque: req.body.conta.cheque !== false, gerar: req.body.conta.gerar === true, ...(typeof req.body.conta.encaminhar === 'boolean' ? { encaminhar: req.body.conta.encaminhar } : {}), ...(req.body.conta.regerar === true ? { regerar: true } : {}), ...(/^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.conta.limite || '')) ? { limite: String(req.body.conta.limite) } : {}) } : null, cartao: req.body?.cartao === true ? true : (req.body?.cartao && typeof req.body.cartao === 'object' ? { solicitar: req.body.cartao.solicitar === true, bandeira: ['MASTERCARD', 'VISA', 'ELO'].includes(String(req.body.cartao.bandeira || '').toUpperCase()) ? String(req.body.cartao.bandeira).toUpperCase() : undefined, vencimento: /^([1-9]|1\d|2[0-8])$/.test(String(req.body.cartao.vencimento || '')) ? String(req.body.cartao.vencimento) : undefined, limite: /^\d{1,3}(\.\d{3})*,\d{2}$/.test(String(req.body.cartao.limite || '')) ? String(req.body.cartao.limite) : undefined, variante: req.body.cartao.variante ? String(req.body.cartao.variante).slice(0, 60) : undefined } : undefined) }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+// PDF do "Imprimir Formulário" da conta/cartão (extensão) → pasta FORMULARIOS do Drive (Fabio 23/11).
+router.post('/:leadId/produtos/formulario', async (req: AuthRequest, res: Response) => {
+  const qual = req.body?.qual === 'conta' ? 'conta' : req.body?.qual === 'cartao' ? 'cartao' : null;
+  if (!qual || !req.body?.pdf) return res.status(400).json({ error: 'qual (conta|cartao) e pdf obrigatórios' });
+  const erro = await salvarFormularioProduto(req.user!.accountId, req.params.leadId, qual, String(req.body.pdf), req.body?.proposta ? String(req.body.proposta) : undefined).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
