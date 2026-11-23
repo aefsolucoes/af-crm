@@ -201,7 +201,7 @@ async function avisarPreAprovacaoEmCardFechado(accountId: string, lead: { id: st
   console.log(`[Creditas e-mail] ${lead.name}: pré-aprovação depois da negativa — segurada (nota + push), e-mail ${row.id}`);
 }
 
-const STANDBY_RX =/descontinuad[ao] por falta de movimenta/i;
+const STANDBY_RX = /descontinuad[ao] por falta de (movimenta|intera)/i; // "interação" também (Fabio 23/11, Kellen)
 
 /** Proposta da Creditas DESCONTINUADA por falta de movimentação (Fabio 03/11, Lucas: a IA confirmou "R$ 18 mil aprovados" de uma proposta parada): é stand-by — se o cliente
  *  voltar com a documentação, a Creditas resgata pelo grupo do WhatsApp, sem novo cadastro. Marca o card (_creditasStandBy), nota + push. Idempotente por e-mail. */

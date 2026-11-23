@@ -65,6 +65,11 @@ export const EXTENSION_STATUS: Record<string, string> = {
 const ALL_STATUS = new Set(['REQUESTED', 'RUNNING', 'SENT', 'APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const FINAL = new Set(['APPROVED', 'CONDITIONAL', 'REJECTED', 'FAILED', 'CHECK', 'INCOMPLETE', 'TEST']);
 const ACTIVE = ['REQUESTED', 'RUNNING'];
+/** Creditas: proposta pré-aprovada que a Creditas parou por falta de movimentação ("Processamento e documentos / Rejeitado", "descontinuada") — STAND-BY, não reprovação (Fabio 23/11). */
+const RX_CREDITAS_NEGADA_STANDBY = /Processamento e documentos\s*\/\s*(Rejeitad|Negad|Cancelad|Descontinuad)|descontinuad[ao] por falta de (movimenta|intera)/i;
+/** …a não ser que o motivo diga reprovação de verdade (crédito ou imóvel). */
+const RX_CREDITAS_REPROVACAO_DE_FATO = /reprovad[oa] (em|no|na|pel[oa]) (cr[eé]dito|an[aá]lise)|im[oó]vel (foi )?(negado|reprovado|recusado)/i;
+const STANDBY_CREDITAS_PREFIXO = '⏸️ STAND-BY (não é reprovação):';
 /** Bancos cuja extensão sabe só CONFERIR uma proposta já enviada (sem criar outra). */
 export const CHECK_BANKS = ['INTER', 'CREDIMORAR', 'CREDITAS', FH_BANK, FH_INTER_BANK, FH_ITAU_BANK];
 const CREDITAS_MAX_AGE_MS = 60 * 3_600_000; // e desiste de conferir sozinho 60 h depois da 1ª conferência (cobre 2 noites sem leitura)
@@ -1004,6 +1009,25 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     data = { ...data, status: 'FAILED', detail: `CPF já possui uma proposta ativa na Creditas — ${String(data.detail || '').replace(/^RESULTADO:\s*/i, '')}` };
     next = 'FAILED';
   }
+  // Creditas NEGADA depois da pré-aprovação = STAND-BY, não reprovação (Fabio 23/11, Kellen: "o rejeitado não quer dizer que foi reprovado no creditas, apenas que está em stand by";
+  // "a proposta foi descontinuada por falta de interação, quando a cliente quiser retornar, só avisar"). O portal mostra "Processamento e documentos / Rejeitado — A proposta foi
+  // negada — Proposta fora da política interna: motivo não pode ser aberto". Com aprovação anterior da Creditas no card, a leitura vira STAND-BY: não conta como reprovado (sem
+  // negativa, sem rodada nova), a aprovação continua valendo no que a IA vê e o card ganha a marca _creditasStandBy (a mesma do e-mail "descontinuada").
+  if (row.bank === 'CREDITAS' && !row.dryRun && next === 'REJECTED' && RX_CREDITAS_NEGADA_STANDBY.test(String(data.detail || '')) && !RX_CREDITAS_REPROVACAO_DE_FATO.test(String(data.detail || ''))) {
+    const aprovadaAntes = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: 'CREDITAS', dryRun: false, id: { not: row.id }, status: { in: ['APPROVED', 'CONDITIONAL'] } }, orderBy: { updatedAt: 'desc' }, select: { updatedAt: true } });
+    if (aprovadaAntes) {
+      const lido = String(data.detail || '').replace(/^RESULTADO:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 300);
+      next = 'CHECK';
+      data = { ...data, status: 'CHECK', detail: `${STANDBY_CREDITAS_PREFIXO} a Creditas parou a proposta pré-aprovada por falta de movimentação — o portal mostra "${lido}". Quando o cliente quiser seguir (mandar a documentação), avise a Creditas no grupo do WhatsApp que eles resgatam a operação, sem novo cadastro.` };
+      const lead = await db.lead.findUnique({ where: { id: row.leadId }, select: { customFields: true } });
+      const sb = (lead?.customFields as any)?._creditasStandBy;
+      if (!sb?.at || new Date(sb.at).getTime() <= aprovadaAntes.updatedAt.getTime()) { // sem marca (ou marca mais velha que a aprovação): grava a do portal + nota
+        const marca = JSON.stringify({ at: new Date().toISOString(), fonte: 'portal' });
+        await db.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_creditasStandBy}', ${marca}::jsonb, true) WHERE id = ${row.leadId}`.catch(() => {});
+        await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: '⏸️ Creditas: o portal mostra a proposta NEGADA em "Processamento e documentos" — é STAND-BY por falta de movimentação, não reprovação (a pré-aprovação continua). Quando o cliente quiser seguir, avise a Creditas no grupo do WhatsApp que eles resgatam a operação (sem novo cadastro).' } }).catch(() => {});
+      }
+    }
+  }
   // Aprovação confirmada DEPOIS sem os números (conferência que só leu a lista, leitura da API do banco que falhou): herda os números da leitura anterior da MESMA proposta —
   // senão o aviso de aprovação ficava esperando "os números" que já existiam (Inter: Alexandre, Jézer, Antenor — 3 aprovadas sem valor gravado).
   if ((next === 'APPROVED' || next === 'CONDITIONAL') && !row.dryRun && data.approvedValue == null) {
@@ -1136,7 +1160,7 @@ async function applyUpdate(db: Db, row: { id: string; accountId: string; leadId:
     const ja = await db.note.findFirst({ where: { leadId: row.leadId, content: conteudo, createdAt: { gt: new Date(Date.now() - 12 * 3_600_000) } }, select: { id: true } });
     if (!ja) await db.note.create({ data: { leadId: row.leadId, type: 'COMMENT', content: conteudo } }).catch(() => {});
   }
-  if (becameFinal && !updated.dryRun && next === 'CHECK') {
+  if (becameFinal && !updated.dryRun && next === 'CHECK' && !String(updated.detail || '').startsWith(STANDBY_CREDITAS_PREFIXO)) { // stand-by da Creditas já tem a nota própria
     const label = BANKS[updated.bank]?.label || updated.bank;
     const txt = String(updated.detail || '').replace(/Titular na análise:[^.]*\.\s*/i, '').replace(/^conferir:\s*/i, '').replace(/\s+/g, ' ').trim().slice(0, 360);
     if (txt) {
@@ -1240,6 +1264,8 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
   if (row.kind === 'CHECK' && row.source === 'AI') return row; // leitura pontual pedida pela IA da conversa: não vira laço de reconferência
   const paused = !!(await db.creditAutoSetting.findUnique({ where: { accountId: row.accountId }, select: { paused: true } }))?.paused;
   if (row.kind === 'CHECK' && (row.status === 'SENT' || row.status === 'CHECK')) {
+    // Creditas em STAND-BY (Fabio 23/11): conferir de novo só repete a leitura — para aqui; volta quando o cliente quiser seguir e a Creditas resgatar.
+    if (row.status === 'CHECK' && String(row.detail || '').startsWith(STANDBY_CREDITAS_PREFIXO)) return db.creditAnalysis.update({ where: { id: row.id }, data: { attempt: CHECK_MAX_TRIES } });
     if (paused) return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `Conferência automática PAUSADA (pausa geral ligada). Use "Conferir" pra ler de novo. ${String(row.detail || '').slice(0, 300)}` } });
     // Cadastro divergente (Santander): ler a lista de 10 em 10 min não adianta — o cliente não aparece até o cadastro ser corrigido. Para as conferências; o CRM pergunta ao cliente e refaz a análise quando ele corrige.
     const rodada = await db.creditAnalysis.findFirst({ where: { leadId: row.leadId, bank: row.bank, kind: 'RUN', dryRun: false, source: { not: 'AI_SIM' } }, orderBy: { createdAt: 'desc' }, select: { detail: true, conditions: true } });

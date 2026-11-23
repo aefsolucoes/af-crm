@@ -864,8 +864,9 @@ ${respostasRapidasBloco(ctx.respostasRapidasTexto)}`;
     // O raciocínio gastou o max_tokens inteiro (Fabio 11/11: Marcelina e Ivânia ficaram sem resposta — saída 4096, texto VAZIO, descartado em silêncio; 3 de 10 respostas no log).
     // A 2ª tentativa vai com pouco raciocínio (effort low) e, se falhar de novo, a equipe é avisada (nota + push) em vez de o cliente ficar no vácuo.
     let estourou = false;
+    let vazio = false; // a tentativa anterior terminou sem escrever nada (sem estourar o limite)
     for (let tentativa = 0; tentativa < 2; tentativa++) {
-      const lembrete = tentativa && estourou ? '\n\n[ATENÇÃO: a tentativa anterior gastou todo o limite raciocinando e não chegou a escrever a resposta. Pense pouco e responda direto, SOMENTE com o objeto JSON pedido.]' : tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
+      const lembrete = tentativa && vazio && !estourou ? '\n\n[ATENÇÃO: a tentativa anterior terminou sem escrever a resposta. Responda SOMENTE com o objeto JSON pedido. Se não for pra falar com o cliente, use "noReply": true e "reply" vazio — mas escreva o JSON.]' : tentativa && estourou ?'\n\n[ATENÇÃO: a tentativa anterior gastou todo o limite raciocinando e não chegou a escrever a resposta. Pense pouco e responda direto, SOMENTE com o objeto JSON pedido.]' : tentativa ? '\n\n[ATENÇÃO: a resposta anterior veio fora do formato. Responda SOMENTE com o objeto JSON pedido — nada antes nem depois dele. O campo "reply" é a mensagem que vai ao cliente: fale COM ele, nunca descreva a conversa nem o que você pretende fazer.]' : '';
       const tChamada = Date.now();
       const response = await chamaAnthropic(opts.botaoSugerir || opts.teste ? ESPERAS_ANTHROPIC_BOTAO : ESPERAS_ANTHROPIC, {
         method: 'POST',
@@ -909,7 +910,9 @@ ${respostasRapidasBloco(ctx.respostasRapidasTexto)}`;
       if (!raw) {
         if (cortado) { semCorte = true; continue; }
         if (data.stop_reason === 'max_tokens') { estourou = true; console.warn('[AI Auto-reply] o raciocínio gastou o limite e a resposta veio vazia — tentativa', tentativa + 1); continue; }
-        return null;
+        // Fim normal SEM texto nenhum, só raciocínio (Fabio 23/11, Kellen: "Mas tem q esperar essa questão que está fazendo inventário" ficou 1 h sem resposta — saída de 1215
+        // tokens, end_turn, texto vazio, descartado em silêncio). Vale como falha: 2ª tentativa com o lembrete e, vazio de novo, a equipe é avisada (nota + push).
+        vazio = true; console.warn('[AI Auto-reply] resposta veio sem texto (fim', data.stop_reason || '?', ') — tentativa', tentativa + 1); continue;
       }
       if (data.stop_reason === 'max_tokens') estourou = true; // JSON cortado no meio: a 2ª tentativa também vai com pouco raciocínio
       // Cortado com o texto VAZIO = a IA ia ficar quieta (noReply): mesmo resultado de antes, sem gerar o resto (quem chama usa a sugestão de reserva).
@@ -926,9 +929,9 @@ ${respostasRapidasBloco(ctx.respostasRapidasTexto)}`;
     if (!result) {
       if (opts.sugestao) return null;
       // As 2 tentativas falharam: o cliente não recebe nada; a equipe é avisada pra responder à mão.
-      const semTexto = estourou && !rawFalho; // as 2 tentativas gastaram o limite raciocinando, sem escrever nada
+      const semTexto = (estourou || vazio) && !rawFalho; // as 2 tentativas terminaram sem escrever nada (limite gasto raciocinando ou fim sem texto)
       await prisma.note.create({ data: { leadId, type: 'COMMENT', content: semTexto
-        ? '⚠️ A IA não conseguiu escrever a resposta (o raciocínio dela gastou o limite de tamanho nas 2 tentativas) — não mandei nada. Responda o cliente à mão.'
+        ? `⚠️ A IA não conseguiu escrever a resposta (${estourou ? 'o raciocínio dela gastou o limite de tamanho' : 'ela terminou sem escrever nada'} nas 2 tentativas) — não mandei nada. Responda o cliente à mão.`
         : `⚠️ A IA respondeu fora do formato 2 vezes (texto que não podia ir ao cliente) — não mandei nada. Responda o cliente à mão.\nO que veio: "${rawFalho.replace(/\s+/g, ' ').slice(0, 400)}"` } }).catch(() => {});
       try {
         const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, accountId: true } });
