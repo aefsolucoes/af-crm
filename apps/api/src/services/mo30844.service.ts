@@ -86,8 +86,26 @@ export async function preencherDocx(modelo: Buffer, valores: string[]): Promise<
   let pos = 0;
   for (const t of trocas) { out += s.slice(pos, t.ini) + t.novo; pos = t.fim; }
   out += s.slice(pos);
-  zip.file('word/document.xml', out);
+  zip.file('word/document.xml', caberNaPagina(out));
   return { docx: await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' }), campos: campo };
+}
+
+/** Tabela mais larga que a área do texto (a da declaração de saúde tem 11332 de 9887 — no PDF do Drive a coluna do 4º proponente saía cortada, 23/11):
+ *  encolhe as colunas na proporção. Pura. */
+export function caberNaPagina(doc: string): string {
+  const sz = [...doc.matchAll(/<w:pgSz [^>]*w:w="(\d+)"/g)].pop();
+  const mg = [...doc.matchAll(/<w:pgMar [^>]*\/>/g)].pop();
+  if (!sz || !mg) return doc;
+  const num = (re: RegExp) => Number((re.exec(mg[0]) || [])[1] || 0);
+  const largura = Number(sz[1]) - num(/w:left="(\d+)"/) - num(/w:right="(\d+)"/);
+  if (largura <= 0) return doc;
+  return doc.replace(/<w:tbl>[\s\S]*?<\/w:tbl>/g, (t) => {
+    const w = Number((/<w:tblW w:w="(\d+)" w:type="dxa"\/>/.exec(t) || [])[1] || 0);
+    if (!w || w <= largura) return t;
+    const f = largura / w;
+    const esc = (_m: string, a: string, n: string, b: string) => `${a}${Math.floor(Number(n) * f)}${b}`;
+    return t.replace(/(<w:tblW w:w=")(\d+)(" w:type="dxa"\/>)/, esc).replace(/(<w:gridCol w:w=")(\d+)(")/g, esc).replace(/(<w:tcW w:w=")(\d+)(" w:type="dxa")/g, esc);
+  });
 }
 
 /** Word → PDF pelo próprio Drive (vira Google Doc temporário, exporta PDF e apaga). */
