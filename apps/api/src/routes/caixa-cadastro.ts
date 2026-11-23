@@ -333,7 +333,7 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
 router.post('/:leadId/assinaturas', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
   let texto = '';
   const svc = await import('../services/caixa-assinaturas.service');
-  const erro = await svc.pedirAssinaturasCaixa(req.user!.accountId, req.params.leadId, await nomeDe(req), req.user!.id, (req.app as any).get?.('io'), req.body?.previa === true ? (t: string) => { texto = t; } : undefined).catch((e) => e?.message || 'erro');
+  const erro = await svc.pedirAssinaturasCaixa(req.user!.accountId, req.params.leadId, await nomeDe(req), req.user!.id, (req.app as any).get?.('io'), req.body?.previa === true ? (t: string) => { texto = t; } : undefined, { apenas: Array.isArray(req.body?.apenas) ? req.body.apenas.map(String).filter((x: string) => /^(ficha:\d|conta|cartao|mo30844)$/.test(x)) : undefined, reenvio: req.body?.reenvio === 'local-data' || req.body?.reenvio === 'refazer' ? req.body.reenvio : undefined }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true, ...(texto ? { previa: texto } : {}) });
 });

@@ -36,7 +36,10 @@ const ela = (nome: string) => /a$/i.test(String(nome || '').split(' ')[0]); // "
 const listaPaginas = (ps: number[]) => (ps.length <= 1 ? `na página ${ps[0]}` : `nas páginas ${ps.slice(0, -1).join(', ')} e ${ps[ps.length - 1]}`);
 
 /** Manda ao cliente (WhatsApp) os formulários pra assinar pelo gov.br. Erro em texto. */
-export async function pedirAssinaturasCaixa(accountId: string, leadId: string, por: string, userId?: string, io?: any, previa?: (texto: string) => void): Promise<string | null> {
+export type OpcoesAssinatura = { apenas?: string[]; reenvio?: 'local-data' | 'refazer' };
+/** `apenas`: só esses formulários (chaves: ficha:N, conta, cartao, mo30844). `reenvio`: é um reenvio pra assinar de novo — a mensagem pede desculpas (Fabio 23/11:
+ *  "pede desculpas"; "coloca isso como regra"). */
+export async function pedirAssinaturasCaixa(accountId: string, leadId: string, por: string, userId?: string, io?: any, previa?: (texto: string) => void, opts: OpcoesAssinatura = {}): Promise<string | null> {
   const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!l) return 'Lead não encontrado';
   const cf = (l.customFields || {}) as Cf;
@@ -44,7 +47,7 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   if (!link) return 'O card não tem a pasta do Drive';
   // Janela de 24 h do WhatsApp fechada: template de atualização agora e os formulários saem sozinhos quando o cliente responder (processAssinaturasAoAbrir).
   const an = require('./approval-notice.service') as typeof import('./approval-notice.service');
-  if (!previa && !(await an.whatsappWindowOpen(leadId))) return aoAbrir(accountId, leadId, l.name, cf, por, io);
+  if (!previa && !(await an.whatsappWindowOpen(leadId))) return aoAbrir(accountId, leadId, l.name, cf, por, io, opts);
 
   const cc = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
   const prod = require('./caixa-produtos.service') as typeof import('./caixa-produtos.service');
@@ -73,7 +76,8 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
     if (!paginas.length) return `não achei onde o cliente assina em "${f.name}" — não mandei nada`;
     docs.push({ id: f.id, nome: f.name, titulo, quem, onde, paginas, total: pags.length, ordem, buf, chave });
   }
-  if (!docs.length) return 'a pasta FORMULARIOS não tem fichas, propostas da conta/cartão nem o MO30844';
+  if (opts.apenas?.length) docs.splice(0, docs.length, ...docs.filter((d) => opts.apenas!.includes(d.chave)));
+  if (!docs.length) return opts.apenas?.length ? `a pasta FORMULARIOS não tem ${opts.apenas.join(', ')}` : 'a pasta FORMULARIOS não tem fichas, propostas da conta/cartão nem o MO30844';
   docs.sort((a, b) => a.ordem - b.ordem);
   // Local e Data (Fabio 23/11: "todos os formulários que contenham local e data o CRM deve preencher… cidade/UF"): cidade/UF do card e a data de hoje, nos
   // lugares em branco de cada formulário (o MO30844 já sai preenchido do CRM).
@@ -92,7 +96,9 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
   const chamada = nomes.length > 1 ? `${nomes.slice(0, -1).join(', ')} e ${nomes[nomes.length - 1]}` : nomes[0] || '';
   const doisOuMais = ps.length > 1;
   const intro = [
-    `${chamada ? `${chamada}, esses` : 'Esses'} são os ${docs.length} formulários da contratação do financiamento na CAIXA. Pra seguir, a gente precisa que ${doisOuMais ? 'vocês assinem' : 'você assine'} todos pelo gov.br:`,
+    opts.reenvio
+      ? `${chamada ? `${chamada}, a` : 'A'} gente pede desculpas: ${opts.reenvio === 'local-data' ? `${docs.length > 1 ? 'esses formulários foram' : 'esse formulário foi'} sem o Local e Data preenchido. A gente já completou e, pra CAIXA aceitar,` : 'pra CAIXA aceitar,'} ${doisOuMais ? 'vocês precisam' : 'você precisa'} assinar de novo ${docs.length > 1 ? `estes ${docs.length}` : 'este'} pelo gov.br:`
+      : `${chamada ? `${chamada}, esses` : 'Esses'} são os ${docs.length} formulários da contratação do financiamento na CAIXA. Pra seguir, a gente precisa que ${doisOuMais ? 'vocês assinem' : 'você assine'} todos pelo gov.br:`,
     '',
     `1. ${doisOuMais ? 'Acessem' : 'Acesse'} assinador.iti.br (ou o app gov.br, em "Assinatura digital")`,
     `2. ${doisOuMais ? 'Enviem' : 'Envie'} o PDF e ${doisOuMais ? 'entrem' : 'entre'} com a conta gov.br`,
@@ -131,8 +137,8 @@ async function salvaEstado(leadId: string, v: Cf) {
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaAssinaturas}', ${JSON.stringify(v)}::jsonb, true) WHERE id = ${leadId}`;
 }
 /** Conversa fechada: guarda o pedido e chama o cliente pelo template de atualização (07h–21h; fora disso o poller manda). Devolve null = pedido aceito. */
-async function aoAbrir(accountId: string, leadId: string, leadName: string, cf: Cf, por: string, io?: any): Promise<string | null> {
-  const st: Cf = { status: 'AO_ABRIR', por, at: new Date().toISOString() };
+async function aoAbrir(accountId: string, leadId: string, leadName: string, cf: Cf, por: string, io?: any, opts: OpcoesAssinatura = {}): Promise<string | null> {
+  const st: Cf = { status: 'AO_ABRIR', por, at: new Date().toISOString(), ...(opts.apenas || opts.reenvio ? { opcoes: opts } : {}) };
   await salvaEstado(leadId, st);
   const t = await mandaTemplate(accountId, leadId, leadName, cf, io);
   if (t === 'ok') { st.templateAt = new Date().toISOString(); await salvaEstado(leadId, st); }
@@ -172,7 +178,7 @@ export async function processAssinaturasAoAbrir(accountId: string, io: any): Pro
       if (!resp || Date.now() - resp.createdAt.getTime() < ESPERA_IA_MS) continue;
       if (!an.inNoticeWindow() || !(await an.whatsappWindowOpen(id))) continue;
       await salvaEstado(id, { ...st, status: 'ENVIANDO' }); // antes de mandar: nunca sai duas vezes
-      const erro = await pedirAssinaturasCaixa(accountId, id, st.por || 'equipe', undefined, io);
+      const erro = await pedirAssinaturasCaixa(accountId, id, st.por || 'equipe', undefined, io, undefined, (st.opcoes || {}) as OpcoesAssinatura);
       if (erro) { await salvaEstado(id, { ...st, status: 'ERRO', erro, fim: new Date().toISOString() }); await nota(id, `⚠️ O cliente respondeu, mas os formulários da CAIXA não saíram: ${erro}`); }
       io?.to?.(`lead:${id}`).emit('lead_updated', { leadId: id });
     } catch (e: any) { console.warn('[Assinaturas CAIXA]', e?.message); }
