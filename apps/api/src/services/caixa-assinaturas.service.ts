@@ -227,6 +227,15 @@ async function retornoDoCard(accountId: string, leadId: string, io: any): Promis
   const ps = (cc.participantesDa(cf) as any[]).filter((p) => so(p.cpf).length === 11);
   const t = prod.titularDosProdutos(cf, (cf._caixaProdutos || {}).ordem);
   const titular = 'erro' in t ? null : ps.find((p) => Number(p.ordem) === t.ordem) || { nome: t.nome, cpf: t.cpf };
+  // Envio antigo (antes de 23/11 13h) não guardou a chave/título de cada formulário: tira do nome do arquivo.
+  st.docs = (st.docs as Cf[]).map((d) => {
+    if (d.chave && d.titulo) return d;
+    const n = norm(String(d.nome || ''));
+    const pf = /^FICHA CADASTRAL CAIXA - /.test(n) ? ps.find((x) => n.includes(norm(String(x.nome || '')))) : null;
+    const chave = d.chave || (pf ? `ficha:${pf.ordem}` : /^PROPOSTA ABERTURA DE CONTA/.test(n) ? 'conta' : /^PROPOSTA CARTAO DE CREDITO/.test(n) ? 'cartao' : /^MO30844/.test(n) ? 'mo30844' : '');
+    const titulo = d.titulo || (pf ? `Ficha cadastral ${ela(chamar(pf.nome)) ? 'da' : 'do'} ${chamar(pf.nome)}` : chave === 'conta' ? 'Proposta de abertura de conta' : chave === 'cartao' ? 'Proposta do cartão de crédito' : chave === 'mo30844' ? 'Autorização da forma de pagamento (MO30844)' : String(d.nome || ''));
+    return { ...d, chave, titulo };
+  });
   const assinados: Cf = { ...(st.assinados || {}) };
   const avisos: Cf = { ...(st.avisos || {}) };
   const linhas: string[] = [];
