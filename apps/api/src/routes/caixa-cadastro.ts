@@ -329,6 +329,14 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
+// Formulários da contratação CAIXA (fichas dos compradores, conta, cartão, MO30844) pro cliente assinar pelo gov.br (Fabio 23/11). `previa: true` só devolve o texto.
+router.post('/:leadId/assinaturas', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  let texto = '';
+  const svc = await import('../services/caixa-assinaturas.service');
+  const erro = await svc.pedirAssinaturasCaixa(req.user!.accountId, req.params.leadId, await nomeDe(req), req.user!.id, (req.app as any).get?.('io'), req.body?.previa === true ? (t: string) => { texto = t; } : undefined).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true, ...(texto ? { previa: texto } : {}) });
+});
 // MO30844 (Autorização da Forma de Pagamento) preenchido pelo CRM → pasta FORMULARIOS pro cliente assinar (Fabio 23/11). `conta`: nº do Caixa Aqui quando o
 // card ainda não guardou (fica gravado no card).
 router.post('/:leadId/mo30844', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
