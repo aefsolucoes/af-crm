@@ -419,7 +419,7 @@ REGRAS COM ESTES DADOS: (1) só diga que um banco está "em análise" ou que est
  * ou decide algo no card recebe este bloco (conversa, sugestões, resposta da equipe, e-mails do processo, classificadores de aceite/desinteresse). '' se o card não tem nada a mostrar.
  */
 export async function aiCardState(leadId: string): Promise<string> {
-  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
+  const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true, accountId: true } });
   if (!lead) return '';
   const cf = (lead.customFields || {}) as Record<string, any>;
   const partes: string[] = [];
@@ -501,7 +501,7 @@ export async function aiCardState(leadId: string): Promise<string> {
     partes.push(`CAIXA: ${cads.length ? `cadastro ${cads.every((st) => st === 'GRAVADO') ? 'feito' : 'em andamento'}` : 'consulta do nome feita ou na fila'}; ${rodado ? 'CRÉDITO JÁ RODADO na CAIXA (Avaliação de Risco enviada) — alteração no cadastro só com a equipe' : 'crédito ainda NÃO rodado na CAIXA'}.`);
     // Cliente em OUTRO correspondente (Fabio 18/11, Lucas): perguntar se lembra da análise e se segue com a gente; o cancelamento é por código SMS da CAIXA.
     const { outroCcaDe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-    const oc = (require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service')).aiOutroCorrespondenteLinha(cf, outroCcaDe(cf).length > 0);
+    const oc = (require('./caixa-desbloqueio.service') as typeof import('./caixa-desbloqueio.service')).aiOutroCorrespondenteLinha(cf, outroCcaDe(cf, (await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(lead.accountId)).caixaConvenio).length > 0);
     if (oc) partes.push(oc);
   }
 

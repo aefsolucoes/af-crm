@@ -8,7 +8,7 @@ import { useInboxSectorStore, InboxSector } from '@/store/inbox-sector.store';
 import { useFunilSectorStore } from '@/store/funil-sector.store';
 import { usePathname } from 'next/navigation';
 import { cn } from '@/lib/utils';
-import { EMPRESA_CURTO } from '@/lib/empresa';
+import { useEmpresa } from '@/lib/empresa';
 import { ANALISE_HREF, lerProdutoEscolhido } from '@/components/credit/produto-switch';
 import {
   LayoutDashboard, Kanban, MessageSquare, CheckSquare, BarChart3, LogOut, Settings,
@@ -143,6 +143,7 @@ function SubLinks({ href, onNavigate }: { href: string; onNavigate?: () => void 
 }
 
 export function Sidebar() {
+  const empresa = useEmpresa();
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
   const { collapsed, toggle, init, mobileOpen, closeMobile } = useSidebarStore();
@@ -214,7 +215,7 @@ export function Sidebar() {
           {!collapsed && (
             <div className="min-w-0">
               <p className="text-white font-bold text-sm leading-tight truncate">AF CRM</p>
-              <p className="text-slate-400 text-xs truncate">{EMPRESA_CURTO}</p>
+              {empresa.nomeCurto && <p className="text-slate-400 text-xs truncate">{empresa.nomeCurto}</p>}
             </div>
           )}
         </div>
@@ -319,7 +320,7 @@ export function Sidebar() {
               </div>
               <div className="min-w-0">
                 <p className="text-white font-bold text-sm leading-tight truncate">AF CRM</p>
-                <p className="text-slate-400 text-xs truncate">{EMPRESA_CURTO}</p>
+                {empresa.nomeCurto && <p className="text-slate-400 text-xs truncate">{empresa.nomeCurto}</p>}
               </div>
             </div>
             <button onClick={closeMobile} className="text-slate-400 hover:text-white transition-colors flex-shrink-0" title="Fechar">

@@ -3,13 +3,14 @@ import './globals.css';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { useAuthStore } from '@/store/auth.store';
-import { EMPRESA_NOME } from '@/lib/empresa';
+import { useEmpresa } from '@/lib/empresa';
 
 // Lê o tema direto do usuário logado (af_user), não de uma chave genérica —
 // cada conta tem sua própria aparência, mesmo compartilhando o navegador.
 const THEME_INIT_SCRIPT = `(function(){try{var u=JSON.parse(localStorage.getItem('af_user')||'null');var t=(u&&u.themeColor)||'white';document.documentElement.setAttribute('data-theme',t);var img=u&&u.themeImage;document.documentElement.style.setProperty('--app-bg-image', img ? 'url("'+img+'")' : 'none');var op=(u&&u.themeOpacity)||85;document.documentElement.style.setProperty('--app-surface-alpha', String(op/100));}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
+  const empresa = useEmpresa();
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: { queries: { staleTime: 30000, retry: 1 } },
   }));
@@ -31,7 +32,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="pt-BR" suppressHydrationWarning>
       <head>
-        <title>{`AF CRM — ${EMPRESA_NOME}`}</title>
+        <title>{empresa.nome ? `AF CRM — ${empresa.nome}` : 'AF CRM'}</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="manifest" href="/manifest.json" />
         <meta name="theme-color" content="#0d2545" />

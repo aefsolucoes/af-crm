@@ -149,6 +149,13 @@ configureWebPush();
 
 app.get('/health', (_, res) => res.json({ status: 'ok', version: '2.0.0', features: ['whatsapp', 'settings'] }));
 
+// Nome da empresa desta cópia do CRM pras telas de antes do login (plano do piloto 23/11) — público, só nome e selo; sem nada gravado, vem vazio.
+app.get('/api/empresa-publica', async (_req, res) => {
+  const { dadosDaContaPrincipal } = require('./lib/empresa') as typeof import('./lib/empresa');
+  const e = await dadosDaContaPrincipal().catch(() => null);
+  res.json({ nome: e?.nome || '', nomeCurto: e?.nomeCurto || '', marca: e?.marca || '' });
+});
+
 // Política de Privacidade — URL pública para uso no Meta Developer Console
 app.get('/privacidade', (_, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');

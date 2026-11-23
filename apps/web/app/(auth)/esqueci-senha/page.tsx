@@ -5,10 +5,11 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import api from '@/lib/api';
 import { LayoutDashboard, MailCheck, ArrowLeft } from 'lucide-react';
-import { EMPRESA_NOME } from '@/lib/empresa';
+import { useEmpresa } from '@/lib/empresa';
 
 /** "Esqueci minha senha": manda um link de redefinição pro e-mail (vale 30 min). */
 export default function EsqueciSenhaPage() {
+  const empresa = useEmpresa();
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
   const [error, setError] = useState('');
@@ -37,7 +38,7 @@ export default function EsqueciSenhaPage() {
             <LayoutDashboard size={32} className="text-white" />
           </div>
           <h1 className="text-2xl font-bold text-white">AF CRM</h1>
-          <p className="text-slate-300 text-sm mt-1">{EMPRESA_NOME}</p>
+          {empresa.nome && <p className="text-slate-300 text-sm mt-1">{empresa.nome}</p>}
         </div>
 
         <div className="bg-white rounded-2xl shadow-2xl p-8">

@@ -133,10 +133,11 @@ function botaoDe(text: string): Botao | null {
 
 function agradecimento(botao: Botao, nome: string, linkGoogle: string): string {
   const oi = nome ? `, ${nome}` : '';
-  const link = `Se puder, deixe sua avaliação no Google, ajuda muito a gente: ${linkGoogle}`;
-  if (botao === 'Ótima') return `Que bom saber${oi}! Muito obrigado. ${link}`;
-  if (botao === 'Boa') return `Obrigado pelo retorno${oi}! ${link}\n\nE se tiver algo que a gente possa melhorar, é só me contar por aqui.`;
-  return `Obrigado pela sinceridade${oi}. O que a gente poderia ter feito melhor? Pode me contar por aqui, vai direto pra nossa equipe.\n\nE se quiser, também pode deixar sua avaliação no Google: ${linkGoogle}`;
+  // Sem link de avaliação gravado na conta, a frase do Google não vai (Fabio 23/11: "sem nada gravado, fica sem").
+  const link = linkGoogle ? ` Se puder, deixe sua avaliação no Google, ajuda muito a gente: ${linkGoogle}` : '';
+  if (botao === 'Ótima') return `Que bom saber${oi}! Muito obrigado.${link}`;
+  if (botao === 'Boa') return `Obrigado pelo retorno${oi}!${link}\n\nE se tiver algo que a gente possa melhorar, é só me contar por aqui.`;
+  return `Obrigado pela sinceridade${oi}. O que a gente poderia ter feito melhor? Pode me contar por aqui, vai direto pra nossa equipe.${linkGoogle ? `\n\nE se quiser, também pode deixar sua avaliação no Google: ${linkGoogle}` : ''}`;
 }
 
 /** Resposta do cliente ao template de feedback. true = tratada (nada mais responde essa mensagem). */

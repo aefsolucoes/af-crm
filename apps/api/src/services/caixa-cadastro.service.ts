@@ -1,5 +1,5 @@
 import { prisma } from '../lib/prisma';
-import { EMPRESA_AF, dadosDaConta } from '../lib/empresa';
+import { dadosDaConta } from '../lib/empresa';
 import { logActivity } from './activity.service';
 import { comRegrasCaixa, regrasRendaCaixa, rendaForaDoPrazo } from './caixa-cr016';
 import { comEmissaoDoRg } from './rg-emissao';
@@ -272,18 +272,17 @@ export async function proximaConsulta(accountId: string): Promise<any | null> {
  * ("Cliente possui avaliação de risco em andamento 00067671 - 3"); o nosso aparece no rodapé ("Código do Convênio 00077001-9"). Código diferente = outro correspondente.
  * Lido do texto da consulta atual (`outroCcaDe` — vale pras consultas de antes desta regra); a Avaliação de Risco não vai pra CAIXA enquanto aparecer
  * (pedirAvaliacao/travaAnaliseCaixa). `_caixaOutroCca` (fora de _caixaCadastro, que a fila regrava) só guarda o aviso já dado (push + anotação, uma vez por consulta). */
-// O nosso convênio vem dos dados da empresa da conta (lib/empresa.ts, plano do piloto 23/11); o rodapé da própria consulta continua valendo primeiro.
-const CONVENIO_AF = EMPRESA_AF.caixaConvenio;
+// O nosso convênio vem dos dados da empresa da conta (lib/empresa.ts, plano do piloto 23/11 — sem gravado, fica só o do rodapé da própria consulta, que vale primeiro).
 const codigoCca = (v: string) => v.replace(/\s+/g, '');
 /** Códigos de convênio de OUTROS correspondentes na consulta (avaliação em andamento / proposta solicitada). Pura. */
-export function outrosCorrespondentes(textos: string[], nossoConvenio: string = CONVENIO_AF): { codigo: string; tipo: string }[] {
+export function outrosCorrespondentes(textos: string[], nossoConvenio = ''): { codigo: string; tipo: string }[] {
   const out: { codigo: string; tipo: string }[] = [];
   for (const t of textos) {
     const txt = String(t || '');
     const nosso = codigoCca(/c[oó]digo do conv[eê]nio\s*([0-9]{8}\s*-\s*[0-9])/i.exec(txt)?.[1] || nossoConvenio);
     for (const m of txt.matchAll(/possui (avalia[cç][aã]o de risco em andamento|proposta solicitada)\s+([0-9]{8}\s*-\s*[0-9])/gi)) {
       const codigo = codigoCca(m[2]);
-      if (codigo === nosso || codigoCca(nossoConvenio) === codigo) continue;
+      if (codigo === nosso || (nossoConvenio && codigoCca(nossoConvenio) === codigo)) continue;
       const tipo = /avalia/i.test(m[1]) ? 'avaliação de risco em andamento' : 'proposta solicitada';
       if (!out.some((x) => x.codigo === codigo && x.tipo === tipo)) out.push({ codigo, tipo });
     }
@@ -293,14 +292,15 @@ export function outrosCorrespondentes(textos: string[], nossoConvenio: string = 
 }
 /** O que a consulta ATUAL do card mostra em outro correspondente (lido do texto: vale também pras consultas de antes desta regra). Pura. */
 // Cadastro liberado pelo código do cliente DEPOIS da consulta (caixa-desbloqueio, Fabio 18/11): a análise do outro correspondente foi cancelada — não segura mais.
-export const outroCcaDe = (cf: Cf) => {
+export const outroCcaDe = (cf: Cf, nossoConvenio = '') => {
   const lib = String((cf?._caixaDesbloqueio as Cf | undefined)?.liberadoEm || '');
   if (lib && lib > String(((cf?._caixaCadastro || {}) as Cf).consultadoEm || '')) return [];
-  return outrosCorrespondentes(Object.values(((cf?._caixaCadastro || {}) as Cf).consultas || {}).map((x: any) => String(x?.texto || '')));
+  return outrosCorrespondentes(Object.values(((cf?._caixaCadastro || {}) as Cf).consultas || {}).map((x: any) => String(x?.texto || '')), nossoConvenio);
 };
 const descreveOutroCca = (cods: { codigo: string; tipo: string }[]) => cods.map((x) => `${x.tipo} (convênio ${x.codigo})`).join('; ');
 async function avisarOutroCorrespondente(accountId: string, leadId: string, nome: string, c: Cf, todos: boolean): Promise<void> {
-  const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')), (await dadosDaConta(accountId)).caixaConvenio);
+  const nossoConvenio = (await dadosDaConta(accountId)).caixaConvenio;
+  const cods = outrosCorrespondentes(Object.values(c.consultas || {}).map((x: any) => String(x?.texto || '')), nossoConvenio);
   const l = await prisma.lead.findUnique({ where: { id: leadId }, select: { userId: true, customFields: true } });
   const atual = ((l?.customFields || {}) as Cf)._caixaOutroCca as Cf | undefined;
   if (!cods.length) {
@@ -315,7 +315,7 @@ async function avisarOutroCorrespondente(accountId: string, leadId: string, nome
   if (atual?.chave === chave) return; // já avisado
   const reg = { codigos: cods, chave, at: new Date().toISOString() };
   await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set(COALESCE("customFields", '{}'::jsonb), '{_caixaOutroCca}', ${JSON.stringify(reg)}::jsonb, true) WHERE id = ${leadId}`;
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — CLIENTE EM OUTRO CORRESPONDENTE: a consulta do nome mostra ${descreveOutroCca(cods)}. O nosso convênio é ${CONVENIO_AF}.\nA análise de crédito NÃO vai pra CAIXA pelo CRM enquanto isso aparecer (Fabio 14/11). Os dados de renda que o outro correspondente lançou ficam na anotação "Cadastro ANTIGO na CAIXA" quando a extensão passa pela renda; os lidos dos documentos, na "FICHA DE CADASTRO". Nada foi dito ao cliente.` } }).catch(() => {});
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ CAIXA — CLIENTE EM OUTRO CORRESPONDENTE: a consulta do nome mostra ${descreveOutroCca(cods)}.${nossoConvenio ? ` O nosso convênio é ${nossoConvenio}.` : ''}\nA análise de crédito NÃO vai pra CAIXA pelo CRM enquanto isso aparecer (Fabio 14/11). Os dados de renda que o outro correspondente lançou ficam na anotação "Cadastro ANTIGO na CAIXA" quando a extensão passa pela renda; os lidos dos documentos, na "FICHA DE CADASTRO". Nada foi dito ao cliente.` } }).catch(() => {});
   const { sendPushToAccount } = require('./push.service') as typeof import('./push.service');
   sendPushToAccount(accountId, { title: `⚠️ ${nome}: cliente em outro correspondente (CAIXA)`, body: `${descreveOutroCca(cods)}. A análise de crédito fica segurada — veja o card.`.slice(0, 180), leadId }).catch(() => {});
   // Tudo automático (Fabio 18/11, Lucas): a extensão vai até a tela do token (sem enviar) e o CRM pergunta ao cliente se ele lembra da análise e se segue com a gente;
@@ -728,7 +728,7 @@ export async function pedirAvaliacao(accountId: string, leadId: string, por: str
   const ps = participantesDa(cf);
   if (!ps.length) return 'O card ainda não tem a ficha de cadastro';
   // Outro correspondente: o automático (refazer em 360/PRICE) não encaminha; o clique (botão do card, análise pendente do clique, /avaliar, conferência marcada) roda e fica anotado (Fabio 14/11).
-  const outroCca = outroCcaDe(cf);
+  const outroCca = outroCcaDe(cf, (await dadosDaConta(accountId)).caixaConvenio);
   if (outroCca.length && !opts.manual) return `Cliente em OUTRO correspondente na CAIXA (${descreveOutroCca(outroCca)}): a análise de crédito não vai sozinha (Fabio 14/11) — rode pelo botão "Análise CAIXA" se quiser seguir`;
   if (outroCca.length) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ Análise CAIXA pedida por ${por} com o cliente em OUTRO correspondente (${descreveOutroCca(outroCca)}).` } }).catch(() => {});
   const anterior = cf._caixaCadastro?.avaliacao;
@@ -1260,7 +1260,7 @@ export async function estadoCaixaDoCard(accountId: string, leadId: string): Prom
   // SBPE/MCMV e SAC/PRICE da operação avaliada, ao lado do resultado (Fabio 12/11): o gravado na avaliação; nas enviadas antes, a anotação do envio.
   const comResultado = /^\s*RESULTADO:/i.test(String(res?.status || ''));
   const notaOp = comResultado && (!amortizacaoDaAvaliacao(cf) || (!he && !av?.enquadramento)) ? (await notasDaOperacao([leadId]).catch(() => new Map<string, string>())).get(leadId) : null;
-  const oc = outroCcaDe(cf);
+  const oc = outroCcaDe(cf, (await dadosDaConta(accountId)).caixaConvenio);
   const outroCorrespondente = oc.length ? { codigos: oc, desde: (cf._caixaOutroCca as Cf | undefined)?.at || c.consultadoEm || null, nota: await notaDaRenda(leadId).catch(() => null) } : null;
   return {
     mostrar: true,

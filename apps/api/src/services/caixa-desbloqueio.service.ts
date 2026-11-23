@@ -144,7 +144,7 @@ export async function perguntarAoCliente(accountId: string, leadId: string, por:
   if (!l) return 'Card não encontrado';
   const cf = (l.customFields || {}) as Cf;
   const { outroCcaDe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  if (!outroCcaDe(cf).length) return 'A consulta da CAIXA deste card não mostra outro correspondente';
+  if (!outroCcaDe(cf, (await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId)).caixaConvenio).length) return 'A consulta da CAIXA deste card não mostra outro correspondente';
   const d = (cf._caixaDesbloqueio || {}) as Cf;
   const final = finalDoToken(d) || finaisDoCard(cf, [l.contact?.whatsappPhone, l.contact?.phone])[0] || null;
   const { callableFirstName } = require('../lib/text') as typeof import('../lib/text');
@@ -291,6 +291,6 @@ export async function retomarDepoisDaFicha(accountId: string, leadId: string): P
   const p1 = participantesDa(cf).find((x) => x.ordem === 1);
   if (!p1?.pai || !p1?.identidade?.numero) return;
   const { outroCcaDe } = require('./caixa-cadastro.service') as typeof import('./caixa-cadastro.service');
-  if (!outroCcaDe(cf).length) return;
+  if (!outroCcaDe(cf, (await (require('../lib/empresa') as typeof import('../lib/empresa')).dadosDaConta(accountId)).caixaConvenio).length) return;
   await pedirDesbloqueio(accountId, leadId, 'CRM (automático: a ficha ficou pronta, com o nome do pai e a identidade)', { modo: d.modo === 'enviar' ? 'enviar' : 'ate', perguntar: !!d.perguntarAuto });
 }

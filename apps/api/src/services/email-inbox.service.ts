@@ -8,7 +8,7 @@ import nodemailer from 'nodemailer';
 import MailComposer from 'nodemailer/lib/mail-composer';
 import { sealSecret, openSecret } from '../lib/secret-box';
 import { companySignatureHtml, companySignatureText } from './email.service';
-import { DadosEmpresa, EMPRESA_AF, dadosDaConta } from '../lib/empresa';
+import { DadosEmpresa, dadosDaConta } from '../lib/empresa';
 import { emailJaEnviado, enderecosBarrados, motivoBloqueioEmail, registrarDevolucao } from './email-bounce.service';
 import { EmailLink, htmlComLinks, linksDoHtml, textoComLinks } from './email-links';
 import { isCommissionEmail } from './commission-email';
@@ -128,7 +128,7 @@ export async function ensureCompanyMailbox(accountId: string): Promise<void> {
 }
 
 /** Assinatura padrão (quando a caixa não tem uma própria). */
-function defaultSignature(acc: { userId: string | null }, userName?: string | null, e: DadosEmpresa = EMPRESA_AF): string {
+function defaultSignature(acc: { userId: string | null }, userName: string | null | undefined, e: DadosEmpresa): string {
   return acc.userId ? `${userName || ''}\n${e.nomeAssinatura}`.trim() : companySignatureText(e);
 }
 
