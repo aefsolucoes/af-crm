@@ -131,6 +131,11 @@ export async function gravarProdutosCaixa(accountId: string, leadId: string, r: 
   const st = await salvarProd(leadId, (x) => { if (propConta) x.contaProposta = propConta; x.status = status; x.fim = new Date().toISOString(); x.ultimaTela = String(r.texto || '').slice(0, 7000); x.mapa = r.mapa || null; x.botoes = (r.botoes || []).slice(0, 40); if (r.numeroConta) { x.numeroConta = String(r.numeroConta).slice(0, 40); x.contaGeradaEm = new Date().toISOString(); } if (x.cartao && /cart[aã]o/i.test(status)) { x.cartaoStatus = status; x.cartaoEm = new Date().toISOString(); } if (x.conta && /^(ENCAMINHADO|GERADO|CONFERIR: conta)/.test(status)) { x.contaStatus = status; x.contaEm = new Date().toISOString(); } });
   await note(leadId, `🏦 Conta + cartão CAIXA de ${st.nome || 'proponente'} — ${status}${r.numeroConta ? `\n💳 Nº da conta gerado no Caixa Aqui: ${r.numeroConta}` : ''}\n\n${String(r.texto || '').slice(0, 6000)}${(r.botoes || []).length ? `\n\nBotões na tela: ${(r.botoes || []).join(' | ')}` : ''}`);
   push(accountId, `🏦 ${l.name}: conta/cartão CAIXA`, status, leadId);
+  // Conta encaminhada → MO30844 (Autorização da Forma de Pagamento) preenchido na pasta FORMULARIOS pro cliente assinar (Fabio 23/11).
+  if (/^ENCAMINHADO/.test(status) && st.numeroConta) {
+    const mo = require('./mo30844.service') as typeof import('./mo30844.service');
+    mo.gerarMo30844(accountId, leadId, { por: 'CRM (conta encaminhada)' }).then((e) => { if (e) note(leadId, `⚠️ MO30844 não gerado: ${e}`); }).catch((e) => note(leadId, `⚠️ MO30844 não gerado: ${e?.message || e}`));
+  }
 }
 
 /** PDF do "Imprimir Formulário" da conta ou do cartão (a extensão manda) → pasta FORMULARIOS do Drive do card (Fabio 23/11 "pode salvar"; mesmo lugar da ficha

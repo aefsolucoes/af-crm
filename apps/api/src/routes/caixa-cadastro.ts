@@ -329,6 +329,20 @@ router.post('/:leadId/produtos/pedir', requirePermission('funnel_manage'), async
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
+// MO30844 (Autorização da Forma de Pagamento) preenchido pelo CRM → pasta FORMULARIOS pro cliente assinar (Fabio 23/11). `conta`: nº do Caixa Aqui quando o
+// card ainda não guardou (fica gravado no card).
+router.post('/:leadId/mo30844', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const conta = /^\d{4}\.\d{3,4}\.[\d.]+-\d$/.test(String(req.body?.conta || '').trim()) ? String(req.body.conta).trim() : undefined;
+  if (conta) {
+    const l = await prisma.lead.findFirst({ where: { id: req.params.leadId, accountId: req.user!.accountId }, select: { customFields: true } });
+    const st = ((l?.customFields || {}) as any)._caixaProdutos || {};
+    if (l && !st.numeroConta) await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = jsonb_set("customFields", '{_caixaProdutos,numeroConta}', ${JSON.stringify(conta)}::jsonb, true) WHERE id = ${req.params.leadId} AND "customFields" ? '_caixaProdutos'`;
+  }
+  const mo = await import('../services/mo30844.service');
+  const erro = await mo.gerarMo30844(req.user!.accountId, req.params.leadId, { conta, por: await nomeDe(req) }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
 // PDF do "Imprimir Formulário" da conta/cartão (extensão) → pasta FORMULARIOS do Drive (Fabio 23/11).
 router.post('/:leadId/produtos/formulario', async (req: AuthRequest, res: Response) => {
   const qual = req.body?.qual === 'conta' ? 'conta' : req.body?.qual === 'cartao' ? 'cartao' : null;
