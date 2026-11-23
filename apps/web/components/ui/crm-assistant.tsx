@@ -1,29 +1,27 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { Loader2, FileText, Check, Ban, ExternalLink, X, Mic, Square, Send, RotateCcw, Play, Volume2 } from 'lucide-react';
+import { Check, Ban, ExternalLink, X, Volume2, MessageSquare } from 'lucide-react';
 import api from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { toast } from '@/components/ui/toast';
 import { useAuthStore } from '@/store/auth.store';
 import { useOutboundCallStore } from '@/store/outbound-call.store';
+import { DocumentCard, SimulationCard, CopyCard, RecorderCard, VoicePicker, type Attachment, type AudioReq, type CopyReq, type Nav, type Pending, type Voice } from '@/components/ui/jarvis-cards';
+import { JarvisChat, type ChatItem } from '@/components/ui/jarvis-chat';
 
 /* "Jarvis" — o assistente do CRM em forma de BOLINHA (Fabio 29/10: "não precisa ter chat, só a bolinha mesmo, como se fosse uma Siri").
  * Toca na bolinha → ela ouve, o Claude raciocina com as ferramentas do CRM (routes/assistant.ts) e responde FALANDO (voz Matilda da ElevenLabs; a do navegador
  * de reserva). Ela é 3D e passeia pela tela enquanto conversa; parada, fica no canto. O que precisa de tela aparece num balãozinho ao lado dela:
  * confirmar/cancelar ação ("sim"/"não" falado também vale), gravador de áudio pro cliente, PDF da simulação, link pra tela aberta.
  * Ligação: confirmada, ela para de ouvir, abre a conversa e disca (quem fala é o colaborador). Lembretes ("me lembra de…") ela fala na hora.
- * O contexto da conversa fica só neste navegador e é esquecido depois de 2 h parado. */
+ * O contexto da conversa fica só neste navegador e é esquecido depois de 2 h parado.
+ * 23/11 (Fabio: "abrir o chat para fazer as funções novamente"): o 💬 colado na bolinha abre o CHAT POR TEXTO (jarvis-chat.tsx) — mesma conversa, com histórico,
+ * anexar arquivo e os mesmos cartões Confirmar/Cancelar; aberto o chat, a bolinha vai pro cabeçalho dele. */
 
-type Attachment = { type: 'simulation'; id: string; banco: string; leadName: string } | { type: 'document'; leadId: string; source: 'att' | 'drive'; ref: string; fileName: string; mimeType: string };
-type Pending = { id: string; descricao: string; estado?: 'PENDENTE' | 'FEITO' | 'CANCELADO' | 'ERRO'; resultado?: string };
-type Nav = { path: string; label: string };
-type AudioReq = { leadId: string; leadName: string };
 type Msg = { role: 'user' | 'assistant'; content: string };
 type Voz = 'off' | 'ouvindo' | 'pensando' | 'falando';
-type CopyReq = { label: string; texto: string };
 type Cartao = { fala?: string; disse?: string; pending?: Pending[]; attachments?: Attachment[]; nav?: Nav | null; audio?: AudioReq | null; copiar?: CopyReq[]; escolherVoz?: boolean };
-type Voice = { id: string; nome: string; desc: string };
 const VOZ_KEY = 'af_jarvis_voz';
 const lerVoz = () => { try { return localStorage.getItem(VOZ_KEY) || ''; } catch { return ''; } };
 const STORE_KEY = 'af_crm_jarvis_ctx';
@@ -40,6 +38,41 @@ function load(): Msg[] {
 function save(msgs: Msg[]) { try { localStorage.setItem(STORE_KEY, JSON.stringify({ at: Date.now(), msgs: msgs.slice(-20) })); } catch { /* sem armazenamento: segue sem contexto */ } }
 function spokenIds(): string[] { try { const v = JSON.parse(localStorage.getItem(SPOKEN_KEY) || '[]'); return Array.isArray(v) ? v : []; } catch { return []; } }
 function markSpoken(id: string) { try { localStorage.setItem(SPOKEN_KEY, JSON.stringify([...spokenIds(), id].slice(-100))); } catch { /* */ } }
+// Chat por texto (Fabio 23/11): o histórico que aparece no painel fica neste navegador por 12 h (o contexto do Claude continua no af_crm_jarvis_ctx, 2 h).
+const LOG_KEY = 'af_jarvis_chat_log';
+const CHAT_ABERTO_KEY = 'af_jarvis_chat_aberto';
+const LOG_MAX = 60;
+function loadLog(): ChatItem[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOG_KEY) || 'null');
+    if (!v || !Array.isArray(v.itens) || Date.now() - v.at > 12 * 3600_000) return [];
+    const agora = Date.now();
+    // ação pendente de mais de 30 min já saiu da memória do servidor; "Fazendo…" sem resposta = a página recarregou no meio
+    return (v.itens as ChatItem[]).slice(-LOG_MAX).map((it) => ({ ...it, pending: it.pending?.map((x) => (x.estado === 'PENDENTE' && agora - it.at > 30 * 60_000 ? { ...x, estado: 'ERRO' as const, resultado: 'Expirou — peça de novo.' } : x.resultado === 'Fazendo…' ? { ...x, resultado: 'A página recarregou antes da resposta — confira no card.' } : x)) }));
+  } catch { return []; }
+}
+function saveLog(itens: ChatItem[]) { try { localStorage.setItem(LOG_KEY, JSON.stringify({ at: Date.now(), itens: itens.slice(-LOG_MAX) })); } catch { /* sem armazenamento: o chat vale só nesta tela */ } }
+const paraBase64 = (b: Blob) => new Promise<string>((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result).split(',')[1] || ''); fr.onerror = reject; fr.readAsDataURL(b); });
+/** Foto grande (> 4 MB) vira JPEG de até 2400 px antes de subir; PDF e HEIC vão como estão (o servidor converte o HEIC). */
+async function prepararArquivo(f: File): Promise<{ nome: string; mimeType: string; base64: string }> {
+  let mime = f.type || (/\.pdf$/i.test(f.name) ? 'application/pdf' : /\.(heic|heif)$/i.test(f.name) ? 'image/heic' : /\.png$/i.test(f.name) ? 'image/png' : 'image/jpeg');
+  let blob: Blob = f; let nome = f.name || 'documento';
+  if (/^image\/(jpeg|png|webp)$/.test(mime) && f.size > 4_000_000) {
+    try {
+      const bmp = await createImageBitmap(f);
+      const k = Math.min(1, 2400 / Math.max(bmp.width, bmp.height));
+      const cv = document.createElement('canvas'); cv.width = Math.round(bmp.width * k); cv.height = Math.round(bmp.height * k);
+      cv.getContext('2d')!.drawImage(bmp, 0, 0, cv.width, cv.height);
+      const out = await new Promise<Blob | null>((r) => cv.toBlob(r, 'image/jpeg', 0.85));
+      if (out && out.size < f.size) { blob = out; mime = 'image/jpeg'; nome = `${nome.replace(/\.(png|webp|jpe?g)$/i, '')}.jpg`; }
+    } catch { /* manda o original */ }
+  }
+  return { nome, mimeType: mime, base64: await paraBase64(blob) };
+}
+// "sim"/"não" DIGITADO só vale como resposta curta e sozinha (no texto não existe o atalho "já confirmei" da voz: sempre clique ou "sim").
+const SIM_TXT = /^(sim|s|pode|pode sim|confirmo|confirma|confirmar|confirmado|manda|pode mandar|faz|pode fazer|isso|ok|beleza|claro)$/;
+const QUAL_TXT = /^(?:(?:sim|confirma|confirmo|pode)[, ]+)?(?:a |o )?(primeir[ao]|segund[ao]|terceir[ao]|1|2|3|todas|todos|tudo|as duas|os dois|ambas|ambos)$/;
+const NAO_TXT = /^(n[aã]o|n|cancela|cancelar|deixa|esquece|negativo)$/;
 
 const SIM = /^(sim|pode|pode sim|confirmo|confirma|confirmar|confirmado|firma|firmo|manda|pode mandar|faz|pode fazer|isso|ok|beleza|claro|liga|pode ligar)\b/i; // "firma": o reconhecimento às vezes corta o começo de "confirma"
 // Pedido que JÁ traz a confirmação ("…e confirma", "pode pedir", "sem perguntar"): a ação sai sem pedir de novo (Fabio 29/10: "não precisa confirmar 2x se eu já disse confirmar").
@@ -79,33 +112,6 @@ function Orb3D({ voz }: { voz: Voz }) {
   );
 }
 
-/** Documento do cliente espelhado AQUI no balão (Fabio 29/10: "sem abrir telas reais"): foto ou PDF da conversa ou da pasta do Drive, baixado pelo CRM. */
-function DocumentCard({ a }: { a: Extract<Attachment, { type: 'document' }> }) {
-  const [url, setUrl] = useState('');
-  const [erro, setErro] = useState('');
-  const [grande, setGrande] = useState(false);
-  useEffect(() => {
-    let vivo = true; let u = '';
-    api.get('/api/assistant/document', { params: { leadId: a.leadId, source: a.source, ref: a.ref }, responseType: 'blob' })
-      .then((r) => { if (!vivo) return; u = URL.createObjectURL(r.data as Blob); setUrl(u); })
-      .catch(() => { if (vivo) setErro('Não consegui carregar o documento'); });
-    return () => { vivo = false; if (u) URL.revokeObjectURL(u); };
-  }, [a.leadId, a.source, a.ref]);
-  const pdf = a.mimeType === 'application/pdf';
-  const nome = a.fileName.split('/').pop() || a.fileName;
-  return (
-    <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
-      <div className="flex items-center gap-1.5 font-medium text-slate-700"><FileText size={13} className="text-blue-500" /> <span className="truncate" title={a.fileName}>{nome}</span>
-        <button onClick={() => setGrande((g) => !g)} className="ml-auto shrink-0 text-[11px] text-slate-400 hover:text-slate-600">{grande ? 'diminuir' : 'ampliar'}</button>
-      </div>
-      {erro && <div className="mt-1 text-red-600">{erro}</div>}
-      {!url && !erro && <div className="mt-1 text-slate-500">Carregando…</div>}
-      {url && (pdf
-        ? <iframe src={url} title={nome} className={cn('mt-1.5 w-full rounded border border-slate-100', grande ? 'h-[70vh]' : 'h-72')} />
-        : <img src={url} alt={nome} className={cn('mt-1.5 w-full rounded object-contain', grande ? 'max-h-[70vh]' : 'max-h-72')} />)}
-    </div>
-  );
-}
 
 /** "zero quatro sete sete sete zero dois zero" → "04777020"; "4 7 7 7" → "4777". Só junta sequências de 3+ dígitos falados (palavra ou número solto), pra não trocar "um cliente". Pura. */
 const DIGITO: Record<string, string> = { zero: '0', um: '1', uma: '1', dois: '2', duas: '2', tres: '3', quatro: '4', cinco: '5', seis: '6', meia: '6', sete: '7', oito: '8', nove: '9' };
@@ -158,145 +164,9 @@ export function numerosFalados(texto: string): string {
   return out.join(' ');
 }
 
-function SimulationCard({ a }: { a: Extract<Attachment, { type: 'simulation' }> }) {
-  const [st, setSt] = useState<{ status: string; detail?: string | null; hasPdf?: boolean } | null>(null);
-  const [opening, setOpening] = useState(false);
-  useEffect(() => {
-    let vivo = true;
-    let t: ReturnType<typeof setTimeout> | null = null;
-    const tick = async () => {
-      try {
-        const { data } = await api.get(`/api/assistant/simulation/${a.id}`);
-        if (!vivo) return;
-        setSt(data);
-        if (['REQUESTED', 'RUNNING', 'READY'].includes(data.status)) t = setTimeout(tick, 5000);
-      } catch { if (vivo) setSt({ status: 'ERRO' }); }
-    };
-    tick();
-    return () => { vivo = false; if (t) clearTimeout(t); };
-  }, [a.id]);
-  async function abrir() {
-    const w = window.open('', '_blank'); // abre já (antes do download) pra o navegador não bloquear a janela
-    setOpening(true);
-    try {
-      const { data } = await api.get(`/api/assistant/simulation/${a.id}/pdf`, { responseType: 'blob' });
-      const url = URL.createObjectURL(new Blob([data], { type: 'application/pdf' }));
-      if (w) w.location.href = url; else window.location.href = url;
-    } catch { w?.close(); toast('Não consegui abrir o PDF', 'error'); } finally { setOpening(false); }
-  }
-  const banco = a.banco === 'SANTANDER' ? 'Santander' : a.banco === 'INTER' ? 'Inter' : a.banco;
-  return (
-    <div className="mt-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
-      <div className="flex items-center gap-1.5 font-medium text-slate-700"><FileText size={13} className="text-red-500" /> Simulação {banco} — {a.leadName}</div>
-      <div className="mt-1 text-slate-500">{!st ? 'Conferindo…' : st.hasPdf ? 'PDF pronto (só pra equipe).' : st.status === 'FAILED' || st.status === 'ERRO' ? `Não saiu: ${st.detail || 'erro ao gerar'}` : 'Gerando no portal do banco (1 a 2 min)…'}</div>
-      {st?.hasPdf && <button onClick={abrir} disabled={opening} className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-[#2261a8] px-2.5 py-1 font-medium text-white hover:brightness-110 disabled:opacity-50">{opening ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />} Abrir PDF</button>}
-    </div>
-  );
-}
 
-/** Gravador de áudio pro cliente: a pessoa grava com a própria voz, ouve e só sai no Enviar (mesmo envio da Inbox, convertido pra voz do WhatsApp no servidor). */
-/** Texto pra copiar e encaminhar (ex.: PIX da certidão): o assistente não lê em voz alta, só mostra aqui. */
-function CopyCard({ c }: { c: CopyReq }) {
-  const [ok, setOk] = useState(false);
-  async function copiar() {
-    try { await navigator.clipboard.writeText(c.texto); setOk(true); setTimeout(() => setOk(false), 2500); } catch { /* sem permissão: dá pra selecionar o texto à mão */ }
-  }
-  return (
-    <div className="mt-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 p-2">
-      <div className="text-[11px] font-medium text-emerald-300">{c.label}</div>
-      <div className="mt-1 max-h-16 overflow-y-auto break-all rounded bg-black/30 p-1.5 font-mono text-[10px] leading-tight text-gray-200 select-all">{c.texto}</div>
-      <button type="button" onClick={copiar} className="mt-1.5 w-full rounded-md bg-emerald-600 py-1 text-xs font-medium text-white hover:bg-emerald-500">{ok ? 'Copiado ✓' : 'Copiar'}</button>
-    </div>
-  );
-}
 
-/** Cada colaborador escolhe a voz do assistente (Fabio 29/10) — todas brasileiras; a escolha fica neste navegador. */
-function VoicePicker({ atual, primeiroNome, onPick }: { atual: string; primeiroNome: string; onPick: (v: Voice) => void }) {
-  const [vozes, setVozes] = useState<Voice[]>([]);
-  const [tocando, setTocando] = useState('');
-  const audio = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => { api.get('/api/assistant/voices').then((r) => setVozes(r.data || [])).catch(() => setVozes([])); return () => { try { audio.current?.pause(); } catch { /* */ } }; }, []);
-  async function ouvir(v: Voice) {
-    try { audio.current?.pause(); } catch { /* */ }
-    setTocando(v.id);
-    try {
-      const masc = /masculin/i.test(v.desc);
-      const r = await api.post('/api/assistant/tts', { text: `Oi${primeiroNome ? `, ${primeiroNome}` : ''}! Eu sou ${masc ? 'o' : 'a'} ${v.nome}, ${masc ? 'seu assistente' : 'sua assistente'} aqui no CRM. É só tocar na bolinha e falar comigo.`, voiceId: v.id }, { responseType: 'blob' });
-      const url = URL.createObjectURL(r.data as Blob);
-      const a = new Audio(url); audio.current = a;
-      a.onended = () => { setTocando(''); URL.revokeObjectURL(url); };
-      await a.play();
-    } catch { setTocando(''); toast('Não consegui tocar a amostra', 'error'); }
-  }
-  return (
-    <div className="mt-2 space-y-1.5">
-      <p className="text-xs font-medium text-slate-600">Escolha a voz do seu assistente:</p>
-      {!vozes.length && <Loader2 size={14} className="animate-spin text-slate-400" />}
-      {vozes.map((v) => (
-        <div key={v.id} className={cn('flex items-center gap-2 rounded-lg border px-2 py-1.5', v.id === atual ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200')}>
-          <button onClick={() => ouvir(v)} className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-sky-600 text-white hover:brightness-110" title="Ouvir">{tocando === v.id ? <Volume2 size={13} className="animate-pulse" /> : <Play size={13} />}</button>
-          <div className="min-w-0 flex-1 leading-tight"><div className="text-xs font-semibold text-slate-800">{v.nome}</div><div className="truncate text-[11px] text-slate-500">{v.desc}</div></div>
-          <button onClick={() => { try { audio.current?.pause(); } catch { /* */ } onPick(v); }} className="rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:brightness-110">{v.id === atual ? 'Usando' : 'Escolher'}</button>
-        </div>
-      ))}
-    </div>
-  );
-}
 
-function RecorderCard({ req, onDone }: { req: AudioReq; onDone: (msg: string) => void }) {
-  const [fase, setFase] = useState<'pronto' | 'gravando' | 'ouvir' | 'enviando'>('pronto');
-  const [seg, setSeg] = useState(0);
-  const [url, setUrl] = useState('');
-  const rec = useRef<MediaRecorder | null>(null);
-  const chunks = useRef<Blob[]>([]);
-  const stream = useRef<MediaStream | null>(null);
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null);
-  const blob = useRef<Blob | null>(null);
-  const solta = () => { stream.current?.getTracks().forEach((t) => t.stop()); stream.current = null; if (timer.current) { clearInterval(timer.current); timer.current = null; } };
-  useEffect(() => () => solta(), []);
-  async function gravar() {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.current = s;
-      const mime = ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm'].find((t) => typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported?.(t)) || '';
-      const r = new MediaRecorder(s, mime ? { mimeType: mime } : undefined);
-      chunks.current = [];
-      r.ondataavailable = (e) => { if (e.data.size > 0) chunks.current.push(e.data); };
-      r.onstop = () => { blob.current = new Blob(chunks.current, { type: r.mimeType || 'audio/webm' }); setUrl(URL.createObjectURL(blob.current)); setFase('ouvir'); solta(); };
-      r.start(); rec.current = r; setSeg(0); setFase('gravando');
-      timer.current = setInterval(() => setSeg((x) => x + 1), 1000);
-    } catch { toast('Não consegui acessar o microfone — verifique a permissão do navegador.', 'error'); }
-  }
-  async function enviar() {
-    if (!blob.current) return;
-    setFase('enviando');
-    try {
-      const mime = blob.current.type || 'audio/webm';
-      const ext = mime.includes('mp4') ? 'mp4' : mime.includes('ogg') ? 'ogg' : 'webm';
-      const dataBase64 = await new Promise<string>((resolve, reject) => { const fr = new FileReader(); fr.onload = () => resolve(String(fr.result).split(',')[1] || ''); fr.onerror = reject; fr.readAsDataURL(blob.current!); });
-      await api.post('/api/messages/send-media', { leadId: req.leadId, fileName: `audio-${Date.now()}.${ext}`, mimeType: mime, dataBase64, transcodeAudio: true });
-      onDone(`Áudio enviado pro ${req.leadName}.`);
-    } catch (err: any) { toast(err?.response?.data?.error || 'Erro ao enviar o áudio', 'error'); setFase('ouvir'); }
-  }
-  const mmss = `${Math.floor(seg / 60)}:${String(seg % 60).padStart(2, '0')}`;
-  return (
-    <div className="mt-2 rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs">
-      <div className="font-medium text-slate-700">Áudio pro {req.leadName}</div>
-      {fase === 'pronto' && <button onClick={gravar} className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-red-500 px-2.5 py-1 font-medium text-white hover:brightness-110"><Mic size={12} /> Gravar</button>}
-      {fase === 'gravando' && <div className="mt-1.5 flex items-center gap-2"><span className="h-2 w-2 rounded-full bg-red-500 animate-pulse" /> <span className="tabular-nums text-slate-600">{mmss}</span><button onClick={() => rec.current?.stop()} className="inline-flex items-center gap-1 rounded-md bg-slate-700 px-2.5 py-1 font-medium text-white"><Square size={11} /> Parar</button></div>}
-      {(fase === 'ouvir' || fase === 'enviando') && (
-        <div className="mt-1.5 space-y-1.5">
-          <audio src={url} controls className="w-full h-8" />
-          <div className="flex gap-1.5">
-            <button onClick={enviar} disabled={fase === 'enviando'} className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-2.5 py-1 font-medium text-white hover:brightness-110 disabled:opacity-50">{fase === 'enviando' ? <Loader2 size={12} className="animate-spin" /> : <Send size={12} />} Enviar</button>
-            <button onClick={() => { setUrl(''); blob.current = null; setFase('pronto'); }} disabled={fase === 'enviando'} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-slate-600"><RotateCcw size={12} /> Regravar</button>
-            <button onClick={() => onDone('Áudio cancelado.')} disabled={fase === 'enviando'} className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-slate-600"><Ban size={12} /> Cancelar</button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
 
 export function CrmAssistant() {
   const pathname = usePathname();
@@ -329,6 +199,20 @@ export function CrmAssistant() {
   const setCard = (c: Cartao | null) => { cartaoRef.current = c; setCartao(c); };
 
   useEffect(() => { msgsRef.current = load(); }, []);
+
+  // ── chat por texto (Fabio 23/11): mesma conversa da voz, num painel; o que a bolinha fala também entra no histórico ──
+  const [chatAberto, setChatAberto] = useState(false);
+  const chatAbertoRef = useRef(false);
+  const [itens, setItensState] = useState<ChatItem[]>([]);
+  const itensRef = useRef<ChatItem[]>([]);
+  const [pensandoTexto, setPensandoTexto] = useState(false);
+  useEffect(() => { const l = loadLog(); itensRef.current = l; setItensState(l); try { if (sessionStorage.getItem(CHAT_ABERTO_KEY) === '1') setChatAberto(true); } catch { /* */ } }, []);
+  useEffect(() => { chatAbertoRef.current = chatAberto; try { if (chatAberto) sessionStorage.setItem(CHAT_ABERTO_KEY, '1'); else sessionStorage.removeItem(CHAT_ABERTO_KEY); } catch { /* */ } }, [chatAberto]);
+  const setItens = (f: (a: ChatItem[]) => ChatItem[]) => { const n = f(itensRef.current).slice(-LOG_MAX); itensRef.current = n; setItensState(n); saveLog(n); };
+  const addItem = (it: Omit<ChatItem, 'id' | 'at'>) => { const item: ChatItem = { ...it, id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, at: Date.now() }; setItens((a) => [...a, item]); return item.id; };
+  /** Lista de vozes: no chat aberto vai pro histórico (o balãozinho fica escondido), senão no balão. */
+  const pedeVoz = () => { if (chatAbertoRef.current) addItem({ role: 'assistant', texto: 'Escolha a voz do Jarvis:', escolherVoz: true }); else setCard({ escolherVoz: true }); };
+  function limparChat() { setItens(() => []); msgsRef.current = []; save([]); setCard(null); }
 
   // ── posição: no canto quando parada; passeando pela tela enquanto conversa (para quando há algo pra clicar no balão) ──
   const canto = () => ({ x: window.innerWidth - ORB - 20, y: window.innerHeight - ORB - 84 });
@@ -488,34 +372,72 @@ export function CrmAssistant() {
       await a.play();
     } catch { /* sem aviso, segue pensando */ }
   }
-  async function perguntar(content: string): Promise<Cartao> {
+  /** texto = veio do chat digitado: resposta completa (voice false), sem voz e sem mexer na bolinha. exibir/arquivos = o que aparece no histórico (sem o marcador dos arquivos). */
+  async function perguntar(content: string, o: { texto?: boolean; exibir?: string; arquivos?: string[] } = {}): Promise<Cartao> {
     lembra({ role: 'user', content });
-    setVoz('pensando');
-    const demora = setTimeout(() => { if (vozRef.current) void avisaQueEstaVendo(); }, 2500);
+    addItem({ role: 'user', texto: o.exibir ?? content, ...(o.arquivos?.length ? { arquivos: o.arquivos } : {}) });
+    if (o.texto) setPensandoTexto(true); else setVoz('pensando');
+    const demora = o.texto ? null : setTimeout(() => { if (vozRef.current) void avisaQueEstaVendo(); }, 2500);
     try {
-      const { data } = await api.post('/api/assistant/chat', { voice: true, messages: msgsRef.current }).finally(() => clearTimeout(demora));
+      const { data } = await api.post('/api/assistant/chat', { voice: !o.texto, messages: msgsRef.current }).finally(() => { if (demora) clearTimeout(demora); });
       const fala = String(data.reply || '').trim() || 'Não consegui responder agora.';
       lembra({ role: 'assistant', content: fala });
       const c: Cartao = { disse: content, fala, pending: data.pending?.length ? data.pending.map((p: Pending) => ({ ...p, estado: 'PENDENTE' })) : undefined, attachments: data.attachments?.length ? data.attachments : undefined, nav: data.navigate || null, audio: data.audio || null, copiar: data.copiar?.length ? data.copiar : undefined, escolherVoz: data.escolherVoz === true || undefined };
       setCard(c);
+      addItem({ role: 'assistant', texto: fala, pending: c.pending, attachments: c.attachments, nav: c.nav, audio: c.audio, copiar: c.copiar, escolherVoz: c.escolherVoz });
       if (c.nav?.path) router.push(c.nav.path);
       return c;
     } catch (err: any) {
       const c: Cartao = { disse: content, fala: err?.response?.data?.error || 'Não consegui responder agora. Tenta de novo.' };
       setCard(c);
+      addItem({ role: 'assistant', texto: c.fala || '', erro: true });
       return c;
+    } finally { if (o.texto) setPensandoTexto(false); }
+  }
+
+  /** Mensagem digitada no chat. Arquivos sobem antes (ficam no servidor até a pessoa confirmar pra onde vão) e a mensagem leva o marcador com os ids. */
+  async function enviarTexto(texto: string, arquivos: File[]): Promise<boolean> {
+    const t = texto.trim().toLowerCase().replace(/[.!]+$/, '').trim();
+    const pend = itensRef.current.flatMap((it) => (Date.now() - it.at < 30 * 60_000 ? it.pending || [] : [])).filter((x) => x.estado === 'PENDENTE');
+    if (!arquivos.length && pend.length && (SIM_TXT.test(t) || QUAL_TXT.test(t) || NAO_TXT.test(t))) {
+      addItem({ role: 'user', texto: texto.trim() });
+      if (NAO_TXT.test(t)) { pend.forEach((x) => cancelar(x.id)); addItem({ role: 'assistant', texto: pend.length > 1 ? 'Cancelei as ações que estavam esperando.' : 'Cancelado.' }); return true; }
+      const q = QUAL_TXT.exec(t);
+      let alvo = pend;
+      if (q && !/^(todas|todos|tudo|as duas|os dois|ambas|ambos)$/.test(q[1])) {
+        const idx = /^(primeir|1)/.test(q[1]) ? 0 : /^(segund|2)/.test(q[1]) ? 1 : 2;
+        if (!pend[idx]) { addItem({ role: 'assistant', texto: 'Não achei essa. Clique em Confirmar no cartão certo.' }); return true; }
+        alvo = [pend[idx]];
+      } else if (!q && pend.length > 1) {
+        addItem({ role: 'assistant', texto: `Tem ${pend.length} ações esperando:\n${pend.map((x, i) => `${i + 1}. ${x.descricao.split(/[.\n]/)[0]}`).join('\n')}\nQual eu confirmo? Escreva "a primeira", "a segunda" ou "todas" — ou clique em Confirmar no cartão.` });
+        return true;
+      }
+      for (const x of alvo) await confirmar(x.id);
+      return true;
     }
+    const subidos: { id: string; nome: string }[] = [];
+    try {
+      for (const f of arquivos) {
+        const a = await prepararArquivo(f);
+        const { data } = await api.post('/api/assistant/upload', a);
+        subidos.push({ id: data.id, nome: data.nome });
+      }
+    } catch (err: any) { toast(err?.response?.data?.error || 'Não consegui subir o arquivo', 'error'); return false; }
+    const marcador = subidos.length ? `[Arquivos anexados no chat: ${subidos.map((x) => `${x.nome} (arquivoId: ${x.id})`).join('; ')}]` : '';
+    void perguntar([texto.trim(), marcador].filter(Boolean).join('\n\n'), { texto: true, exibir: texto.trim(), arquivos: subidos.map((x) => x.nome) });
+    return true;
   }
 
   function atualizaPendente(id: string, patch: Partial<Pending>) {
     const c = cartaoRef.current;
     if (c?.pending) setCard({ ...c, pending: c.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) });
+    setItens((a) => a.map((it) => (it.pending?.some((p) => p.id === id) ? { ...it, pending: it.pending.map((p) => (p.id === id ? { ...p, ...patch } : p)) } : it)));
   }
   async function confirmar(id: string): Promise<string> {
     atualizaPendente(id, { estado: 'FEITO', resultado: 'Fazendo…' });
     try {
       const { data } = await api.post(`/api/assistant/confirm/${id}`);
-      atualizaPendente(id, { estado: 'FEITO', resultado: data.resultado || 'Feito.' });
+      atualizaPendente(id, { estado: 'FEITO', resultado: data.resultado || 'Feito.', nav: data.nav || null });
       lembra({ role: 'assistant', content: `(feito: ${data.resultado || 'ok'})` });
       if (data.call?.leadId) await discar(data.call.leadId, data.call.leadName);
       return data.resultado || 'Feito.';
@@ -554,7 +476,7 @@ export function CrmAssistant() {
   async function conversar() {
     if (vozRef.current) { parar(); return; }
     // 1ª vez neste navegador: cada colaborador escolhe a voz antes de conversar.
-    if (!vozIdRef.current) { setCard({ escolherVoz: true }); return; }
+    if (!vozIdRef.current) { pedeVoz(); return; }
     const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) { toast('Este navegador não reconhece fala (use o Chrome ou o Safari)', 'error'); return; }
     vozRef.current = true;
@@ -583,7 +505,7 @@ export function CrmAssistant() {
       if (!dito) { if (++silencios >= 6) { setCard(null); await falar('Vou ficar quieta. É só tocar na bolinha.'); break; } continue; }
       silencios = 0;
       if (PARAR.test(dito.trim())) { setCard(null); await falar('Até já.'); break; }
-      if (/^(trocar|mudar|muda|troca)\s+(a\s+|de\s+)?voz/i.test(dito.trim())) { setCard({ escolherVoz: true }); await falar('Escolha a voz nova aqui no balão.'); break; }
+      if (/^(trocar|mudar|muda|troca)\s+(a\s+|de\s+)?voz/i.test(dito.trim())) { pedeVoz(); await falar(chatAbertoRef.current ? 'Escolha a voz nova aqui no chat.' : 'Escolha a voz nova aqui no balão.'); break; }
       const pend = (cartaoRef.current?.pending || []).filter((p) => p.estado === 'PENDENTE');
       // Mais de uma ação esperando: "sim" sozinho NÃO confirma todas (Fabio 29/10: pediu a mensagem ao cliente e saiu também o pedido da certidão). Pergunta qual.
       const ORD = /\b(primeir[ao]|1|um|segund[ao]|2|dois|terceir[ao]|3|tr[eê]s)\b/i;
@@ -686,7 +608,9 @@ export function CrmAssistant() {
         for (const r of data as { id: string; titulo: string; leadId: string | null; cliente: string | null }[]) {
           if (ja.has(r.id)) continue;
           markSpoken(r.id);
-          setCard({ fala: `⏰ Lembrete: ${r.titulo}${r.cliente ? ` (${r.cliente})` : ''}.`, nav: r.leadId ? { path: `/inbox?leadId=${r.leadId}`, label: `Conversa do ${r.cliente}` } : null });
+          const lembrete: Cartao = { fala: `⏰ Lembrete: ${r.titulo}${r.cliente ? ` (${r.cliente})` : ''}.`, nav: r.leadId ? { path: `/inbox?leadId=${r.leadId}`, label: `Conversa do ${r.cliente}` } : null };
+          setCard(lembrete);
+          addItem({ role: 'assistant', texto: lembrete.fala || '', nav: lembrete.nav });
           if (!vozRef.current) await falar(`${primeiroNome ? `${primeiroNome}, ` : ''}lembrete: ${r.titulo}.`);
         }
       } catch { /* sem rede: tenta no próximo */ }
@@ -705,10 +629,49 @@ export function CrmAssistant() {
   const bx = Math.min(Math.max(pos.x + ORB / 2 - W / 2, 8), window.innerWidth - W - 8);
   const acima = pos.y > 300;
   const anda = mouseEm ? 'none' : `left ${MOVE_MS}ms ease-in-out, top ${MOVE_MS}ms ease-in-out, bottom ${MOVE_MS}ms ease-in-out`;
+  const orbVoz: Voz = voz !== 'off' ? voz : pensandoTexto ? 'pensando' : 'off';
+  const tocarBolinha = () => {
+    // Falando: o toque só corta a fala e ela passa a ouvir (Fabio 30/10: "não consigo interromper quando fala demais"). Ouvindo/pensando: o toque encerra.
+    if (vozRef.current && voz === 'falando') { cortouRef.current = true; interrompidoRef.current = ''; calar(); return; }
+    void conversar();
+  };
 
   return (
     <>
-      {(cartao || status) && (
+      {chatAberto && (
+        <JarvisChat
+          itens={itens}
+          pensando={pensandoTexto}
+          status={voz === 'ouvindo' ? 'Ouvindo…' : voz === 'pensando' ? 'Pensando…' : voz === 'falando' ? 'Falando… (toque na bolinha pra cortar)' : ''}
+          orb={<Orb3D voz={orbVoz} />}
+          vozLigada={conversando}
+          vozAtual={vozIdRef.current}
+          primeiroNome={primeiroNome}
+          onEnviar={enviarTexto}
+          onConfirmar={(id) => { void confirmar(id); }}
+          onCancelar={cancelar}
+          onAbrir={(path) => { router.push(path); if (window.innerWidth < 768) setChatAberto(false); }}
+          onMic={tocarBolinha}
+          onFechar={() => setChatAberto(false)}
+          onLimpar={limparChat}
+          onAudioFeito={(itemId, msg) => { setItens((a) => a.map((it) => (it.id === itemId ? { ...it, audio: null } : it))); addItem({ role: 'assistant', texto: msg }); }}
+          onEscolherVoz={(v) => { setItens((a) => a.map((it) => (it.escolherVoz ? { ...it, escolherVoz: false } : it))); escolherVoz(v); }}
+        />
+      )}
+      {!chatAberto && (
+        <button
+          onClick={() => setChatAberto(true)}
+          className={cn('fixed z-50 flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-[#2261a8] shadow-md hover:bg-slate-50', escondeCelular && 'hidden md:flex')}
+          style={{ left: pos.x - 8, top: pos.y - 8, transition: anda }}
+          onMouseEnter={segura}
+          onMouseLeave={solta}
+          title="Abrir o chat do Jarvis (escrever, anexar documento)"
+          aria-label="Chat do Jarvis"
+        >
+          <MessageSquare size={14} />
+        </button>
+      )}
+      {(cartao || status) && !chatAberto && (
         <div
           className="fixed z-50 w-[300px] max-w-[calc(100vw-1rem)] rounded-2xl border border-slate-200 bg-white/95 backdrop-blur shadow-xl p-3 text-sm text-slate-800"
           style={{ left: bx, ...(acima ? { bottom: window.innerHeight - pos.y + 12 } : { top: pos.y + ORB + 12 }), transition: anda }}
@@ -734,6 +697,7 @@ export function CrmAssistant() {
               ) : (
                 <div className={cn('mt-1 font-medium', p.estado === 'ERRO' ? 'text-red-600' : p.estado === 'CANCELADO' ? 'text-slate-500' : 'text-emerald-700')}>{p.resultado}</div>
               )}
+              {p.nav?.path && <button onClick={() => router.push(p.nav!.path)} className="mt-1 flex items-center gap-1 font-medium text-[#2261a8] hover:underline"><ExternalLink size={11} /> {p.nav.label}</button>}
             </div>
           ))}
           {cartao?.nav?.path && <button onClick={() => router.push(cartao.nav!.path)} className="mt-1.5 flex items-center gap-1 text-xs font-medium text-[#2261a8] hover:underline"><ExternalLink size={12} /> {cartao.nav.label}</button>}
@@ -746,9 +710,7 @@ export function CrmAssistant() {
         ref={orbRef}
         onClick={() => {
           if (pressRef.current.abriu) { pressRef.current.abriu = false; return; }
-          // Falando: o toque só corta a fala e ela passa a ouvir (Fabio 30/10: "não consigo interromper quando fala demais"). Ouvindo/pensando: o toque encerra.
-          if (vozRef.current && voz === 'falando') { cortouRef.current = true; interrompidoRef.current = ''; calar(); return; }
-          void conversar();
+          tocarBolinha();
         }}
         onTouchStart={() => { pressRef.current.abriu = false; pressRef.current.t = setTimeout(() => { pressRef.current.abriu = true; if (vozRef.current) parar(); setCard({ escolherVoz: true }); }, 650); }}
         onTouchEnd={() => { if (pressRef.current.t) clearTimeout(pressRef.current.t); }}
@@ -756,12 +718,12 @@ export function CrmAssistant() {
         onMouseLeave={solta}
         // Botão direito (ou segurar o dedo no celular) abre a lista de vozes (Fabio 29/10: "colocar a opção de escolher vozes").
         onContextMenu={(e) => { e.preventDefault(); if (vozRef.current) parar(); setCard({ escolherVoz: true }); }}
-        className={cn('fixed z-50 rounded-full focus:outline-none', escondeCelular && 'hidden md:block')}
+        className={cn('fixed z-50 rounded-full focus:outline-none', escondeCelular && 'hidden md:block', chatAberto && '!hidden')}
         style={{ left: pos.x, top: pos.y, width: ORB, height: ORB, transition: anda }}
         aria-label="Assistente do CRM"
         title={voz === 'falando' ? 'Falando — toque pra cortar e falar' : conversando ? 'Conversando — toque pra encerrar' : 'Assistente do CRM — toque e fale (botão direito ou segurar: escolher a voz)'}
       >
-        <Orb3D voz={voz} />
+        <Orb3D voz={orbVoz} />
       </button>
     </>
   );

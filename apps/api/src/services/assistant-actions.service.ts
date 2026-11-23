@@ -81,8 +81,55 @@ export const ACTION_TOOLS = [
   { name: 'escolher_voz', description: 'Abre no balão a lista de VOZES do assistente (todas brasileiras) pra pessoa ouvir e escolher. Use quando pedirem pra mudar/trocar/escolher a voz, perguntarem que vozes existem ou reclamarem da voz.', input_schema: { type: 'object', properties: {} } },
   { name: 'consultar_cartorio', description: 'Mapa dos cartórios de Registro de Imóveis do RI Digital (todos os estados): quais cartórios ficam numa cidade, o número do Ofício, a abrangência (bairros/municípios atendidos) e se tem Certidão Digital. Use pra saber qual cartório atende um imóvel ou onde um "Nº Ofício" fica no portal (ex.: no DF o 3º fica em Águas Claras).', input_schema: { type: 'object', properties: { uf: { type: 'string' }, cidade: { type: 'string', description: 'omita pra listar as cidades do estado' } }, required: ['uf'] } },
   { name: 'ver_certidao', description: 'Situação dos pedidos de certidão do cliente (pedido, protocolo, valor, PIX, paga, emitida). Se o PIX já foi gerado, o código aparece no balão com botão Copiar pra pessoa encaminhar — NÃO leia o código em voz alta. O PIX demora alguns minutos depois do pedido (a extensão faz o pedido no portal).', input_schema: { type: 'object', properties: { leadId: { type: 'string' } }, required: ['leadId'] } },
+  // ── chat por texto (Fabio 23/11: "abrir o chat para fazer as funções novamente, exemplo: colocar documentação, pedir para criar card, rodar crédito") ──
+  { name: 'ler_arquivo_do_chat', description: 'Lê um ARQUIVO que a pessoa anexou AQUI no chat (PDF ou foto — o arquivoId vem na mensagem dela, em "[Arquivos anexados no chat: …]") e responde a pergunta lendo o arquivo de verdade (ex.: "nome, CPF, data de nascimento e estado civil", "que documento é esse?"). Só lê: não grava nada.', input_schema: { type: 'object', properties: { arquivoId: { type: 'string' }, pergunta: { type: 'string' } }, required: ['arquivoId', 'pergunta'] } },
+  { name: 'anexar_documento', description: 'PREPARA (confirmação antes) colocar no card do cliente os arquivos que a pessoa anexou AQUI no chat: vão pra pasta do cliente no Drive e pra conversa do card pelo fluxo do CRM (o mesmo dos documentos que a equipe anexa no card) e entram na leitura/conferência de documentos. arquivoIds = os ids da mensagem "[Arquivos anexados no chat: …]" (todos, se a pessoa não escolher).', input_schema: { type: 'object', properties: { leadId: { type: 'string' }, arquivoIds: { type: 'array', items: { type: 'string' } } }, required: ['leadId', 'arquivoIds'] } },
+  { name: 'criar_card', description: 'PREPARA (confirmação antes) um CARD NOVO (lead), pela mesma rota do botão "+ Novo Lead". Obrigatórios: nome (do titular), telefone (com DDD) e funil ("Home Equity", "Habitação"/"Financiamento" ou o nome do funil). etapa opcional (padrão: Prospecção, ou a 1ª do funil). Se o telefone já tem card, a ferramenta devolve o card existente: pergunte à pessoa se cria mesmo assim (criarMesmoAssim true). arquivoIds = arquivos do chat pra já anexar no card novo. Nunca invente dado: o que não estiver no pedido ou no documento fica vazio.', input_schema: { type: 'object', properties: { nome: { type: 'string' }, telefone: { type: 'string' }, funil: { type: 'string' }, etapa: { type: 'string' }, cpf: { type: 'string' }, email: { type: 'string' }, nascimento: { type: 'string', description: 'DD/MM/AAAA' }, valorCredito: { type: 'number' }, valorImovel: { type: 'number' }, participante2: { type: 'object', properties: { nome: { type: 'string' }, cpf: { type: 'string' }, telefone: { type: 'string' }, nascimento: { type: 'string' } } }, arquivoIds: { type: 'array', items: { type: 'string' } }, criarMesmoAssim: { type: 'boolean' } }, required: ['nome', 'telefone', 'funil'] } },
 ];
 export const ACTION_TOOL_NAMES = new Set(ACTION_TOOLS.map((t) => t.name));
+
+/** Arquivos anexados no chat do Jarvis (Fabio 23/11): ficam na memória do servidor por 60 min, só pra quem anexou. Saem daqui pra o card pelo anexar_documento/criar_card
+ *  (rota documentos-equipe) — nunca direto pro Drive. Servidor reiniciou (deploy) = some, como as ações pendentes: a pessoa anexa de novo. */
+type UploadChat = { id: string; accountId: string; userId: string; nome: string; mimeType: string; buffer: Buffer; at: number };
+const uploads = new Map<string, UploadChat>();
+const UPLOAD_TTL = 60 * 60_000;
+export const UPLOAD_MAX = 20_000_000;
+export function guardarUploadDoChat(p: { accountId: string; userId: string; nome: string; mimeType: string; buffer: Buffer }): { id: string; nome: string; mimeType: string; tamanho: number } {
+  const agora = Date.now();
+  for (const [k, v] of uploads) if (agora - v.at > UPLOAD_TTL) uploads.delete(k);
+  const id = `arq_${crypto.randomBytes(6).toString('hex')}`;
+  const nome = String(p.nome || 'documento').replace(/[\\/]/g, '-').slice(0, 160) || 'documento';
+  uploads.set(id, { ...p, id, nome, at: agora });
+  return { id, nome, mimeType: p.mimeType, tamanho: p.buffer.length };
+}
+function uploadDoChat(accountId: string, userId: string, id: string): UploadChat {
+  const u = uploads.get(String(id || '').trim());
+  if (!u || u.accountId !== accountId || u.userId !== userId || Date.now() - u.at > UPLOAD_TTL) throw new Error(`o arquivo do chat "${id}" expirou (passa de 1 h ou o servidor reiniciou) — peça pra pessoa anexar de novo`);
+  return u;
+}
+const idsDoChat = (v: unknown): string[] => [...new Set((Array.isArray(v) ? v : [v]).map((x) => String(x || '').trim()).filter(Boolean))].slice(0, 10);
+/** Arquivos do chat → card, pela rota da tela (documentos-equipe: pasta do cliente no Drive + conversa + conferência). Em lotes de até ~22 MB (limite do JSON da API). */
+async function anexarNoCard(token: string, accountId: string, userId: string, leadId: string, ids: string[]): Promise<string[]> {
+  const arqs = ids.map((id) => uploadDoChat(accountId, userId, id));
+  const lotes: UploadChat[][] = [];
+  let atual: UploadChat[] = [], soma = 0;
+  for (const u of arqs) { if (atual.length && soma + u.buffer.length > 16_000_000) { lotes.push(atual); atual = []; soma = 0; } atual.push(u); soma += u.buffer.length; }
+  if (atual.length) lotes.push(atual);
+  const nomes: string[] = [];
+  for (const lote of lotes) {
+    const r = await callApi(token, 'POST', `/leads/${leadId}/documentos-equipe`, { arquivos: lote.map((u) => ({ nome: u.nome, mimeType: u.mimeType, base64: u.buffer.toString('base64') })) });
+    nomes.push(...(Array.isArray(r?.anexados) ? r.anexados : lote.map((u) => u.nome)));
+  }
+  return nomes;
+}
+const tamanhoLegivel = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(n / 1000))} KB`);
+/** "(61) 99999-8888" a partir de qualquer forma do número (com ou sem 55). Vazio = número inválido. Pura. */
+export function telefoneDoCard(t: string): string {
+  let d = String(t || '').replace(/\D/g, '');
+  if (d.length >= 12 && d.startsWith('55')) d = d.slice(2);
+  if (d.length !== 10 && d.length !== 11) return '';
+  return `(${d.slice(0, 2)}) ${d.slice(2, d.length - 4)}-${d.slice(-4)}`;
+}
 
 const TELAS: Record<string, { path: string; label: string }> = {
   funil_home_equity: { path: '/funil-home-equity', label: 'Funil Home Equity' }, funil_habitacao: { path: '/funil-habitacao', label: 'Funil Habitação' },
@@ -858,12 +905,88 @@ export async function runActionTool(p: { accountId: string; userId: string; toke
       if (!pv?.possible) return { naoDaPraPedir: `não achei a matrícula nem o endereço completo do imóvel do ${l.name} nos documentos e no card`, falta: 'número da matrícula + cidade/UF do imóvel (o cartório é opcional), ou CEP, rua e número do imóvel', instrucao: 'Diga isso em 1 frase e peça a matrícula e a cidade; com elas chame pedir_certidao de novo. Não procure em outras ferramentas.' };
       return pendente({ accountId, userId, tipo: 'pedir_certidao_docs', params: { leadId: l.id, sendPix: !pixNoChat, porEndereco }, descricao: `Pedir a certidão ${/^pelo endere/.test(String(pv.matricula)) ? pv.matricula : `da matrícula nº ${pv.matricula}`} (${pv.cidade}/${pv.uf}) do ${l.name} no RI Digital — ${ondePix}.${pv.jaTemCertidao ? ' Atenção: o cliente já mandou uma certidão.' : ''}` }, p.fila);
     }
+    case 'ler_arquivo_do_chat': {
+      const u = uploadDoChat(accountId, userId, input?.arquivoId);
+      const pergunta = String(input?.pergunta || 'Que documento é este e o que ele mostra de importante?');
+      try {
+        const partes = await partesParaLer(u.buffer, u.mimeType);
+        const respostas: string[] = [];
+        for (const [i, pt] of partes.entries()) {
+          const r = await perguntarAoDocumento(pt.buffer, pt.mimeType, `Arquivo anexado no chat pela equipe: ${u.nome}${partes.length > 1 ? ` (parte ${i + 1} de ${partes.length}: ${pt.rotulo})` : ''}.\nPergunta: ${pergunta}`);
+          respostas.push(partes.length > 1 ? `[${pt.rotulo}] ${r}` : r);
+        }
+        return { arquivo: u.nome, resposta: respostas.join('\n\n') || '(sem resposta)' };
+      } catch (e: any) { return { erro: e?.message || 'não consegui ler o arquivo agora' }; }
+    }
+    case 'anexar_documento': {
+      const l = await leadOf(accountId, input?.leadId);
+      const ids = idsDoChat(input?.arquivoIds);
+      if (!ids.length) return { erro: 'nenhum arquivo: peça pra pessoa anexar no chat (📎) e mandar de novo' };
+      const arqs = ids.map((id) => uploadDoChat(accountId, userId, id));
+      const { etapaConfere } = require('./docs-checker.service') as typeof import('./docs-checker.service');
+      const naDoc = etapaConfere(l.stage?.name || '', (l.customFields || {}) as Record<string, any>);
+      return pendente({ accountId, userId, tipo: 'anexar_documento', params: { leadId: l.id, leadName: l.name, ids }, descricao: `Colocar no card do ${l.name} ${arqs.length === 1 ? 'o arquivo' : `os ${arqs.length} arquivos`}: ${arqs.map((x) => `${x.nome} (${tamanhoLegivel(x.buffer.length)})`).join(', ')}.\nVão pra pasta do cliente no Drive e pra conversa do card${naDoc ? '. O card está na documentação: a conferência roda como se o cliente tivesse mandado (a IA pode responder o cliente e mover o card).' : ' e entram na conferência de documentos silenciosa (nada vai pro cliente e o card não sai do lugar).'}` }, p.fila);
+    }
+    case 'criar_card': {
+      const nome = String(input?.nome || '').replace(/\s+/g, ' ').trim();
+      if (nome.length < 3) return { erro: 'preciso do nome do titular' };
+      const tel = telefoneDoCard(input?.telefone);
+      if (!tel) return { erro: `telefone inválido ("${input?.telefone || ''}") — preciso do DDD + número` };
+      const f = norm(input?.funil || '');
+      if (!f) return { erro: 'preciso do funil: Home Equity ou Habitação (ou o nome do funil)' };
+      const pipes = await prisma.pipeline.findMany({ where: { accountId }, select: { id: true, name: true, department: { select: { name: true } }, stages: { orderBy: { order: 'asc' }, select: { id: true, name: true } } } });
+      const rotulo = (x: (typeof pipes)[number]) => `${x.name}${x.department?.name ? ` (${x.department.name})` : ''}`;
+      const setor = /habita|financ|^fh\b/.test(f) ? 'habita' : /home|equity|^he\b|garantia/.test(f) ? 'home' : /consorc/.test(f) ? 'consorc' : '';
+      let cand = pipes.filter((x) => norm(x.name) === f);
+      if (!cand.length) cand = pipes.filter((x) => norm(x.name).includes(f) || norm(x.department?.name || '').includes(setor || f));
+      // "Home Equity" = o funil de entrada do setor (o que tem Prospecção), não Em contratação/Concluído/Perdidos — a não ser que a pessoa diga.
+      if (cand.length > 1) { const abertos = cand.filter((x) => !/conclu|perdid|caixa de entrada|contrata/.test(norm(x.name))); if (abertos.length) cand = abertos; }
+      if (cand.length > 1) { const comProspec = cand.filter((x) => x.stages.some((s) => norm(s.name).includes('prospec'))); if (comProspec.length) cand = comProspec; }
+      if (!cand.length) return { erro: `não achei o funil "${input?.funil}"`, funis: pipes.map(rotulo) };
+      if (cand.length > 1) return { erro: 'mais de um funil com esse nome — pergunte qual', opcoes: cand.map(rotulo) };
+      const pipe = cand[0];
+      let etapa = pipe.stages.find((s) => norm(s.name).includes('prospec')) || pipe.stages[0];
+      if (input?.etapa) {
+        const e = norm(input.etapa);
+        const achada = pipe.stages.find((s) => norm(s.name) === e) || pipe.stages.find((s) => norm(s.name).includes(e));
+        if (!achada) return { erro: `o funil "${pipe.name}" não tem a etapa "${input.etapa}"`, etapasDoFunil: pipe.stages.map((s) => s.name) };
+        etapa = achada;
+      }
+      if (!etapa) return { erro: `o funil "${pipe.name}" não tem etapa` };
+      const d8 = tel.replace(/\D/g, '').slice(-8);
+      if (input?.criarMesmoAssim !== true) {
+        const dup = await prisma.$queryRaw<{ id: string; name: string; funil: string | null; etapa: string | null; status: string }[]>`
+          SELECT l.id, l.name, p.name AS funil, s.name AS etapa, l.status FROM "Lead" l LEFT JOIN "Contact" c ON c.id = l."contactId" LEFT JOIN "Stage" s ON s.id = l."stageId" LEFT JOIN "Pipeline" p ON p.id = l."pipelineId"
+          WHERE l."accountId" = ${accountId} AND l.archived = false AND l."isGroup" = false AND ${d8} IN (
+            right(regexp_replace(COALESCE(l."customFields"->>'telefone_1', ''), '\\D', '', 'g'), 8),
+            right(regexp_replace(COALESCE(l."customFields"->>'telefone_alt', ''), '\\D', '', 'g'), 8),
+            right(regexp_replace(COALESCE(c.phone, ''), '\\D', '', 'g'), 8),
+            right(regexp_replace(COALESCE(c."whatsappPhone", ''), '\\D', '', 'g'), 8))
+          ORDER BY l."updatedAt" DESC LIMIT 3`;
+        if (dup.length) return { jaExiste: dup.map((d) => ({ leadId: d.id, nome: d.name, onde: `${d.funil || '?'} → ${d.etapa || '?'}`, status: d.status })), instrucao: 'Esse telefone já tem card. Diga qual (nome, funil → etapa) e pergunte se abre o existente (abrir_na_tela) ou cria outro mesmo assim (criar_card com criarMesmoAssim true). Não crie sem ela responder.' };
+      }
+      const ids = idsDoChat(input?.arquivoIds);
+      const arqs = ids.map((id) => uploadDoChat(accountId, userId, id));
+      const p2 = input?.participante2 && typeof input.participante2 === 'object' ? input.participante2 : null;
+      const p2nome = String(p2?.nome || '').replace(/\s+/g, ' ').trim();
+      const cf: Record<string, string> = {};
+      const set = (k: string, v: unknown) => { const s = String(v ?? '').trim(); if (s) cf[k] = s; };
+      const cpf = (v: unknown) => { const d = String(v || '').replace(/\D/g, ''); return d.length === 11 ? `${d.slice(0, 3)}.${d.slice(3, 6)}.${d.slice(6, 9)}-${d.slice(9)}` : String(v || '').trim(); };
+      const reais = (v: unknown) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? Math.round(n).toLocaleString('pt-BR') : ''; };
+      set('participante_1', nome); set('telefone_1', tel); set('cpf_1', cpf(input?.cpf)); set('email_1', input?.email); set('nascimento_1', input?.nascimento);
+      if (p2nome) { set('participante_2', p2nome); set('cpf_2', cpf(p2?.cpf)); set('telefone_2', telefoneDoCard(p2?.telefone) || p2?.telefone); set('nascimento_2', p2?.nascimento); }
+      set('valor_credito', reais(input?.valorCredito)); set('valor_imovel', reais(input?.valorImovel));
+      const credito = Number(input?.valorCredito);
+      const body = { name: p2nome ? `${nome} / ${p2nome}` : nome, ...(Number.isFinite(credito) && credito > 0 ? { value: credito } : {}), pipelineId: pipe.id, stageId: etapa.id, userId, customFields: cf };
+      const dados = Object.entries(cf).filter(([k]) => !['participante_1', 'telefone_1'].includes(k)).map(([k, v]) => `${k.replace(/_/g, ' ')}: ${v}`);
+      return pendente({ accountId, userId, tipo: 'criar_card', params: { body, ids, onde: `${pipe.name} → ${etapa.name}` }, descricao: `Criar o card "${body.name}" (${tel}) em ${rotulo(pipe)} → ${etapa.name}, com você como responsável.${dados.length ? `\nDados: ${dados.join(' · ')}` : ''}${arqs.length ? `\nE anexar: ${arqs.map((x) => x.nome).join(', ')} (pasta do Drive + conversa + conferência).` : ''}\nAs automações de lead novo rodam como no "+ Novo Lead".` }, p.fila);
+    }
     default: return { erro: `ferramenta desconhecida: ${p.name}` };
   }
 }
 
 /** A pessoa confirmou (botão ou "sim"): executa pela rota da tela, com o login dela. */
-export async function confirmPendingAction(p: { accountId: string; userId: string; token: string; id: string }): Promise<{ ok: true; resultado: string; call?: { leadId: string; leadName: string } }> {
+export async function confirmPendingAction(p: { accountId: string; userId: string; token: string; id: string }): Promise<{ ok: true; resultado: string; call?: { leadId: string; leadName: string }; nav?: ScreenNav }> {
   limpar();
   const a = pendentes.get(p.id);
   if (!a || a.accountId !== p.accountId || a.userId !== p.userId) throw new Error('Essa ação expirou ou não é sua. Peça de novo.');
@@ -879,6 +1002,20 @@ export async function confirmPendingAction(p: { accountId: string; userId: strin
       await x.g.moveDriveItem(a.accountId, x.pasta, destino);
       await callApi(p.token, 'POST', '/notes', { leadId: x.l.id, content: `📁 Pasta movida pelo assistente para ${caminho} (${x.area.nome}). ${x.g.folderLink(x.pasta)}` }).catch(() => {});
       return { ok: true, resultado: `Pasta movida pra ${caminho}.` };
+    }
+    case 'anexar_documento': {
+      const nomes = await anexarNoCard(p.token, a.accountId, a.userId, x0.leadId, x0.ids);
+      return { ok: true, resultado: `${nomes.length} arquivo(s) no card do ${x0.leadName}: pasta do Drive e conversa; a conferência de documentos lê em seguida.`, nav: { path: `/inbox?leadId=${x0.leadId}`, label: `Conversa do ${x0.leadName}` } };
+    }
+    case 'criar_card': {
+      const lead = await callApi(p.token, 'POST', '/leads', x0.body);
+      if (!lead?.id) throw new Error('a rota de criação não devolveu o card');
+      let extra = '';
+      if (x0.ids?.length) {
+        try { const nomes = await anexarNoCard(p.token, a.accountId, a.userId, lead.id, x0.ids); extra = ` e ${nomes.length} arquivo(s) anexado(s)`; }
+        catch (e: any) { extra = `, mas os arquivos não entraram (${String(e?.message || e).slice(0, 120)}) — peça "anexa no card" de novo`; }
+      }
+      return { ok: true, resultado: `Card criado: ${lead.name} em ${x0.onde}${extra}.`, nav: { path: `/inbox?leadId=${lead.id}`, label: `Abrir o card do ${lead.name}` } };
     }
     case 'ligar': return { ok: true, resultado: `Discando pro ${x0.leadName}…`, call: { leadId: x0.leadId, leadName: x0.leadName } };
     case 'pedir_permissao_ligacao': await callApi(p.token, 'POST', '/calls/permission-request', { leadId: x0.leadId }); return { ok: true, resultado: 'Pedido de permissão enviado; quando ele tocar em "Permitir" dá pra ligar.' };

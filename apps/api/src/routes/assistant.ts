@@ -3,7 +3,7 @@ import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { requirePermission } from '../middleware/permission';
 import { prisma } from '../lib/prisma';
 import { assistantChat, assistantSimulationStatus, assistantSimulationPdf, dueReminders, ChatMsg } from '../services/assistant.service';
-import { confirmPendingAction, cancelPendingAction } from '../services/assistant-actions.service';
+import { confirmPendingAction, cancelPendingAction, guardarUploadDoChat, UPLOAD_MAX } from '../services/assistant-actions.service';
 import { supervisionTts, JARVIS_VOICES } from '../services/supervision.service';
 
 /** Assistente do CRM (chat da equipe) — ver services/assistant.service.ts. */
@@ -25,6 +25,24 @@ router.post('/chat', async (req: AuthRequest, res: Response) => {
 router.post('/confirm/:id', async (req: AuthRequest, res: Response) => {
   try { res.json(await confirmPendingAction({ accountId: req.user!.accountId, userId: req.user!.id, token: String(req.headers.authorization || ''), id: req.params.id })); }
   catch (err: any) { res.status(400).json({ error: err?.message || 'Não consegui fazer' }); }
+});
+// Arquivo anexado no chat (Fabio 23/11: "colocar documentação" pelo chat): fica na memória do servidor até a pessoa mandar pro card (anexar_documento / criar_card,
+// com confirmação, pela rota documentos-equipe). Só PDF e foto; HEIC vira JPEG aqui pra a leitura e a conferência entenderem.
+router.post('/upload', async (req: AuthRequest, res: Response) => {
+  try {
+    const nome = String(req.body?.nome || '').trim() || 'documento';
+    let mimeType = String(req.body?.mimeType || '').toLowerCase().trim();
+    if (!mimeType && /\.pdf$/i.test(nome)) mimeType = 'application/pdf';
+    if (!/^application\/pdf$|^image\//.test(mimeType)) return res.status(400).json({ error: 'Só PDF ou foto' });
+    let buffer: Buffer = Buffer.from(String(req.body?.base64 || '').replace(/^data:[^,]*,/, ''), 'base64');
+    if (buffer.length < 200) return res.status(400).json({ error: 'Arquivo vazio' });
+    if (buffer.length > UPLOAD_MAX) return res.status(413).json({ error: 'Arquivo grande demais (máx. 20 MB)' });
+    if (/heic|heif/.test(mimeType)) {
+      const { convertHeicIfNeeded } = require('../services/google.service') as typeof import('../services/google.service');
+      ({ buffer, mimeType } = await convertHeicIfNeeded(buffer, mimeType));
+    }
+    res.json(guardarUploadDoChat({ accountId: req.user!.accountId, userId: req.user!.id, nome: /heic|heif/i.test(nome) && mimeType === 'image/jpeg' ? nome.replace(/\.(heic|heif)$/i, '.jpg') : nome, mimeType, buffer }));
+  } catch (err: any) { res.status(400).json({ error: err?.message || 'Não consegui receber o arquivo' }); }
 });
 router.post('/cancel/:id', (req: AuthRequest, res: Response) => { res.json(cancelPendingAction(req.user!.accountId, req.user!.id, req.params.id)); });
 
