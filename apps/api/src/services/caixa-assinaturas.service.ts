@@ -105,7 +105,7 @@ export async function pedirAssinaturasCaixa(accountId: string, leadId: string, p
     `3. Na hora de posicionar a assinatura, ${doisOuMais ? 'escolham' : 'escolha'} a página indicada na legenda do arquivo e ${doisOuMais ? 'coloquem' : 'coloque'} em cima da linha de assinatura`,
     `4. ${doisOuMais ? 'Baixem' : 'Baixe'} o arquivo assinado e ${doisOuMais ? 'mandem' : 'mande'} por aqui`,
     '',
-    `Na legenda de cada arquivo está quem assina e em que página.${doisOuMais ? ' Onde os dois assinam, um assina primeiro e o outro assina o arquivo que já saiu assinado.' : ''}`,
+    `Na legenda de cada arquivo está quem assina e em que página.${doisOuMais && docs.some((d) => d.chave === 'mo30844') ? ' Onde os dois assinam, um assina primeiro e o outro assina o arquivo que já saiu assinado.' : ''}`,
     '',
     'Qualquer dúvida na hora de assinar, é só chamar.',
   ].join('\n');
