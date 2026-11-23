@@ -81,6 +81,12 @@ export async function proximaPropostaSiopi(accountId: string): Promise<any | nul
       await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
       return { tipo: 'proposta', passo: 'complementar', leadId: id, leadName: l!.name, numero: st.escolhida, dados: st.complementar.dados, salvar: st.complementar.salvar === true };
     }
+    if (st.passo === 'imovel') {
+      const cod = String(st.imovel?.codigo || cf._vistoriaCaixa?.codigoImovel || '').replace(/\D/g, '');
+      if (!st.escolhida || !cod) { await salvarP(id, (x) => { x.status = 'ERRO'; x.erro = 'sem a proposta escolhida ou o código do imóvel no SIOPI'; x.fim = new Date().toISOString(); }); continue; }
+      await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
+      return { tipo: 'proposta', passo: 'imovel', leadId: id, leadName: l!.name, numero: st.escolhida, codigoImovel: cod, salvar: st.imovel?.salvar === true };
+    }
     const cpfs = cpfsDaProposta(cf);
     if (!cpfs.length) { await salvarP(id, (x) => { x.status = 'ERRO'; x.erro = 'sem CPF'; x.fim = new Date().toISOString(); }); continue; }
     await salvarP(id, (x) => { x.status = 'RODANDO'; x.inicio = new Date().toISOString(); x.tentativas = (x.tentativas || 0) + 1; });
@@ -104,7 +110,8 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
     return;
   }
   await salvarP(leadId, (x) => {
-    x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU', 'COMPLEMENTADO', 'PREENCHIDO'].includes(etapa) ? etapa : 'ERRO';
+    x.status = ['TELA', 'JA_EXISTE', 'NAO_ACHOU', 'COMPLEMENTADO', 'PREENCHIDO', 'IMOVEL_VINCULADO', 'IMOVEL_ACHADO'].includes(etapa) ? etapa : 'ERRO';
+    if (b.passo === 'imovel') x.imovel = { ...(x.imovel || {}), resultado: etapa, dados: (b as any).imovel || null, avisos: (b as any).avisos || [], at: new Date().toISOString(), ...(etapa === 'IMOVEL_VINCULADO' ? { vinculadoEm: x.imovel?.vinculadoEm || new Date().toISOString() } : {}) };
     if (b.passo === 'complementar') x.complementar = { ...(x.complementar || {}), resultado: etapa, feito: (b as any).feito || null, avisos: (b as any).avisos || [], at: new Date().toISOString() }; x.fim = new Date().toISOString(); x.erro = b.erro || null; x.versaoExt = b.versao || null;
     if (Array.isArray(b.propostas)) x.propostas = b.propostas.slice(0, 20).map((p) => ({ numero: String(p?.numero || ''), linha: String(p?.linha || '').slice(0, 300) }));
     // Mais de uma proposta ativa: segue só a MAIS RECENTE (maior número sequencial da agência) e as outras ficam como estão (Fabio 18/11: "deixa as duas ativas e segue
@@ -118,10 +125,11 @@ export async function reportPropostaSiopi(accountId: string, leadId: string, b: 
   const resumo = etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"${b.cpfUsado ? ` (com o ${b.cpfUsado}º CPF)` : ''}`
     : etapa === 'JA_EXISTE' ? `o SIOPI JÁ TEM proposta pro ${b.cpfUsado || 1}º CPF — não criei outra:\n${props.join('\n')}${(b.propostas || []).length > 1 ? `\nSeguimos só pela mais recente: ${maisRecente((b.propostas || []).filter((p) => !/cancelad|inativ/i.test(String(p?.linha || ''))).map((p) => String(p?.numero || ''))) || b.propostas![0]?.numero}; as outras ficam ativas, sem mexer (Fabio 18/11).` : ''}`
       : etapa === 'NAO_ACHOU' ? `NÃO ACHEI a proposta — ${b.erro || ''}`
+        : etapa === 'IMOVEL_VINCULADO' || etapa === 'IMOVEL_ACHADO' ? (() => { const im = ((b as any).imovel || {}) as Record<string, any>; return `imóvel ${im.codigo || ''} ${etapa === 'IMOVEL_ACHADO' ? 'achado (NÃO vinculado — só conferência)' : im.jaVinculado ? `já estava vinculado à proposta${im.igual === false ? ' — ⚠️ É OUTRO imóvel, não o da vistoria' : ''}` : 'VINCULADO à proposta e conferido'}: matrícula ${im.matricula || '?'}, ${im.cartorio || ''}; ${[im.logradouro, im.numero].filter(Boolean).join(' ')}${im.bairro ? `, ${im.bairro}` : ''}${im.municipio ? ` — ${im.municipio}` : ''}${im.compraVenda ? `; compra e venda R$ ${im.compraVenda}` : ''}.${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}${etapa === 'IMOVEL_VINCULADO' ? '\nPróximo: Valores da Operação (selecionar a avaliação/laudo do imóvel).' : ''}`; })()
         : etapa === 'COMPLEMENTADO' || etapa === 'PREENCHIDO' ? `Complementar Dados da ${(b as any).numero || 'proposta'} ${etapa === 'COMPLEMENTADO' ? 'SALVO' : 'preenchido (sem salvar)'}:\n${Object.entries(((b as any).feito || {}) as Record<string, string>).map(([k, v]) => `• ${k}: ${v}`).join('\n')}${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`
           : `PAROU — ${b.erro || 'erro'}${(b as any).feito ? `\n(preenchido até: ${Object.keys((b as any).feito).join(', ')})` : ''}${((b as any).avisos || []).length ? `\nAvisos do SIOPI: ${((b as any).avisos as string[]).join(' | ')}` : ''}`;
   await note(leadId, `🏠 SIOPI — proposta (${b.passo || 'abrir'}): ${resumo}${tela?.texto ? `\n\n${tela.texto.slice(0, 2500)}` : ''}${campos.length ? `\n\nCampos:\n${campos.join('\n')}` : ''}${botoes.length ? `\n\nBotões: ${botoes.join(' · ')}` : ''}`);
-  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
+  try { (require('./push.service') as typeof import('./push.service')).sendPushToAccount(accountId, { title: `🏠 ${l.name}: proposta no SIOPI`, body: (etapa === 'IMOVEL_VINCULADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} vinculado à proposta` : etapa === 'IMOVEL_ACHADO' ? `imóvel ${((b as any).imovel || {}).codigo || ''} achado (não vinculado)` : etapa === 'TELA' ? `abriu "${tela?.titulo || 'tela seguinte'}"` : etapa === 'JA_EXISTE' ? `já existe: ${(b.propostas || []).map((p) => p?.numero).join(', ')}` : `parou: ${b.erro || 'erro'}`).slice(0, 160), leadId }).catch(() => {}); } catch { /* só aviso */ }
 }
 
 /** CAIXA aprovou (Fabio 18/11: "ele pode verificar isso quando aprovar o crédito"): anota se a proposta já existe no SIOPI. Propagada → a extensão só PROCURA a
@@ -182,5 +190,22 @@ export async function pedirComplementarSiopi(accountId: string, leadId: string, 
   dados.natoDigital = d.natoDigital || (dados.situacoes.includes('791') ? 'S' : 'N');
   await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'complementar'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.complementar = { dados, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
   await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: Complementar Dados na fila (${por}, ${d.salvar ? 'preencher e SALVAR' : 'só preencher'}): financiamento R$ ${dados.financiamento}, compra e venda R$ ${dados.compraVenda}, assinatura ${dados.agendamento}, 1º encargo ${dados.vencimento}, unidade de cobrança ${agencia}, imóvel ${munIm}/${ufIm}, situações ${dados.situacoes.join(', ')}, seguradora CAIXA RESIDENCIAL HABITACIONAL (apólice SBPE limite de cobertura, coletiva), PRICE, garantia ${dados.garantia === '432' ? '432 Imóveis residenciais urbanos NR' : '426 Alienação Fiduciária'}${d.primeiraAquisicao ? `, 1ª aquisição no SFH: ${d.primeiraAquisicao === 'S' ? 'Sim' : 'Não'}` : ''}.`);
+  return null;
+}
+
+/** Etapa "Imóvel" da proposta escolhida (Fabio 23/11: "AGORA CONTINUA A CONTRATAÇÃO NO SIOPI"): a extensão vincula o imóvel da vistoria (código do SIOPI em
+ *  `_vistoriaCaixa.codigoImovel`) e confere reabrindo a proposta. `salvar` false = só acha o imóvel. Os Valores da Operação dependem disso. Erro em texto. */
+export async function pedirImovelSiopi(accountId: string, leadId: string, por: string, d: { salvar?: boolean; codigo?: string } = {}): Promise<string | null> {
+  const l = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { customFields: true } });
+  if (!l) return 'Lead não encontrado';
+  const cf = (l.customFields || {}) as Cf;
+  const st = (cf._siopiProposta || {}) as Cf;
+  if (!st.escolhida) return 'O card ainda não tem a proposta do SIOPI escolhida (rode a consulta da proposta antes)';
+  if (st.status === 'RODANDO' && st.inicio && Date.now() - Date.parse(st.inicio) < LEASE_MS) return 'A extensão já está com a proposta deste card';
+  const cod = String(d.codigo || cf._vistoriaCaixa?.codigoImovel || '').replace(/\D/g, '');
+  if (!cod) return 'O card não tem o código do imóvel no SIOPI (a vistoria da CAIXA não foi pedida pelo CRM) — informe o código';
+  if (cf._laudoCaixa?.status && cf._laudoCaixa.status !== 'SALVO') return `O laudo da vistoria ainda não está aceito (${cf._laudoCaixa.status}) — sem laudo válido o imóvel não segue`;
+  await salvarP(leadId, (x) => { x.status = 'FILA'; x.passo = 'imovel'; x.pedidoEm = new Date().toISOString(); x.por = por; x.tentativas = 0; x.imovel = { ...(x.imovel || {}), codigo: cod, salvar: d.salvar === true, pedidoEm: new Date().toISOString(), por }; delete x.inicio; });
+  await note(leadId, `🏠 SIOPI — proposta ${st.escolhida}: etapa Imóvel na fila (${por}, ${d.salvar ? 'VINCULAR o imóvel e conferir' : 'só achar o imóvel'}): imóvel ${cod} da vistoria.`);
   return null;
 }

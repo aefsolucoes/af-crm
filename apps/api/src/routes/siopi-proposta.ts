@@ -2,7 +2,7 @@ import { Router, Response } from 'express';
 import { authMiddleware, AuthRequest } from '../middleware/auth';
 import { prisma } from '../lib/prisma';
 import { requirePermission } from '../middleware/permission';
-import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi } from '../services/siopi-proposta.service';
+import { pedirPropostaSiopi, proximaPropostaSiopi, reportPropostaSiopi, pedirComplementarSiopi, pedirImovelSiopi } from '../services/siopi-proposta.service';
 
 // Proposta da contratação da CAIXA no SIOPI (Fabio 16/11 e 18/11) — usada pela extensão "SIOPI (A&F)".
 const router = Router();
@@ -29,6 +29,15 @@ router.post('/:leadId/complementar', requirePermission('funnel_manage'), async (
   const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
   const b = req.body || {};
   const erro = await pedirComplementarSiopi(req.user!.accountId, req.params.leadId, quem, { primeiraAquisicao: b.primeiraAquisicao === 'S' || b.primeiraAquisicao === 'N' ? b.primeiraAquisicao : undefined, agendamento: b.agendamento, financiamento: Number(b.financiamento) || undefined, compraVenda: Number(b.compraVenda) || undefined, salvar: b.salvar === true, natoDigital: b.natoDigital === 'S' || b.natoDigital === 'N' ? b.natoDigital : undefined, situacoes: Array.isArray(b.situacoes) ? b.situacoes : undefined, agencia: b.agencia ? String(b.agencia) : undefined, ufAgencia: b.ufAgencia ? String(b.ufAgencia).toUpperCase().slice(0, 2) : undefined }).catch((e) => e?.message || 'erro');
+  if (erro) return res.status(400).json({ error: erro });
+  res.json({ ok: true });
+});
+
+// Etapa "Imóvel" (Fabio 23/11): vincula o imóvel da vistoria à proposta. { salvar: true } vincula; sem, só acha.
+router.post('/:leadId/imovel', requirePermission('funnel_manage'), async (req: AuthRequest, res: Response) => {
+  const quem = (await prisma.user.findUnique({ where: { id: req.user!.id }, select: { name: true } }))?.name || 'equipe';
+  const b = req.body || {};
+  const erro = await pedirImovelSiopi(req.user!.accountId, req.params.leadId, quem, { salvar: b.salvar === true, codigo: b.codigo ? String(b.codigo) : undefined }).catch((e) => e?.message || 'erro');
   if (erro) return res.status(400).json({ error: erro });
   res.json({ ok: true });
 });
