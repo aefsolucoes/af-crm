@@ -254,6 +254,7 @@ export async function assistantChat(p: { accountId: string; userId: string; user
   const anexos: ChatAttachment[] = [];
   const ctx: ToolCtx = { accountId: p.accountId, userId: p.userId, token: p.token, anexos, fila: [], nav: [], audio: [], copiar: [], ui: [] };
   const fim = (reply: string): AssistantReply => ({ reply, attachments: dedupe(anexos), pending: ctx.fila.map((a) => ({ id: a.id, descricao: a.descricao })), navigate: ctx.nav[ctx.nav.length - 1] || null, audio: ctx.audio[ctx.audio.length - 1] || null, copiar: ctx.copiar, escolherVoz: ctx.ui.includes('escolherVoz') });
+  let cobrouFerramenta = false;
   for (let turn = 0; turn < MAX_TURNS; turn++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -269,6 +270,12 @@ export async function assistantChat(p: { accountId: string; userId: string; user
     const usos = blocks.filter((b) => b.type === 'tool_use');
     if (!usos.length || data.stop_reason !== 'tool_use') {
       const reply = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('\n').trim();
+      // Pediu "confirma?" em texto sem ter preparado a ação (teste 23/11: ficava sem o botão Confirmar e a pessoa tinha que pedir de novo) — volta uma vez pra ele chamar a ferramenta.
+      if (!cobrouFerramenta && !ctx.fila.length && /\bconfirm[ao]\s*\?/i.test(reply) && turn < MAX_TURNS - 1) {
+        cobrouFerramenta = true;
+        msgs.push({ role: 'assistant', content: blocks.filter((b) => b.type === 'text' && String(b.text || '').trim()) }, { role: 'user', content: '(aviso do sistema, não da pessoa) Você pediu confirmação mas não chamou a ferramenta da ação — sem ela não aparece o botão Confirmar. Chame agora a ferramenta que prepara essa ação (ela só prepara, não executa) e responda em 1 frase.' });
+        continue;
+      }
       return fim(reply || '(sem resposta)');
     }
     msgs.push({ role: 'assistant', content: blocks });
