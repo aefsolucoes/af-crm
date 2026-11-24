@@ -194,15 +194,20 @@ function enderecoDosDocumentos(cf: Record<string, any>): { endereco: EnderecoCer
   return null;
 }
 
+/** Valor + PIX que TODA oferta de emissão diz (Fabio 24/11, Elionete: "ela não perguntou se poderia emitir e nem informou sobre valores" — troca a regra de 21/10 de não falar de custo na oferta). */
+export const CERTIDAO_CUSTO_PIX = 'O valor varia de região pra região, em torno de R$ 40 a R$ 100, e eu te mando o PIX por aqui pra pagamento.';
+/** Oferta genérica (sem a matrícula na frase): a IA conversando, ou a trava que troca uma promessa de emissão sem aceite por pergunta + valor + PIX. */
+export const CERTIDAO_PERGUNTA_TEXT = `A certidão de ônus/matrícula é essencial pra gente poder solicitar a vistoria. Posso emitir ela por aqui, através do cartório digital? ${CERTIDAO_CUSTO_PIX}`;
+
 export function certidaoOfferText(nome: string | null, saudar: boolean, matricula: string): string {
   // Texto do Fabio (21/10): SEM nome de empresa nem de pessoa, SEM custo (se o cliente perguntar: varia de região pra região, em torno de R$ 40 a R$ 100), diz que a certidão é essencial pra SOLICITAR A VISTORIA
   // e pergunta primeiro se o cliente TEM a certidão, ou se pode emitir pelo cartório digital.
-  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei o número da matrícula (nº ${matricula}), porém não recebi a certidão de ônus/matrícula, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir ela por aqui, através do cartório digital?`;
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Recebi a escritura do imóvel e já identifiquei o número da matrícula (nº ${matricula}), porém não recebi a certidão de ônus/matrícula, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir ela por aqui, através do cartório digital? ${CERTIDAO_CUSTO_PIX}`;
 }
 
 /** Oferta SEM matrícula (Fabio 30/10, "Sim, oferece e confirma"): uma mensagem só — oferece emitir pelo endereço e pede pra confirmar o endereço. O "sim" autoriza e confirma juntos. */
 export function certidaoOfferEnderecoText(nome: string | null, saudar: boolean, endereco: string): string {
-  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Não recebi a certidão de ônus/matrícula do imóvel, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir por aqui, através do cartório digital, pelo endereço do imóvel? Se puder emitir, só me confirma se o endereço é este:\n${endereco}`;
+  return `${saudar ? `Oi${nome ? `, ${nome}` : ''}! ` : ''}Não recebi a certidão de ônus/matrícula do imóvel, ela é essencial para que possamos solicitar a vistoria. Você teria ela aí ou posso emitir por aqui, através do cartório digital, pelo endereço do imóvel? ${CERTIDAO_CUSTO_PIX} Se puder emitir, só me confirma se o endereço é este:\n${endereco}`;
 }
 
 /** Fora do horário de pedido (07h–20h) o pedido espera as 07h: avisa o cliente que o PIX vai de manhã. */
@@ -450,30 +455,68 @@ export function mensagemFalaDaCertidao(texto: string): boolean {
   return /certid[aã]o|\bonr\b|emiss[aã]o|emitir|emitid|cart[oó]rio|matr[ií]cula|[oô]nus/i.test(String(texto || ''));
 }
 
-/** A mensagem da empresa é uma OFERTA de emitir a certidão (pergunta se pode emitir: "…ou posso emitir ela por aqui, através do cartório digital?", "quer que eu emita…")? A frase da própria
- *  atendente "já tenho a matrícula… vou emitir e te aviso" NÃO é oferta: o cliente nunca foi perguntado (Elionete 24/11: o "Ok" dela a essa frase virou "autorizou a emissão", só que nenhum pedido
- *  saiu e o PIX ia chegar de surpresa). Sem custo no texto de propósito (Fabio 21/10). Pura (testável). */
-export function ofertaDeEmissao(texto: string): boolean {
+/** A mensagem da empresa é uma OFERTA de emitir a certidão: pergunta se pode emitir ("…ou posso emitir ela por aqui, através do cartório digital?", "quer que eu emita…") E, com `exigeValor`,
+ *  informa o valor/PIX (Fabio 24/11: sem as duas coisas a IA não promete a emissão). A frase da própria atendente "já tenho a matrícula… vou emitir e te aviso" NÃO é oferta: o cliente nunca foi
+ *  perguntado (Elionete 24/11: o "Ok" dela a essa frase virou "autorizou a emissão", só que nenhum pedido saiu e o PIX ia chegar de surpresa). Pura (testável). */
+export function ofertaDeEmissao(texto: string, opts: { exigeValor?: boolean } = {}): boolean {
   const t = String(texto || '');
   if (!/certid[aã]o|[oô]nus|matr[ií]cula|cart[oó]rio\s+digital|\bonr\b/i.test(t)) return false;
-  return /\b(?:posso|podemos|pode\s+a\s+gente|quer(?:es)?\s+que|gostaria\s+que|deseja\s+que|prefere\s+que|me\s+autoriza|autoriza|permite)\b[^?.!\n]{0,80}\b(?:emit\w*|solicit\w*|pedir|providenci\w*|tirar|requerer)\b/i.test(t);
+  if (!/\b(?:posso|podemos|pode\s+a\s+gente|quer(?:es)?\s+que|gostaria\s+que|deseja\s+que|prefere\s+que|me\s+autoriza|autoriza|permite)\b[^?.!\n]{0,80}\b(?:emit\w*|solicit\w*|pedir|providenci\w*|tirar|requerer)\b/i.test(t)) return false;
+  return !opts.exigeValor || /R\$\s*\d|\bpix\b|\b(?:valor|custo|pagamento)\b/i.test(t);
 }
 
 /** Na conversa (do mais antigo ao mais novo, só WhatsApp) a ÚLTIMA oferta de emissão foi seguida, na mensagem seguinte, por uma resposta do cliente? Sem oferta, ou com a empresa falando de outra
  *  coisa entre a oferta e o cliente, um "ok/pode" dele não é aceite. É só a trava estrutural: quem diz se a resposta aceita é a leitura da conferência. Pura (testável). */
-export function ofertaDeEmissaoRespondida(msgs: { direction: string; content?: string | null }[]): boolean {
+export function ofertaDeEmissaoRespondida(msgs: { direction: string; content?: string | null }[], opts: { exigeValor?: boolean } = {}): boolean {
   let idx = -1;
-  msgs.forEach((m, i) => { if (m.direction === 'OUTBOUND' && ofertaDeEmissao(m.content || '')) idx = i; });
+  msgs.forEach((m, i) => { if (m.direction === 'OUTBOUND' && ofertaDeEmissao(m.content || '', opts)) idx = i; });
   return idx >= 0 && msgs[idx + 1]?.direction === 'INBOUND';
 }
 
-/** Trava da conferência dos documentos: o modelo disse "o cliente autorizou", mas a conversa (até `ate`, default agora) tem uma oferta clara de emissão respondida pelo cliente? */
-export async function conversaTemOfertaDeEmissaoRespondida(leadId: string, ate?: Date): Promise<boolean> {
+/** A conversa (até `ate`, default agora) tem uma oferta clara de emissão respondida pelo cliente? `exigeValor`: a oferta tem que ter dito o valor/PIX (regra nova de 24/11; as antigas, de antes, valem sem). */
+export async function conversaTemOfertaDeEmissaoRespondida(leadId: string, ate?: Date, opts: { exigeValor?: boolean } = {}): Promise<boolean> {
   const rows = await prisma.message.findMany({
     where: { leadId, channel: 'WHATSAPP', deleted: false, callWaCallId: null, ...(ate ? { createdAt: { lte: ate } } : {}) },
     orderBy: { createdAt: 'desc' }, take: 40, select: { direction: true, content: true },
   });
-  return ofertaDeEmissaoRespondida(rows.reverse());
+  return ofertaDeEmissaoRespondida(rows.reverse(), opts);
+}
+
+/** A emissão da certidão pelo ONR está AUTORIZADA pelo cliente (ou já há pedido andando)? Anotações do fluxo da oferta/endereço valem sempre (só nascem depois de oferta registrada); a anotação
+ *  "aceitou na conversa" (leitura do modelo na conferência dos documentos) só vale se a conversa tinha uma oferta de emissão que ele respondeu (Elionete 24/11). Pedido já andando = vale. */
+export async function emissaoAutorizada(leadId: string): Promise<boolean> {
+  const notas = await prisma.note.findMany({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { content: true, createdAt: true } });
+  if (!notas.length) return false;
+  if (await prisma.certidaoRequest.findFirst({ where: { leadId, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } })) return true;
+  for (const n of notas) {
+    if (!/aceitou na conversa/.test(n.content) || await conversaTemOfertaDeEmissaoRespondida(leadId, n.createdAt).catch(() => true)) return true;
+  }
+  return false;
+}
+
+/** Frases de PROMESSA de emitir a certidão ("vou emitir", "vou solicitar a certidão", "já está sendo providenciada", "te aviso assim que sair"). Pura. */
+const PROMESSA_EMISSAO_RX = /\b(?:vou|vamos|irei|iremos)\s+(?:j[aá]\s+)?(?:emitir|solicitar|pedir|providenciar|tirar)\b|\bj[aá]\s+(?:est[aá]|foi|estou)\s+(?:sendo\s+)?(?:providenci|solicitad|emitid|emitindo|pedid)\w*|\best[aá]\s+sendo\s+(?:providenci|emitid|solicitad)\w*|\b(?:eu\s+)?emito\b[^.!?\n]*\bte\s+aviso|\bte\s+aviso\s+(?:assim\s+que|quando)\s+(?:sair|ficar\s+pront\w*|emitir|estiver\s+pront\w*)/i;
+const FALA_DA_CERTIDAO_RX = /certid[aã]o|\b[oô]nus\b|matr[ií]cula|cart[oó]rio\s+digital/i;
+
+/** Trava da resposta da IA: sem autorização do cliente, nenhuma frase prometendo emitir a certidão ("vou emitir e te aviso", "já está sendo providenciada") sai. As frases saem e, se a resposta não
+ *  tem a pergunta, entra a oferta (pergunta + valor + PIX). Pura (testável): `autorizada` = o cliente aceitou (ou há pedido); `mudou` = a resposta foi alterada. */
+export function semPromessaDeEmissao(reply: string, autorizada: boolean): { reply: string; mudou: boolean } {
+  const original = String(reply || '');
+  if (autorizada || !original.trim()) return { reply: original, mudou: false };
+  let tirou = false;
+  const linhas = original.split('\n').map((linha) => {
+    const partes = linha.match(/[^.!?]+[.!?]*\s*/g) || [linha];
+    const mantem = partes.filter((fr) => {
+      const promete = PROMESSA_EMISSAO_RX.test(fr) && (FALA_DA_CERTIDAO_RX.test(fr) || /\bte\s+aviso\b/i.test(fr));
+      if (promete) tirou = true;
+      return !promete;
+    });
+    return mantem.join('').trim();
+  });
+  if (!tirou) return { reply: original, mudou: false };
+  const resto = linhas.filter(Boolean).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  const comOferta = ofertaDeEmissao(resto, { exigeValor: true }) ? resto : `${resto ? `${resto}\n\n` : ''}${CERTIDAO_PERGUNTA_TEXT}`;
+  return { reply: comOferta, mudou: true };
 }
 
 /** Mensagem do cliente depois da oferta: aceitou? Aceitou → autorização anotada + extensão do ONR acionada. Roda a cada texto inbound, mas só gasta IA enquanto há oferta esperando resposta. */
