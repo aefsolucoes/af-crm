@@ -40,11 +40,12 @@ Guia para NÃO confundir (aprendido com arquivos reais de clientes — Fabio 19/
 - Outros que existem: ESCRITURA PUBLICA, CARTA DE SENTENCA, EXIGENCIA NOTARIAL (do cartório), CONSULTA DE PROTOCOLO.
 - Foto CORTADA, parcial ou ilegível em que você não tem certeza do que é: escreva DOCUMENTO NAO IDENTIFICADO (e, se der, a pista: "DOCUMENTO NAO IDENTIFICADO IPTU") — NUNCA force CERTIDAO DE ONUS, MATRICULA DO IMOVEL ou CND IPTU na dúvida.
 - O titular é a pessoa a quem o documento pertence — NUNCA o escrevente, oficial, cartório, juiz, prefeito ou quem assina.
+- RG/carteira de identidade: o lado da FOTO costuma ter só a ASSINATURA do titular (letra cursiva) — assinatura NÃO é o nome (Fabio 24/11: "Nildinete" virou "MILDUNETE SOUZA PINTO" lendo a assinatura). O titular é só o nome IMPRESSO (no RG de SP fica no verso, com a filiação); sem nome impresso, escreva só "RG".
 Se for outro documento, use um nome curto que o descreva (até 4 palavras).
 Depois do nome do documento, coloque " | " e o nome completo do titular como aparece no documento (a pessoa a quem ele pertence). Se não aparecer nome de pessoa, escreva só o nome do documento.
 Exemplos: "CNH | JOAO CARLOS DA SILVA", "CONTRACHEQUE | MARIA SOUZA", "CND IPTU".
 SÓ MATRICULA DO IMOVEL ou CERTIDAO DE ONUS em FOTO/imagem de UMA folha: depois do titular coloque mais um " | " com o número da matrícula e a folha impressos no papel, no formato "MAT <número> FICHA <número da ficha/folha>" e " VERSO" quando for o verso (o verso costuma dizer "verso"/"continuação" ou não ter o cabeçalho da ficha). Folha que não dá pra ler: "MAT <número> FICHA ?". Ex.: "MATRICULA DO IMOVEL | JOAO DA SILVA | MAT 26027 FICHA 2 VERSO". Sem titular: "MATRICULA DO IMOVEL |  | MAT 26027 FICHA 1".
-Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa), responda IGNORAR.`;
+Se NÃO for documento (foto qualquer, selfie, figurinha, print de conversa, ou print de tela de celular que não mostra documento nem dado do financiamento/imóvel — tela pedindo SENHA pra abrir um arquivo, tela de troca de senha ou dados da conta do app do banco, busca na internet, mapa), responda IGNORAR.`;
 
 type AttachmentForVision = { id: string; driveFileId: string | null; data?: Uint8Array | null; mimeType: string; fileName?: string | null };
 
@@ -230,6 +231,28 @@ export function mesmaPessoa(a: string | undefined, b: string | undefined): boole
   return x.slice(1).some((w) => w.length > 2 && y.slice(1).includes(w));
 }
 
+/** A CONFERÊNCIA (`_docReview`) lê melhor que a classificação rápida (`_docInfo`) — Fabio 24/11, Fernanda Karita: o classificador leu a ASSINATURA do RG como nome
+ *  ("MILDUNETE SOUZA PINTO", "MILDINETE SOUZA PRADO") e chamou print de tela (busca no Google, tela do app do banco) de "DOCUMENTO NAO IDENTIFICADO" — a pasta
+ *  nomeava e guardava por ele (RG com nome errado, prints em COMPRADOR). Vale a conferência quando: a classificação não identificou e a conferência diz que NÃO é
+ *  documento (→ null = DESNECESSARIO) ou diz o que é; ou o titular da classificação não é ninguém do card e o da conferência é (mesmo tipo). Muda só o mapa em memória. Pura. */
+export function aplicarConferencia(docInfo: Record<string, DocInfo | null>, revs: Record<string, { tipo?: string; titular?: string; resultado?: string } | null | undefined>, pessoas: string[]): void {
+  const up = (s: unknown) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9; ]/g, ' ').replace(/\s*;\s*/g, '; ').replace(/\s+/g, ' ').trim().toUpperCase();
+  const conhecido = (nomes: string) => nomes.split(/\s*;\s*/).some((h) => pessoas.some((p) => mesmaPessoa(h, p)));
+  for (const [id, info] of Object.entries(docInfo)) {
+    const r = revs[id];
+    if (!info || !r || !r.resultado) continue;
+    const tipoR = up(r.tipo);
+    const titR = up(r.titular).replace(/^;\s*|;\s*$/g, '');
+    if (/^DOCUMENTO NAO IDENTIFICADO/.test(info.type)) {
+      if (r.resultado === 'NAO_DOCUMENTO') docInfo[id] = null;
+      else if (tipoR && !/NAO.?DOCUMENTO|NAO IDENTIFICADO/.test(tipoR) && r.resultado !== 'DUVIDA') docInfo[id] = { type: tipoR, ...(titR && !isPropertyDocType(tipoR) ? { holder: titR } : {}) };
+      continue;
+    }
+    if (r.resultado === 'NAO_DOCUMENTO' || !titR || !info.holder || isPropertyDocType(info.type) || tipoR !== info.type) continue;
+    if (!conhecido(info.holder) && conhecido(titR)) docInfo[id] = { ...info, holder: titR };
+  }
+}
+
 /** VENDEDORES do imóvel no Financiamento Habitacional (Fabio 11/11: "temos vendedor que deve bater com os mesmos da ônus"): os proprietários ATUAIS que a leitura da
  *  certidão de ônus/matrícula/escritura achou (`_docReview[].dono`, vários separados por ";"). Documento do imóvel ANTIGO (`_docsImovelAntigo`) não conta. Leitura antiga
  *  sem `dono`: cai no titular da classificação ("MATRICULA DO IMOVEL|FULANO"). Pura (testável). */
@@ -373,6 +396,7 @@ async function organizeLead(lead: {
   const freshLead = await prisma.lead.findUnique({ where: { id: lead.id }, select: { customFields: true } });
   const cf = { ...((freshLead?.customFields as Record<string, unknown>) || {}) };
   const vendedores = isHab ? vendedoresDoImovel(cf) : [];
+  aplicarConferencia(docInfo, (cf._docReview || {}) as Record<string, any>, [...buyers, ...vendedores]); // nome e pasta pela leitura da conferência quando ela é melhor (Fabio 24/11)
   if (!files.length) {
     await gravarChaves(lead.id, { _driveOrganizedAt: new Date().toISOString() });
     await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📁 Card em Documentação Recebida, mas nenhum documento do cliente foi encontrado no Drive (anexos do WhatsApp). A pasta não foi organizada automaticamente.' } });
