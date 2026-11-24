@@ -581,7 +581,17 @@ export async function evaluateDocs(accountId: string, leadId: string): Promise<{
     ? `${caixaRota && !ehFh ? 'CAIXA (o cliente pediu a CAIXA — Fabio 01/11)' : 'FINANCIAMENTO HABITACIONAL'} — LISTA QUE VALE (acima de TODAS as listas abaixo; Fabio 29/10${rendaNecessaria ? ' — lista ENXUTA pra rodar na CAIXA' : ''}): de cada ${caixaRota && !ehFh ? 'participante' : 'comprador'}: RG e CPF (a CNH vale pelos dois; RG/CIN que mostra o número do CPF também — aí NÃO cobre o CPF), comprovante de endereço${rendaNecessaria ? ', último contracheque' : ''} e certidão de estado civil (nascimento; casamento; casamento com averbação do divórcio/viuvez). Se for casado, RG e CPF do cônjuge.${rendaNecessaria ? '' : ' NENHUM documento de renda (contracheque, extrato, IR): ninguém pediu renda (Fabio 14/11) — as listas "Documentos comprador …" abaixo valem só pelos documentos pessoais.'} NÃO cobre NADA do imóvel (certidão de ônus/matrícula, escritura, IPTU) nem do vendedor nesta fase: "emitir" vazio e "autorizouEmissao" false. Na "listaUsada" escreva "${caixaRota && !ehFh ? 'CAIXA — participantes' : 'Financiamento Habitacional — comprador'}".\n\n`
     : `FINANCIAMENTO HABITACIONAL (banco ${cfAll._fhChosen?.bank || 'escolhido'}): a referência é a lista que o CRM mandou na conversa depois da escolha do banco. NUNCA use a lista "Documentos Home Equity".\n\n`;
   // Autorização da emissão da certidão: SEM campo (Fabio 15/10) — fica registrada numa ANOTAÇÃO do card (marcador abaixo) e o CRM mesmo lê.
-  const jaAutorizou = !!(await prisma.note.findFirst({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { id: true } }));
+  // A anotação "aceitou na conversa" vem da leitura do modelo desta própria conferência (sem passar por oferta registrada): só vale se a conversa tinha uma OFERTA clara de emissão que o cliente respondeu —
+  // "Ok" a "vou emitir e te aviso" não autoriza nada (Elionete 24/11). Com pedido já andando no ONR a anotação não precisa mais ser conferida.
+  const notasAutorizou = await prisma.note.findMany({ where: { leadId, content: { startsWith: AUTORIZOU_EMISSAO } }, select: { content: true, createdAt: true } });
+  let jaAutorizou = false;
+  if (notasAutorizou.length) {
+    const offerAut = require('./certidao-offer.service') as typeof import('./certidao-offer.service');
+    const pedidoJaAndando = !!(await prisma.certidaoRequest.findFirst({ where: { leadId, status: { notIn: ['CANCELLED', 'FAILED'] } }, select: { id: true } }));
+    for (const n of notasAutorizou) {
+      if (pedidoJaAndando || !/aceitou na conversa/.test(n.content) || await offerAut.conversaTemOfertaDeEmissaoRespondida(leadId, n.createdAt).catch(() => true)) { jaAutorizou = true; break; }
+    }
+  }
   const bancoRecusou = await (require('./doc-review.service') as typeof import('./doc-review.service')).bancoRecusouCertidao(leadId).catch(() => false); // anotação da equipe no card
   const matriculaEncerrada = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }).then((l) => { const m = ((l?.customFields || {}) as any)._matriculaEncerrada; return m ? ((m.novas || []).join('; ') || 'número novo') : ''; }).catch(() => '');
   const docsIdent = documentosDeIdentificacao(atts, info as Record<string, any>, revAll as Record<string, any>);
@@ -636,7 +646,9 @@ ${history}`;
   let verdict: { complete?: boolean; listaUsada?: string; faltando?: string[]; emitir?: string[]; autorizouEmissao?: boolean } = {};
   try { verdict = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] || '{}'); } catch { return null; }
   let autorizou = jaAutorizou;
-  if (!autorizou && verdict.autorizouEmissao === true) {
+  if (!autorizou && verdict.autorizouEmissao === true && !(await (require('./certidao-offer.service') as typeof import('./certidao-offer.service')).conversaTemOfertaDeEmissaoRespondida(leadId).catch(() => false))) {
+    console.warn(`[Docs] ${lead.name}: a leitura disse que o cliente autorizou a emissão da certidão, mas a conversa não tem uma oferta de emissão respondida por ele — não vale como autorização.`);
+  } else if (!autorizou && verdict.autorizouEmissao === true) {
     autorizou = true;
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `${AUTORIZOU_EMISSAO} — o cliente aceitou na conversa que a A&F emita a certidão de ônus/matrícula pelo ONR (custo de R$ 40 a R$ 100 pra ele).` } }).catch(() => {});
   }

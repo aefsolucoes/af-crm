@@ -1,6 +1,7 @@
 import { prisma } from '../lib/prisma';
 import { createCertidaoRequest, enderecoTexto, type EnderecoCertidao } from './certidao.service';
 import { manualStep } from './contracting-auto.service';
+import { localDeEndereco, limpaCidade, ufDoTexto } from './endereco-imovel.service';
 
 type Io = { to: (room: string) => { emit: (event: string, payload: unknown) => void } } | null | undefined;
 
@@ -56,6 +57,33 @@ export function certidaoIncompletaEmMaos(cf: Record<string, any>): boolean {
     && (r.problemas || []).some((p) => /folha|p[aá]gina|verso|certifica|autentica|incomplet|conte[uú]do|cortad/i.test(String(p)) && !/vencid|validade|antig|prazo|30 dias|outro im[oó]vel|ileg/i.test(String(p))));
 }
 
+const semAc = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+/** Cidade + UF do IMÓVEL escritas no card ("Endereço do imóvel … — São Paulo/SP — CEP …", ou cidade_imovel + uf_imovel). Sem UF de verdade = null (nunca inventada). Pura (testável). */
+export function localDoImovelNoCard(cf: Record<string, any>): { cidade: string; uf: string } | null {
+  const e = localDeEndereco(cf.endereco_imovel);
+  if (e.cidade && e.uf) return e;
+  const cidade = limpaCidade(cf.cidade_imovel);
+  const uf = ufDoTexto(`/${String(cf.uf_imovel || cf.imovel_uf || cf.uf || '').trim()}`);
+  return cidade && uf ? { cidade, uf } : null;
+}
+
+/** Cidade/UF de um texto lido no documento SEM "/UF" ("9º Cartório de Registro de Imóveis da Comarca de São Paulo", "Rua X, 641, Itaquera, São Paulo, Capital" — Elionete 24/11: o mandado
+ *  trazia a matrícula 68552 e o 9º RI, mas `cidadeUfDe` só entende "Cidade/UF" e o pedido no ONR nunca saiu). A UF vem do imóvel no card; "Comarca/Município/Cidade de X" dá a cidade X;
+ *  senão só vale se o texto cita a cidade do imóvel ("Estado de São Paulo" não conta como cidade). Pura (testável). */
+export function cidadeUfSemBarra(txt: string, cf: Record<string, any>): { cidade: string; uf: string } | null {
+  const base = localDoImovelNoCard(cf);
+  const t = String(txt || '');
+  if (!base || !t.trim()) return null;
+  const m = /\b(?:comarca|munic[ií]pio|cidade)\s+(?:de|do|da)\s+(.+?)(?=\s+[–-]\s|[,;()\/–—]|$)/i.exec(t);
+  const c = m ? limpaCidade(m[1]) : '';
+  if (c) return { cidade: c, uf: base.uf };
+  const alvo = semAc(base.cidade);
+  if (!alvo) return null;
+  const limpo = semAc(t.replace(/\bestado\s+(?:de|do|da)\s+[^,;()\/]+/i, ' '));
+  return ` ${limpo} `.includes(` ${alvo} `) ? base : null;
+}
+
 /** Matrícula + cartório + cidade/UF lidos nos documentos do cliente (escritura, IPTU, cadastro). null se não der pra pedir. Pura. */
 export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; cartorio: string; cidade: string; uf: string } | null {
   // Matrícula DIVERGENTE (Fabio 21/10, Edson: a certidão do cliente é da 70.617 e o termo de quitação cita a 94168 — antiga, transporte, matrícula-mãe ou nova): pede a certidão da matrícula CORRETA.
@@ -70,7 +98,7 @@ export function certidaoFromDocs(cf: Record<string, any>): { matricula: string; 
   // prefere a escritura (traz matrícula + cartório); senão qualquer documento do imóvel que cite a matrícula
   const ordenado = [...comMat].sort((a, b) => (/ESCRITURA/.test(String(b.tipo)) ? 1 : 0) - (/ESCRITURA/.test(String(a.tipo)) ? 1 : 0));
   for (const r of ordenado) {
-    const cu = cidadeUfDe(String(r.cartorio || '')) || cidadeUfDe(String(r.endereco || ''));
+    const cu = cidadeUfDe(String(r.cartorio || '')) || cidadeUfDe(String(r.endereco || '')) || cidadeUfSemBarra(String(r.cartorio || ''), cf) || cidadeUfSemBarra(String(r.endereco || ''), cf);
     if (cu) {
       // O nome do cartório vem NA ESCRITURA (Fabio 20/10): usa o número dele ("1º Ofício") pra a extensão achar o cartório na lista do portal; sem número (cartório único) vai 'AUTO'.
       const n = numeroDoCartorio(String(r.cartorio || ''));
@@ -420,6 +448,32 @@ async function respondeCartorio(accountId: string, leadId: string, text: string,
  *  (Fabio 23/10, Luiz Fernando: a oferta de 21/10 ainda estava aberta e um "Ok, obrigado!" virou autorização — o PIX de R$ 35,20 saiu e o cliente pagou). Pura (testável). */
 export function mensagemFalaDaCertidao(texto: string): boolean {
   return /certid[aã]o|\bonr\b|emiss[aã]o|emitir|emitid|cart[oó]rio|matr[ií]cula|[oô]nus/i.test(String(texto || ''));
+}
+
+/** A mensagem da empresa é uma OFERTA de emitir a certidão (pergunta se pode emitir: "…ou posso emitir ela por aqui, através do cartório digital?", "quer que eu emita…")? A frase da própria
+ *  atendente "já tenho a matrícula… vou emitir e te aviso" NÃO é oferta: o cliente nunca foi perguntado (Elionete 24/11: o "Ok" dela a essa frase virou "autorizou a emissão", só que nenhum pedido
+ *  saiu e o PIX ia chegar de surpresa). Sem custo no texto de propósito (Fabio 21/10). Pura (testável). */
+export function ofertaDeEmissao(texto: string): boolean {
+  const t = String(texto || '');
+  if (!/certid[aã]o|[oô]nus|matr[ií]cula|cart[oó]rio\s+digital|\bonr\b/i.test(t)) return false;
+  return /\b(?:posso|podemos|pode\s+a\s+gente|quer(?:es)?\s+que|gostaria\s+que|deseja\s+que|prefere\s+que|me\s+autoriza|autoriza|permite)\b[^?.!\n]{0,80}\b(?:emit\w*|solicit\w*|pedir|providenci\w*|tirar|requerer)\b/i.test(t);
+}
+
+/** Na conversa (do mais antigo ao mais novo, só WhatsApp) a ÚLTIMA oferta de emissão foi seguida, na mensagem seguinte, por uma resposta do cliente? Sem oferta, ou com a empresa falando de outra
+ *  coisa entre a oferta e o cliente, um "ok/pode" dele não é aceite. É só a trava estrutural: quem diz se a resposta aceita é a leitura da conferência. Pura (testável). */
+export function ofertaDeEmissaoRespondida(msgs: { direction: string; content?: string | null }[]): boolean {
+  let idx = -1;
+  msgs.forEach((m, i) => { if (m.direction === 'OUTBOUND' && ofertaDeEmissao(m.content || '')) idx = i; });
+  return idx >= 0 && msgs[idx + 1]?.direction === 'INBOUND';
+}
+
+/** Trava da conferência dos documentos: o modelo disse "o cliente autorizou", mas a conversa (até `ate`, default agora) tem uma oferta clara de emissão respondida pelo cliente? */
+export async function conversaTemOfertaDeEmissaoRespondida(leadId: string, ate?: Date): Promise<boolean> {
+  const rows = await prisma.message.findMany({
+    where: { leadId, channel: 'WHATSAPP', deleted: false, callWaCallId: null, ...(ate ? { createdAt: { lte: ate } } : {}) },
+    orderBy: { createdAt: 'desc' }, take: 40, select: { direction: true, content: true },
+  });
+  return ofertaDeEmissaoRespondida(rows.reverse());
 }
 
 /** Mensagem do cliente depois da oferta: aceitou? Aceitou → autorização anotada + extensão do ONR acionada. Roda a cada texto inbound, mas só gasta IA enquanto há oferta esperando resposta. */
