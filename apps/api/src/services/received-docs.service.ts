@@ -416,6 +416,7 @@ async function organizeLead(lead: {
     activeLeadsFolderId: lead.activeLeadsFolderId,
     nameFor: async (f) => {
       if (simForaDaPasta[f.driveFileId]) return nomeForaDaPasta(String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, ''), simForaDaPasta[f.driveFileId]);
+      if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return ''; // simulação da gente (RAIZ): fica com o nome original
       const attId = attIdByDriveId.get(f.driveFileId) || '';
       if (antigos[attId]) { const i = docInfo[attId]; return `ANTIGO - ${i ? docLabel(i) : String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, '').slice(0, 40)}`; }
       const prot = ((cf._docsProtegidos || {}) as Record<string, { fileName?: string; guess?: string }>)[attId];
@@ -423,6 +424,9 @@ async function organizeLead(lead: {
       const info = docInfo[attId];
       if (info === null) return null;
       if (paginas.has(attId)) return paginas.get(attId)!.nome;
+      // Print de simulação do CLIENTE (vai pra RAIZ): nome com "SIMULACAO" seria tomado por simulação da gente na regra "uma simulação só na pasta"
+      // (simulacao-pasta.service) — a quitação do app do banco vira SALDO DEVEDOR; outro nome que ainda pareça simulação fica com o nome original.
+      if (info && /SIMULACAO/.test(info.type)) { const q = docLabel(info).replace(/^SIMULACAO DE QUITACAO/, 'SALDO DEVEDOR - QUITACAO'); return SIMULATION_FILE_RE.test(q) ? '' : q; }
       return info ? docLabel(info) : '';
     },
     folderFor: async (f) => {

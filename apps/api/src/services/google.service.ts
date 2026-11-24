@@ -431,7 +431,8 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   nameFor: (file: ReceivedDocFile) => Promise<string | null>;
   /** Onde cada arquivo fica (Fabio 30/09): COMPRADOR (padrão), IMOVEL
    *  (matrícula, ônus, IPTU...), VENDEDOR (Financiamento Habitacional) ou
-   *  RAIZ (simulação — direto na pasta do cliente, nome original). */
+   *  RAIZ (direto na pasta do cliente: simulação da gente com o nome original — `nameFor` devolve '' —, print do saldo devedor e descritivo da parcela
+   *  com o nome do documento). */
   folderFor?: (file: ReceivedDocFile) => Promise<DocFolder>;
 }): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string; folder: DocFolder }[]; ignored: string[] }> {
   const drive = await getDrive(accountId);
@@ -502,8 +503,10 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   for (const w of withParents) if (w.md5) ultimoPorMd5.set(w.md5, w.file.driveFileId);
   for (const { file, parents, md5 } of withParents) {
     let folder: DocFolder = params.folderFor ? await params.folderFor(file).catch(() => 'COMPRADOR' as DocFolder) : 'COMPRADOR';
-    let base = folder === 'RAIZ' ? '' : await params.nameFor(file).catch(() => undefined);
-    const repetido = !!md5 && ultimoPorMd5.get(md5) !== file.driveFileId && folder !== 'RAIZ';
+    // RAIZ também passa pelo nome (Fabio 24/11, Fernanda Karita: 26 prints do app da CAIXA — descritivo da parcela, saldo devedor — ficavam soltos como "foto-….jpg" na
+    // pasta principal, porque a RAIZ era só pra simulação, que guarda o nome original). A simulação continua com o nome dela (nameFor devolve '') e sem a regra do repetido.
+    let base = await params.nameFor(file).catch(() => undefined);
+    const repetido = !!md5 && ultimoPorMd5.get(md5) !== file.driveFileId && (folder !== 'RAIZ' || !!base);
     if (base === null) { ignored.push(file.fileName); folder = 'DESNECESSARIO'; base = ''; } // não é documento: sai das pastas de documento, nome original
     else if (repetido) { folder = 'DESNECESSARIO'; base = base ? `REPETIDO - ${base}` : base; }
     const ext = (file.fileName.match(/\.[a-z0-9]{2,5}$/i)?.[0] || '').toLowerCase();
