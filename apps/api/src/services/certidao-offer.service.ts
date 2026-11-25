@@ -184,9 +184,9 @@ export function enderecoDeTexto(txt: string): { endereco: EnderecoCertidao; cida
 
 /** Só documento DO IMÓVEL dá o endereço do imóvel (Fabio 25/11, Deborah FH: a apólice de seguro residencial da CASA ONDE ELA MORA virou o endereço do imóvel em 06/11 —
  *  saiu no pedido de vistoria e no laudo digital do Inter, que devolveu "endereço divergente da matrícula"). Comprovante de residência, apólice, conta de consumo etc.
- *  são da residência do cliente, que no financiamento não é o imóvel. Pura (testável). */
+ *  são da residência do cliente, que no financiamento não é o imóvel. Contrato/compromisso de compra e venda descreve o imóvel comprado e vale (por último). Pura (testável). */
 export function docDoImovelComEndereco(tipo: unknown): boolean {
-  return /MATRICULA|ONUS|INTEIRO TEOR|ESCRITURA|IPTU|CADASTRO IMOBILIARIO/.test(String(tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
+  return /MATRICULA|ONUS|INTEIRO TEOR|ESCRITURA|IPTU|CADASTRO IMOBILIARIO|COMPRA E VENDA|PROMESSA DE COMPRA/.test(String(tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
 }
 
 function enderecoDosDocumentos(cf: Record<string, any>): { endereco: EnderecoCertidao; cidade: string; uf: string } | null {
