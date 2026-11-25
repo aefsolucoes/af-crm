@@ -27,7 +27,7 @@ export function LeadVistoria({ leadId, proposta, instituicao, bancoEscolhido, so
   const [sel, setSel] = useState<string[]>([]);
   const [sentAt, setSentAt] = useState<string | null>(solicitadaEm ? String(solicitadaEm) : null);
 
-  type Laudo = { job: unknown | null; faltando: string[]; status: string; requestedAt: string | null; filledAt: string | null; link: string | null };
+  type Laudo = { job: { cep: string; numero: string; complemento: string } | null; faltando: string[]; status: string; requestedAt: string | null; filledAt: string | null; link: string | null };
   const [laudo, setLaudo] = useState<Laudo | null>(null);
   const [laudoBusy, setLaudoBusy] = useState(false);
   // Vale o banco da proposta ESCOLHIDA (Fabio 17/11, Jaime: o cliente escolheu o Inter no Financiamento antes de a proposta existir no nosso portal → o card ficou sem
@@ -49,7 +49,10 @@ export function LeadVistoria({ leadId, proposta, instituicao, bancoEscolhido, so
     // Faltando dado (Fabio 03/11): o CRM lê a matrícula (ano de construção) e pergunta ao cliente só o que faltar — template se a conversa estiver fechada.
     const msg = laudo.faltando.length
       ? `Faltam no card: ${laudo.faltando.join(', ')}.\n\nO CRM vai ler os documentos do imóvel (o ano de construção sai da matrícula) e perguntar ao cliente só o que ainda faltar — se a conversa estiver fechada, manda antes o template "Olá, tudo bem?". Com a resposta, o laudo entra sozinho na fila da extensão. Seguir?`
-      : 'A extensão "Vistoria Inter" vai preencher o laudo digital do apartamento no site do Inter e PARAR na tela de conferência. Você confere e envia. Pedir agora?';
+      : laudo.status === 'SENT' || laudo.status === 'FILLED'
+        // Fabio 25/11 (Deborah: "endereço divergente"): laudo já enviado → a extensão clica em "Quero preencher novamente" e refaz com os dados ATUAIS do card.
+        ? `O laudo já foi enviado ao Inter. A extensão "Vistoria Inter" vai clicar em "Quero preencher novamente" e preencher e enviar de novo com os dados ATUAIS do card${laudo.job ? ` (CEP ${laudo.job.cep}, nº ${laudo.job.numero}${laudo.job.complemento ? `, ${laudo.job.complemento}` : ''})` : ''}. Confira o endereço com a matrícula antes. Refazer agora?`
+        : 'A extensão "Vistoria Inter" vai preencher o laudo digital do apartamento no site do Inter, marcar "me responsabilizo" e enviar. Pedir agora?';
     if (!window.confirm(msg)) return;
     setLaudoBusy(true);
     try {

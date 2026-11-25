@@ -182,8 +182,15 @@ export function enderecoDeTexto(txt: string): { endereco: EnderecoCertidao; cida
   return { cidade: cu.cidade, uf: cu.uf, endereco: { cep, tipoLogradouro, logradouro: rua, numero, complemento: complemento.slice(0, 30) || undefined, bairro: bairro || undefined } as EnderecoCertidao };
 }
 
+/** Só documento DO IMÓVEL dá o endereço do imóvel (Fabio 25/11, Deborah FH: a apólice de seguro residencial da CASA ONDE ELA MORA virou o endereço do imóvel em 06/11 —
+ *  saiu no pedido de vistoria e no laudo digital do Inter, que devolveu "endereço divergente da matrícula"). Comprovante de residência, apólice, conta de consumo etc.
+ *  são da residência do cliente, que no financiamento não é o imóvel. Pura (testável). */
+export function docDoImovelComEndereco(tipo: unknown): boolean {
+  return /MATRICULA|ONUS|INTEIRO TEOR|ESCRITURA|IPTU|CADASTRO IMOBILIARIO/.test(String(tipo || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, ''));
+}
+
 function enderecoDosDocumentos(cf: Record<string, any>): { endereco: EnderecoCertidao; cidade: string; uf: string } | null {
-  const revs = (Object.values((cf._docReview || {}) as Record<string, Rev>) as Rev[]).filter((r) => r && r.resultado !== 'NAO_DOCUMENTO' && r.endereco);
+  const revs = (Object.values((cf._docReview || {}) as Record<string, Rev>) as Rev[]).filter((r) => r && r.resultado !== 'NAO_DOCUMENTO' && r.endereco && docDoImovelComEndereco(r.tipo));
   const peso = (r: Rev) => (/MATRICULA|ONUS/.test(String(r.tipo || '').toUpperCase()) ? 0 : /ESCRITURA/.test(String(r.tipo || '').toUpperCase()) ? 1 : 2);
   const dono = String(cf.participante_1 || '').trim();
   const cpf = digits(cf.cpf_1);

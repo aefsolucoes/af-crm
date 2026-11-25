@@ -5,6 +5,7 @@ import { buildLaudoJob, requestLaudo, arquivosDoImovel } from './vistoria-inter.
 import { queueOnReply } from './reply-pending.service';
 import { downloadDriveFileForVision } from './google.service';
 import { isPropertyDocType } from './received-docs.service';
+import { enderecoDoCard } from './endereco-imovel.service';
 
 type Io = Parameters<typeof sendOutboundWhatsApp>[0]['io'];
 
@@ -119,7 +120,8 @@ export function imovelDaProposta(texto: string): { cep?: string; numero?: string
 }
 
 const DOC_IMOVEL_SYSTEM = `Você lê um documento de IMÓVEL (matrícula/certidão de ônus, IPTU, cadastro imobiliário, escritura, habite-se) pra preencher o laudo digital de um APARTAMENTO no banco. Responda SOMENTE com JSON:
-{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|ASSINATURA|","tipo":"APARTAMENTO|CASA|OUTRO|","daUnidade":<true se o documento descreve a UNIDADE do cliente; false se é do TERRENO/lote ou do PRÉDIO/empreendimento inteiro>}
+{"cep":"<CEP do imóvel, 8 dígitos; vazio se não aparecer>","numero":"<número do prédio no logradouro; endereço SEM número na rua (Brasília/DF: quadra, lote, conjunto, bloco) → o número da UNIDADE (apto), que é o que o Inter confere; vazio se não aparecer>","complemento":"<apto/bloco/torre da unidade, ex.: APTO 201 BLOCO B; vazio se não aparecer>","areaPrivativa":"<área PRIVATIVA (ou útil) da UNIDADE em m², só o número com vírgula, ex.: 98,45; vazio se não aparecer>","anoConstrucao":"<AAAA: ano de construção — veja a ordem abaixo; vazio se nada disso aparecer>","anoFonte":"CONSTRUCAO|ABERTURA_MATRICULA|PRIMEIRA_AVERBACAO|ASSINATURA|","tipo":"APARTAMENTO|CASA|OUTRO|","daUnidade":<true se o documento descreve a UNIDADE do cliente; false se é do TERRENO/lote ou do PRÉDIO/empreendimento inteiro>,"documento":"MATRICULA|IPTU|ESCRITURA|CONTRATO|HABITE_SE|GUIA|OUTRO"}
+documento: MATRICULA = matrícula/certidão de ônus/inteiro teor; IPTU = carnê, cadastro imobiliário ou certidão do IPTU do imóvel; ESCRITURA; CONTRATO = compra e venda/promessa; HABITE_SE; GUIA = boleto, DAR, guia de pagamento ou parcelamento (não serve pra endereço: pode ser de outro imóvel); OUTRO = conta de consumo, apólice de seguro, comprovante de residência ou qualquer outra coisa.
 Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO"; (4) Fabio 14/11: se o documento for ESCRITURA ou CONTRATO DE COMPRA E VENDA (sem matrícula/ônus), o ano da ASSINATURA dele (data no fim, "São Paulo, 30 de outubro de 2026", ou a data da assinatura eletrônica) → "ASSINATURA".
 DOCUMENTO DO TERRENO OU DO PRÉDIO INTEIRO (Fabio 14/11, Nalia: o IPTU do lote, de uma construção antiga "uso especial" de 1970, deu o ano de um prédio novo): IPTU/cadastro/matrícula do lote ou do empreendimento (área de terreno ou construída muito maior que uma unidade, uso "especial"/"terreno", construção de antes da incorporação) → "daUnidade": false e NÃO preencha anoConstrucao nem areaPrivativa. Imóvel NA PLANTA/em construção (contrato de compra na planta, incorporação): anoConstrucao = ano previsto de conclusão/entrega/habite-se se o documento disser; senão vazio.
 Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. Não invente nada: o que não estiver escrito no documento fica vazio.`;
@@ -163,6 +165,8 @@ async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mime
       if (fonte) out.__anoFonte = fonte;
     }
     if (j.tipo === 'APARTAMENTO') out.imovel_tipo = 'Apartamento';
+    out.__documento = String(j.documento || '').toUpperCase().trim();
+    if (j.daUnidade === false) out.__daUnidade = 'N';
     return out;
   } catch { return undefined; }
 }
@@ -209,8 +213,28 @@ async function dadosJaDitosNaConversa(leadId: string, campos: string[]): Promise
 const ROTULO: Record<string, string> = {
   imovel_tipo: 'Tipo do imóvel', imovel_cep: 'CEP', imovel_numero: 'Número', imovel_complemento: 'Complemento', imovel_dormitorios: 'Dormitórios', imovel_banheiros: 'Banheiros',
   imovel_suites: 'Suítes', imovel_vagas_exclusivas: 'Vagas de garagem', imovel_area_util: 'Área útil (m²)', imovel_ano_construcao: 'Ano de construção',
+  endereco_imovel: 'Endereço do imóvel',
 };
 const CAMPOS_LAUDO = [...CAMPOS_REGRINHAS, 'imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'];
+const CAMPOS_ENDERECO = ['imovel_cep', 'imovel_numero', 'imovel_complemento'];
+
+export type EnderecoDoDoc = { cep: string; numero: string; complemento: string; nome: string };
+/** O CEP que os documentos do imóvel (matrícula/ônus, IPTU, escritura, contrato) dão × o CEP do card, antes do laudo (Fabio 25/11, Deborah FH: o card tinha o CEP da
+ *  casa onde ela mora, tirado da apólice de seguro; o IPTU lido em 19/11 tinha o CEP certo, mas "só preenche campo vazio" e o laudo saiu com o endereço errado — o Inter
+ *  devolveu "endereço divergente da matrícula"). O Inter confere o formulário com a matrícula e o IPTU: documento manda. Documentos com CEPs diferentes entre si = DIVERGEM
+ *  (um deles pode ser de outro imóvel) e o card fica como está. Pura (testável). */
+export function conferenciaEnderecoLaudo(cf: Record<string, any>, docs: EnderecoDoDoc[]): { acao: 'NADA' | 'CONFERE' | 'CORRIGE' | 'DIVERGEM'; cep?: string; numero?: string; complemento?: string; nome?: string; ceps?: string[] } {
+  const d = (v: unknown) => String(v ?? '').replace(/\D/g, '');
+  const fmt = (c: string) => `${c.slice(0, 5)}-${c.slice(5)}`;
+  const comCep = docs.filter((x) => d(x.cep).length === 8);
+  const ceps = [...new Set(comCep.map((x) => d(x.cep)))];
+  const cepCard = d(cf.imovel_cep);
+  if (!ceps.length || cepCard.length !== 8) return { acao: 'NADA' };
+  if (ceps.length > 1) return { acao: 'DIVERGEM', ceps: ceps.map(fmt) };
+  if (ceps[0] === cepCard) return { acao: 'CONFERE' };
+  const comNumero = comCep.find((x) => String(x.numero || '').trim());
+  return { acao: 'CORRIGE', cep: fmt(ceps[0]), numero: String(comNumero?.numero || '').trim(), complemento: String(comCep.find((x) => String(x.complemento || '').trim())?.complemento || '').trim(), nome: (comNumero || comCep[0]).nome };
+}
 
 /** Preenche sozinho os dados do apartamento pro laudo do Inter com o que o CRM já tem (Fabio 27/10: "precisa preencher automaticamente no card do cliente as informações"):
  *  proposta do site (CEP/número/complemento), e-mail de engajamento (é apartamento), resposta do cliente às regrinhas e os documentos do imóvel (área privativa, ano de construção).
@@ -224,7 +248,10 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
   const fonte: Record<string, string> = {};
   const falta = (k: string) => vazio(cf[k]) && vazio(patch[k]);
   const poe = (k: string, v: string | undefined, de: string) => { if (v && falta(k)) { patch[k] = v; fonte[k] = de; } };
-  if (!falta('imovel_tipo') && CAMPOS_LAUDO.every((k) => !falta(k))) return;
+  // Endereço do card ainda não conferido com um documento do imóvel (apartamento): lê os documentos novos da pasta mesmo com o card completo — no máx. a cada 10 min.
+  const tentouHa = cf._endImovelDocTryAt ? Date.now() - new Date(String(cf._endImovelDocTryAt)).getTime() : Infinity;
+  const conferirEnd = (tipo: string) => /apart/i.test(tipo) && !cf._endImovelDocAt && !(tentouHa < 10 * 60_000);
+  if (!falta('imovel_tipo') && CAMPOS_LAUDO.every((k) => !falta(k)) && !conferirEnd(String(cf.imovel_tipo || ''))) return;
 
   const prop = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', content: { contains: 'Endereço do imóvel' } }, orderBy: { createdAt: 'desc' }, select: { content: true } });
   if (prop) {
@@ -249,9 +276,13 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
   // matrícula — os arquivos lidos com a regra antiga (_laudoDocsLidos) são lidos de novo uma vez.
   const lidos: string[] = Array.isArray(cf._laudoDocsLidos2) ? cf._laudoDocsLidos2 : [];
   const novosLidos: string[] = [];
+  const extra: Record<string, unknown> = {};
+  const enderecosDoc: EnderecoDoDoc[] = [];
+  let notaEndereco = '';
   // Tipo ainda desconhecido também lê: a certidão de ônus/matrícula diz se é APARTAMENTO, e com isso a pergunta sai logo depois do engajamento (Fabio 03/11).
   const tipoAgora = String(patch.imovel_tipo || cf.imovel_tipo || '');
-  if ((/apart/i.test(tipoAgora) && ['imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'].some(falta)) || (!tipoAgora.trim() && !vazio(cf.link_laudo_inter))) {
+  if ((/apart/i.test(tipoAgora) && (['imovel_cep', 'imovel_numero', 'imovel_area_util', 'imovel_ano_construcao'].some(falta) || conferirEnd(tipoAgora))) || (!tipoAgora.trim() && !vazio(cf.link_laudo_inter))) {
+    if (conferirEnd(tipoAgora)) extra._endImovelDocTryAt = new Date().toISOString();
     const arquivos = new Map<string, { mimeType: string; nome: string }>();
     for (const f of await arquivosDoImovel(accountId, cf)) arquivos.set(f.id, { mimeType: f.mimeType, nome: f.name });
     const tipos = (cf._docInfo || {}) as Record<string, string>;
@@ -264,23 +295,50 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
       const r = await lerDocumentoDoImovel(accountId, id, f.mimeType);
       if (r === undefined) continue; // erro de leitura: tenta no próximo ciclo
       novosLidos.push(id);
-      const { __anoFonte, imovel_ano_construcao: ano, ...campos } = r;
-      for (const [k, v] of Object.entries(campos)) poe(k, v, `documento "${f.nome}"`);
+      const { __anoFonte, __documento, __daUnidade, imovel_ano_construcao: ano, ...campos } = r;
+      // Guia/boleto/conta/apólice não dá endereço do imóvel (pode ser de outro imóvel ou da residência do cliente — numa pasta veio guia de parcelamento de outro imóvel).
+      const docDeEndereco = /^(MATRICULA|IPTU|ESCRITURA|CONTRATO|HABITE_SE)$/.test(__documento || '');
+      for (const [k, v] of Object.entries(campos)) if (docDeEndereco || !CAMPOS_ENDERECO.includes(k)) poe(k, v, `documento "${f.nome}"`);
+      if (docDeEndereco && campos.imovel_cep) enderecosDoc.push({ cep: campos.imovel_cep, numero: campos.imovel_numero || '', complemento: __daUnidade === 'N' ? '' : (campos.imovel_complemento || ''), nome: f.nome });
       const rank = RANK[__anoFonte || ''] ?? 0;
       if (ano && (!melhorAno || rank < melhorAno.rank)) melhorAno = { v: ano, de: __anoFonte ? `${__anoFonte} — documento "${f.nome}"` : `documento "${f.nome}"`, rank };
     }
     if (melhorAno) poe('imovel_ano_construcao', melhorAno.v, melhorAno.de);
+    // O endereço do card × o dos documentos do imóvel (só o que já estava no card antes deste ciclo; campo vazio já foi preenchido pelo documento acima).
+    const conf = conferenciaEnderecoLaudo(cf, enderecosDoc);
+    if (conf.acao === 'CONFERE') extra._endImovelDocAt = new Date().toISOString();
+    if (conf.acao === 'DIVERGEM') notaEndereco = `⚠️ Laudo do Inter: os documentos do imóvel da pasta têm CEPs diferentes entre si (${(conf.ceps || []).join(' × ')}) — um deles pode ser de outro imóvel. O card ficou com o CEP ${cf.imovel_cep}: confira com a matrícula antes do laudo.`;
+    if (conf.acao === 'CORRIGE') {
+      const antes = [`CEP ${cf.imovel_cep}`, vazio(cf.imovel_numero) ? '' : `nº ${cf.imovel_numero}`, vazio(cf.imovel_complemento) ? '' : String(cf.imovel_complemento)].filter(Boolean).join(', ');
+      patch.imovel_cep = conf.cep!; patch.imovel_numero = conf.numero || ''; patch.imovel_complemento = conf.complemento || '';
+      for (const k of CAMPOS_ENDERECO) delete fonte[k];
+      // O texto "Endereço do imóvel" que veio da mesma fonte errada (tem o CEP antigo) é refeito pelo CEP + número novos (ViaCEP); sem número, fica vazio.
+      const cepAntigo = String(cf.imovel_cep || '').replace(/\D/g, '');
+      const endTxt = String(cf.endereco_imovel || '');
+      if (!vazio(endTxt) && endTxt.replace(/\D/g, '').includes(cepAntigo)) patch.endereco_imovel = (patch.imovel_numero ? (await enderecoDoCard({ ...cf, ...patch }).catch(() => null))?.texto : '') || '';
+      extra._endImovelDocAt = new Date().toISOString();
+      extra._endImovelCorrigido = { at: new Date().toISOString(), antes, endAntes: endTxt || undefined, doc: conf.nome };
+      notaEndereco = [
+        `🏠 Endereço do imóvel CORRIGIDO pelo documento do imóvel ("${conf.nome}") antes do laudo do Inter — o Inter confere o formulário com a matrícula e o IPTU.`,
+        `• Antes (de outra fonte, não de documento do imóvel): ${antes}${endTxt ? ` — "${endTxt}"` : ''}`,
+        `• Agora: CEP ${conf.cep}${conf.numero ? `, nº ${conf.numero}` : ', número não lido no documento'}${conf.complemento ? `, ${conf.complemento}` : ''}${patch.endereco_imovel ? ` — "${patch.endereco_imovel}"` : ''}`,
+        ...(conf.numero ? [] : ['⚠️ Falta o número do imóvel: confira na matrícula e preencha no card (o laudo só entra na fila com ele).']),
+      ].join('\n');
+    }
   }
+  if (notaEndereco) await prisma.note.create({ data: { leadId, type: 'COMMENT', content: notaEndereco } }).catch(() => {});
   if (!Object.keys(patch).length) {
-    if (novosLidos.length) await marca(leadId, { _laudoDocsLidos2: [...lidos, ...novosLidos] });
+    if (novosLidos.length || Object.keys(extra).length) await marca(leadId, { ...extra, ...(novosLidos.length ? { _laudoDocsLidos2: [...lidos, ...novosLidos] } : {}) });
     return;
   }
-  await marca(leadId, { ...patch, ...(novosLidos.length ? { _laudoDocsLidos2: [...lidos, ...novosLidos] } : {}) });
+  await marca(leadId, { ...patch, ...extra, ...(novosLidos.length ? { _laudoDocsLidos2: [...lidos, ...novosLidos] } : {}) });
   const depois = { ...cf, ...patch };
   const ainda = CAMPOS_LAUDO.filter((k) => vazio(depois[k])).map((k) => ROTULO[k].toLowerCase());
+  const listados = Object.keys(patch).filter((k) => fonte[k]); // o endereço corrigido já tem a nota própria
+  if (!listados.length) return;
   await prisma.note.create({ data: { leadId, type: 'COMMENT', content: [
     '🏢 Dados do imóvel pro laudo digital do Inter preenchidos sozinhos no card:',
-    ...Object.keys(patch).map((k) => `• ${ROTULO[k] || k}: ${patch[k]} (${fonte[k]})`),
+    ...listados.map((k) => `• ${ROTULO[k] || k}: ${patch[k]} (${fonte[k]})`),
     ainda.length ? `Ainda faltam: ${ainda.join(', ')}.` : 'Card completo pro laudo.',
   ].join('\n') } }).catch(() => {});
 }
@@ -483,6 +541,8 @@ export async function pedirLaudoPeloBotao(accountId: string, leadId: string, use
   if (!existe) throw new Error('Card não encontrado');
   const st = String(((existe.customFields || {}) as Record<string, any>)._laudoStatus || '');
   if (st === 'REQUESTED' || st === 'RUNNING') throw new Error('O laudo já está na fila da extensão.');
+  // "Preencher de novo" num laudo que já foi pro Inter (Fabio 25/11, Deborah: "endereço divergente"): a extensão clica em "Quero preencher novamente" e refaz.
+  const refazer = st === 'SENT' || st === 'FILLED' || ((existe.customFields || {}) as Record<string, any>)._laudoJaPreenchido === true;
   await preencherDadosDoLaudo(accountId, leadId).catch((e: any) => console.warn('[Laudo] preencher no clique:', e?.message));
   const lead = await prisma.lead.findUnique({ where: { id: leadId }, select: { name: true, customFields: true } });
   let cf = (lead?.customFields || {}) as Record<string, any>;
@@ -491,7 +551,7 @@ export async function pedirLaudoPeloBotao(accountId: string, leadId: string, use
     if (n) { await marca(leadId, { num_proposta: n }); cf = { ...cf, num_proposta: n }; }
   }
   const { job, faltando } = buildLaudoJob(leadId, lead!.name, cf);
-  if (job) { await requestLaudo(accountId, leadId, userId); return { queued: true, asked: null, faltando: [] }; }
+  if (job) { await requestLaudo(accountId, leadId, userId, { refazer }); return { queued: true, asked: null, faltando: [] }; }
   // Sem proposta/link/tipo apartamento o cliente não resolve: segue o aviso de antes.
   const internos = faltando.filter((f) => /proposta|tipo do im[oó]vel|link do laudo/i.test(f));
   if (internos.length) throw new Error(`Faltam dados no card: ${internos.join(', ')}.`);
@@ -502,7 +562,7 @@ export async function pedirLaudoPeloBotao(accountId: string, leadId: string, use
   if (Object.keys(jaDito).length) {
     cf = { ...cf, ...jaDito };
     const refeito = buildLaudoJob(leadId, lead!.name, cf);
-    if (refeito.job) { await requestLaudo(accountId, leadId, userId); return { queued: true, asked: null, faltando: [] }; }
+    if (refeito.job) { await requestLaudo(accountId, leadId, userId, { refazer }); return { queued: true, asked: null, faltando: [] }; }
     doCliente = doCliente.filter((k) => faltaProLaudo(cf, k));
     if (!doCliente.length) throw new Error(`Faltam dados no card: ${refeito.faltando.join(', ')}.`);
   }

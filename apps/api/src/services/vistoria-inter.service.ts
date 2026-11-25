@@ -258,6 +258,8 @@ export type LaudoJob = {
   leadId: string; leadName: string; proposta: string; link: string; cep: string; numero: string; complemento: string;
   area: number; quartos: number; banheiros: number; suites: number; vagas: number; ano: string;
   fixos: { condicao: string; conservacao: string; padrao: string; condominio: string };
+  /** Laudo já enviado que a equipe pediu de novo (Fabio 25/11, Deborah: "endereço divergente"): a extensão clica em "Quero preencher novamente" e refaz. */
+  refazer?: boolean;
 };
 
 const LAUDO_FIXOS = { condicao: 'Não apresenta nenhuma dessas condições', conservacao: 'BOM', padrao: 'NORMAL', condominio: 'BOM' };
@@ -290,7 +292,7 @@ export function buildLaudoJob(leadId: string, leadName: string, cf: Record<strin
   if (faltando.length) return { job: null, faltando };
   return {
     faltando: [],
-    job: { leadId, leadName, proposta, link, cep, numero, complemento: String(cf.imovel_complemento || '').trim(), area: Math.round(areaNum), quartos: q, banheiros: b, suites: su, vagas: Number.isFinite(v) ? v : 0, ano, fixos: LAUDO_FIXOS },
+    job: { leadId, leadName, proposta, link, cep, numero, complemento: String(cf.imovel_complemento || '').trim(), area: Math.round(areaNum), quartos: q, banheiros: b, suites: su, vagas: Number.isFinite(v) ? v : 0, ano, fixos: LAUDO_FIXOS, refazer: cf._laudoRefazer === true },
   };
 }
 
@@ -304,15 +306,19 @@ export async function laudoPreview(accountId: string, leadId: string) {
   return { ...r, status: String(cf._laudoStatus || ''), requestedAt: cf._laudoRequestedAt || null, filledAt: cf._laudoFilledAt || null, link: laudoLink(cf) || null };
 }
 
-export async function requestLaudo(accountId: string, leadId: string, userId: string) {
+export async function requestLaudo(accountId: string, leadId: string, userId: string, opts: { refazer?: boolean } = {}) {
   const lead = await prisma.lead.findFirst({ where: { id: leadId, accountId }, select: { name: true, customFields: true } });
   if (!lead) throw new Error('Card não encontrado');
   const cf = (lead.customFields || {}) as Record<string, any>;
   const { job, faltando } = buildLaudoJob(leadId, lead.name, cf);
   if (!job) throw new Error(`Faltam dados no card: ${faltando.join(', ')}.`);
   if (cf._laudoStatus === 'REQUESTED' || cf._laudoStatus === 'RUNNING') throw new Error('O laudo já está na fila da extensão.');
-  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'REQUESTED', _laudoRequestedAt: new Date().toISOString(), _laudoFilledAt: null } } });
-  await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: '📝 Laudo digital do Inter na fila: a extensão "Vistoria Inter" vai preencher o formulário, marcar "me responsabilizo" e enviar ao Inter (Fabio 03/11).' } }).catch(() => {});
+  const refazer = opts.refazer === true;
+  await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'REQUESTED', _laudoRequestedAt: new Date().toISOString(), _laudoFilledAt: null, _laudoRefazer: refazer } } });
+  const endTxt = [job.cep && `CEP ${job.cep}`, job.numero && `nº ${job.numero}`, job.complemento].filter(Boolean).join(', ');
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', userId, content: refazer
+    ? `📝 Laudo digital do Inter REFEITO na fila: o formulário já tinha sido enviado — a extensão "Vistoria Inter" clica em "Quero preencher novamente", preenche de novo com os dados atuais do card (${endTxt}) e envia (Fabio 25/11).`
+    : '📝 Laudo digital do Inter na fila: a extensão "Vistoria Inter" vai preencher o formulário, marcar "me responsabilizo" e enviar ao Inter (Fabio 03/11).' } }).catch(() => {});
   await moverParaVistoria(accountId, leadId, 'extensão do laudo digital do Inter acionada');
   return { ok: true };
 }
@@ -361,15 +367,19 @@ export async function reportLaudo(accountId: string, leadId: string, d: { event:
     } catch (e: any) { console.warn('[Laudo] não consegui mover o card:', e?.message); }
   } else if (d.event === 'sent') {
     // A extensão marca "me responsabilizo" e clica em Enviar (Fabio 03/11: "precisa marcar o campo e clicar em enviar" — revoga o "a equipe envia" de 20/10).
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: new Date().toISOString() } } });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Laudo digital do Inter ENVIADO pela extensão (marcou "me responsabilizo" e clicou em Enviar).${d.detail ? `\n${String(d.detail).slice(0, 400)}` : ''}` } }).catch(() => {});
-    push('✅ Laudo do Inter enviado', `${lead.name}: laudo digital enviado ao Inter`);
-    await avisarClienteLaudoEnviado(accountId, leadId).catch((e: any) => console.warn('[Laudo] aviso ao cliente:', e?.message));
+    const refeito = cf._laudoRefazer === true;
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: new Date().toISOString(), _laudoRefazer: false } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `✅ Laudo digital do Inter ${refeito ? 'REFEITO e ' : ''}ENVIADO pela extensão (marcou "me responsabilizo" e clicou em Enviar).${d.detail ? `\n${String(d.detail).slice(0, 400)}` : ''}` } }).catch(() => {});
+    push(`✅ Laudo do Inter ${refeito ? 'refeito' : 'enviado'}`, `${lead.name}: laudo digital ${refeito ? 'refeito e ' : ''}enviado ao Inter`);
+    // Refazer é correção interna: o cliente não recebe de novo o aviso de laudo enviado.
+    if (!refeito) await avisarClienteLaudoEnviado(accountId, leadId).catch((e: any) => console.warn('[Laudo] aviso ao cliente:', e?.message));
   } else if (d.event === 'already') {
     // O Inter abriu "Você já preencheu este formulário anteriormente" (/preencher-novamente): o laudo já foi enviado por alguém (cliente ou equipe). Não preenche de novo,
     // não avisa o cliente e não dá alerta — só registra (Fabio 19/11: "caso apareça essa tela, não precisa preencher novamente").
-    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: cf._laudoSentAt || new Date().toISOString(), _laudoJaPreenchido: true } } });
-    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: '✅ Laudo digital do Inter: o formulário já tinha sido enviado antes ("Você já preencheu este formulário"). A extensão não preencheu de novo e fechou a janela.' } }).catch(() => {});
+    await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'SENT', _laudoSentAt: cf._laudoSentAt || new Date().toISOString(), _laudoJaPreenchido: true, _laudoRefazer: false } } });
+    await prisma.note.create({ data: { leadId, type: 'COMMENT', content: cf._laudoRefazer === true
+      ? '⚠️ Laudo digital do Inter NÃO foi refeito: a extensão parou em "Você já preencheu este formulário" sem clicar em "Quero preencher novamente" (versão antiga da extensão "Vistoria Inter"?). Recarregue a extensão e clique de novo em "Preencher de novo".'
+      : '✅ Laudo digital do Inter: o formulário já tinha sido enviado antes ("Você já preencheu este formulário"). A extensão não preencheu de novo e fechou a janela.' } }).catch(() => {});
   } else if (d.event === 'failed') {
     await prisma.lead.update({ where: { id: leadId }, data: { customFields: { ...cf, _laudoStatus: 'FAILED' } } });
     await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `⚠️ A extensão NÃO conseguiu preencher o laudo digital do Inter: ${String(d.reason || 'erro').slice(0, 400)}. Link: ${laudoLink(cf)}` } }).catch(() => {});
