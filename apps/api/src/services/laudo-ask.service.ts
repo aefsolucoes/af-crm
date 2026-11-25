@@ -124,7 +124,7 @@ const DOC_IMOVEL_SYSTEM = `Você lê um documento de IMÓVEL (matrícula/certid�
 documento: MATRICULA = matrícula/certidão de ônus/inteiro teor; IPTU = carnê, cadastro imobiliário ou certidão do IPTU do imóvel; ESCRITURA; CONTRATO = compra e venda/promessa; HABITE_SE; GUIA = boleto, DAR, guia de pagamento ou parcelamento (não serve pra endereço: pode ser de outro imóvel); OUTRO = conta de consumo, apólice de seguro, comprovante de residência ou qualquer outra coisa.
 Ano de construção, nesta ordem (Fabio 03/11): (1) o que o documento diz da construção — IPTU/cadastro, habite-se, averbação da construção/conclusão da obra → anoFonte "CONSTRUCAO"; (2) se for a MATRÍCULA (ou certidão de inteiro teor/ônus) e não houver isso, o ano da DATA DE ABERTURA da matrícula (a data do cabeçalho/abertura da matrícula) → "ABERTURA_MATRICULA"; (3) sem a data de abertura, o ano da PRIMEIRA averbação/registro (AV-1, R-1) → "PRIMEIRA_AVERBACAO"; (4) Fabio 14/11: se o documento for ESCRITURA ou CONTRATO DE COMPRA E VENDA (sem matrícula/ônus), o ano da ASSINATURA dele (data no fim, "São Paulo, 30 de outubro de 2026", ou a data da assinatura eletrônica) → "ASSINATURA".
 DOCUMENTO DO TERRENO OU DO PRÉDIO INTEIRO (Fabio 14/11, Nalia: o IPTU do lote, de uma construção antiga "uso especial" de 1970, deu o ano de um prédio novo): IPTU/cadastro/matrícula do lote ou do empreendimento (área de terreno ou construída muito maior que uma unidade, uso "especial"/"terreno", construção de antes da incorporação) → "daUnidade": false e NÃO preencha anoConstrucao nem areaPrivativa. Imóvel NA PLANTA/em construção (contrato de compra na planta, incorporação): anoConstrucao = ano previsto de conclusão/entrega/habite-se se o documento disser; senão vazio.
-Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. Não invente nada: o que não estiver escrito no documento fica vazio.`;
+Regras: área privativa NÃO é a área total, a área comum, a área do terreno nem a fração ideal — se só houver essas, deixe vazio. IPTU/cadastro imobiliário: "área construída", "área declarada" ou "área edificada" da unidade é a área TOTAL (privativa + comum), não a privativa — só preencha areaPrivativa se o documento disser "privativa" ou "útil" (Fabio 25/11: o IPTU dizia "área declarada 113,42", a área total da matrícula; a privativa era 70,748). Não invente nada: o que não estiver escrito no documento fica vazio.`;
 
 /** Lê UM documento do imóvel (PDF/imagem do Drive) e devolve os campos do laudo que achou. undefined = não deu pra ler. */
 async function lerDocumentoDoImovel(accountId: string, driveFileId: string, mimeType: string): Promise<Record<string, string> | undefined> {
@@ -187,7 +187,7 @@ async function dadosJaDitosNaConversa(leadId: string, campos: string[]): Promise
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
       model: 'claude-haiku-4-5', max_tokens: 400,
-      system: `Você lê a conversa de WhatsApp de um cliente com a correspondente bancária e diz o que o CLIENTE já informou sobre o APARTAMENTO dado em garantia. Responda SOMENTE com JSON com estas chaves: ${pedidos.map((k) => `"${chaves[k]}"`).join(', ')}. Valor = só o número que o CLIENTE disse (dormitórios/quartos, banheiros, suítes, vagas de garagem — "0" se ele disse que não tem; área privativa em m² com vírgula; ano de construção AAAA), ou "" se ele não disse. Vale resposta curta a pergunta nossa (NÓS: "quantos quartos?" → CLIENTE: "2"). Não deduza, não some, não use o que NÓS escrevemos nem exemplos de formulário; se ele se corrigiu, vale a última informação.`,
+      system: `Você lê a conversa de WhatsApp de um cliente com a correspondente bancária e diz o que o CLIENTE já informou sobre o APARTAMENTO dado em garantia. Responda SOMENTE com JSON com estas chaves: ${pedidos.map((k) => `"${chaves[k]}"`).join(', ')}. Valor = só o número que o CLIENTE disse (dormitórios/quartos, banheiros, suítes, vagas de garagem — "0" se ele disse que não tem; área privativa em m² com vírgula — só a que ele disse ser PRIVATIVA/ÚTIL; área total, área do IPTU ou "área construída" fica "";  ano de construção AAAA), ou "" se ele não disse. Vale resposta curta a pergunta nossa (NÓS: "quantos quartos?" → CLIENTE: "2"). Não deduza, não some, não use o que NÓS escrevemos nem exemplos de formulário; se ele se corrigiu, vale a última informação.`,
       messages: [{ role: 'user', content: conversa.slice(-30000) }],
     }),
   }).catch(() => null);
@@ -278,6 +278,7 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
   const novosLidos: string[] = [];
   const extra: Record<string, unknown> = {};
   const enderecosDoc: EnderecoDoDoc[] = [];
+  let areaMatricula: { v: string; nome: string } | null = null;
   let notaEndereco = '';
   // Tipo ainda desconhecido também lê: a certidão de ônus/matrícula diz se é APARTAMENTO, e com isso a pergunta sai logo depois do engajamento (Fabio 03/11).
   const tipoAgora = String(patch.imovel_tipo || cf.imovel_tipo || '');
@@ -299,11 +300,24 @@ async function preencherDadosDoLaudo(accountId: string, leadId: string): Promise
       // Guia/boleto/conta/apólice não dá endereço do imóvel (pode ser de outro imóvel ou da residência do cliente — numa pasta veio guia de parcelamento de outro imóvel).
       const docDeEndereco = /^(MATRICULA|IPTU|ESCRITURA|CONTRATO|HABITE_SE)$/.test(__documento || '');
       for (const [k, v] of Object.entries(campos)) if (docDeEndereco || !CAMPOS_ENDERECO.includes(k)) poe(k, v, `documento "${f.nome}"`);
+      // Área: a da MATRÍCULA manda (ela diz "área privativa"; o IPTU costuma trazer a área total — Fabio 25/11). Guarda pra decidir depois do laço.
+      if (__documento === 'MATRICULA' && __daUnidade !== 'N' && campos.imovel_area_util && !areaMatricula) areaMatricula = { v: campos.imovel_area_util, nome: f.nome };
       if (docDeEndereco && campos.imovel_cep) enderecosDoc.push({ cep: campos.imovel_cep, numero: campos.imovel_numero || '', complemento: __daUnidade === 'N' ? '' : (campos.imovel_complemento || ''), nome: f.nome });
       const rank = RANK[__anoFonte || ''] ?? 0;
       if (ano && (!melhorAno || rank < melhorAno.rank)) melhorAno = { v: ano, de: __anoFonte ? `${__anoFonte} — documento "${f.nome}"` : `documento "${f.nome}"`, rank };
     }
     if (melhorAno) poe('imovel_ano_construcao', melhorAno.v, melhorAno.de);
+    // Área privativa da matrícula × a do card ou a lida agora em outro documento: diferença de 1 m² ou mais = vale a da matrícula (Fabio 25/11: o laudo foi com 113 m², a área
+    // TOTAL que o IPTU chamava de "área declarada"; a matrícula dizia privativa 70,748 m²).
+    if (areaMatricula) {
+      const n = (v: unknown) => parseFloat(String(v ?? '').replace(/\./g, '').replace(',', '.'));
+      const atual = !vazio(patch.imovel_area_util) ? patch.imovel_area_util : cf.imovel_area_util;
+      if (vazio(atual) || !(Math.abs(n(atual) - n(areaMatricula.v)) < 1)) {
+        const tinha = vazio(cf.imovel_area_util) ? '' : String(cf.imovel_area_util);
+        patch.imovel_area_util = areaMatricula.v;
+        fonte.imovel_area_util = `área privativa da matrícula — documento "${areaMatricula.nome}"${tinha && tinha !== areaMatricula.v ? `; o card tinha ${tinha}` : ''}`;
+      }
+    }
     // O endereço do card × o dos documentos do imóvel (só o que já estava no card antes deste ciclo; campo vazio já foi preenchido pelo documento acima).
     const conf = conferenciaEnderecoLaudo(cf, enderecosDoc);
     if (conf.acao === 'CONFERE') extra._endImovelDocAt = new Date().toISOString();
@@ -504,7 +518,7 @@ const PERGUNTA_LAUDO: Record<string, { pergunta: string; exemplo: string }> = {
   imovel_banheiros: { pergunta: 'Banheiros: quantos no total (suítes + sociais + lavabo, e o de empregada se houver)', exemplo: 'Banheiros: 2' },
   imovel_suites: { pergunta: 'Suítes: quantas (semisuíte não conta)', exemplo: 'Suítes: 1' },
   imovel_vagas_exclusivas: { pergunta: 'Vagas de garagem: quantas de uso exclusivo (0 se não tiver)', exemplo: 'Vagas: 1' },
-  imovel_area_util: { pergunta: 'Área privativa do apartamento, em m² (está na matrícula ou no IPTU)', exemplo: 'Área: 65 m²' },
+  imovel_area_util: { pergunta: 'Área privativa do apartamento, em m² (está na matrícula como "área privativa" — não é a área total nem a do IPTU)', exemplo: 'Área: 65 m²' },
   imovel_ano_construcao: { pergunta: 'Ano de construção do prédio (aproximado, se não souber o exato)', exemplo: 'Ano de construção: 2010' },
   imovel_cep: { pergunta: 'CEP do imóvel', exemplo: 'CEP: 00000-000' },
   imovel_numero: { pergunta: 'Número do prédio na rua', exemplo: 'Número: 123' },

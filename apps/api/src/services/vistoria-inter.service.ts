@@ -290,9 +290,10 @@ export function buildLaudoJob(leadId: string, leadName: string, cf: Record<strin
   const v = /^(nenhum|n[aã]o|sem)/i.test(vTxt) ? 0 : inteiro(vTxt);
   if (!vTxt) faltando.push('vagas de garagem');
   if (faltando.length) return { job: null, faltando };
+  // O formulário só aceita área INTEIRA: arredonda PRA BAIXO (70,748 → 70), nunca declara mais do que a matrícula (Fabio 25/11).
   return {
     faltando: [],
-    job: { leadId, leadName, proposta, link, cep, numero, complemento: String(cf.imovel_complemento || '').trim(), area: Math.round(areaNum), quartos: q, banheiros: b, suites: su, vagas: Number.isFinite(v) ? v : 0, ano, fixos: LAUDO_FIXOS, refazer: cf._laudoRefazer === true },
+    job: { leadId, leadName, proposta, link, cep, numero, complemento: String(cf.imovel_complemento || '').trim(), area: Math.floor(areaNum), quartos: q, banheiros: b, suites: su, vagas: Number.isFinite(v) ? v : 0, ano, fixos: LAUDO_FIXOS, refazer: cf._laudoRefazer === true },
   };
 }
 
