@@ -466,7 +466,9 @@ async function organizeLead(lead: {
       if (info && SEM_USO.test(info.type)) return 'DESNECESSARIO';
       if (info && /^AUTORIZACAO USECASA/.test(info.type)) return 'FORMULARIOS'; // autorização USECASA assinada (Santander) — Fabio 05/11
       if (!info) return 'COMPRADOR';
-      if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type) || isDescritivoParcela(info.type)) return 'RAIZ'; // simulação, print do saldo devedor e descritivo da parcela: direto na pasta do cliente
+      // Na pasta principal só fica a simulação da gente (Fabio 25/11, Fernanda Karita: "só fica a simulação" — 7 prints do saldo devedor e 12 descritivos da parcela soltos
+      // na raiz). Print do saldo devedor, descritivo da parcela e simulação/quitação que o CLIENTE mandou vão pra DESNECESSARIO, com o nome do documento.
+      if (/SIMULACAO/.test(info.type) || /^SALDO DEVEDOR/.test(info.type) || isDescritivoParcela(info.type)) return 'DESNECESSARIO';
       if (isPropertyDocType(info.type)) return 'IMOVEL';
       if (isHab && SELLER_DOC_RE.test(info.type) && !COMPANY_RE.test(info.holder || '') && !isBuyerHolder(info.holder, buyers)) return 'VENDEDOR';
       return 'COMPRADOR';

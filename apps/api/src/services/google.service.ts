@@ -431,8 +431,8 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
   nameFor: (file: ReceivedDocFile) => Promise<string | null>;
   /** Onde cada arquivo fica (Fabio 30/09): COMPRADOR (padrão), IMOVEL
    *  (matrícula, ônus, IPTU...), VENDEDOR (Financiamento Habitacional) ou
-   *  RAIZ (direto na pasta do cliente: simulação da gente com o nome original — `nameFor` devolve '' —, print do saldo devedor e descritivo da parcela
-   *  com o nome do documento). */
+   *  RAIZ (direto na pasta do cliente: só a simulação da gente, com o nome original — `nameFor` devolve ''. Fabio 25/11: print do saldo devedor e
+   *  descritivo da parcela vão pra DESNECESSARIO). */
   folderFor?: (file: ReceivedDocFile) => Promise<DocFolder>;
 }): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string; folder: DocFolder }[]; ignored: string[] }> {
   const drive = await getDrive(accountId);
