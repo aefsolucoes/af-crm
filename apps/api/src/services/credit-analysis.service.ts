@@ -1285,6 +1285,12 @@ async function afterReport(db: Db, row: AnalysisRow): Promise<AnalysisRow> {
     if (row.bank === 'CREDIMORAR' && row.status === 'CHECK' && /N[ÃA]O foi enviada ao Santander|N[ÃA]O ENVIADA/i.test(row.detail || '')) {
       return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '').slice(0, 1500) } });
     }
+    // "Passível de Análise" (Fabio 26/11, Claudemir: "por que a extensão tá indo para a proposta do Claudemir?"): o Santander só segue pelo Portal Parceiros Santander — a lista do
+    // Credimorar não muda sozinha. Conferir de 10 em 10 min só abria a proposta dele no meio das rodadas dos outros clientes. Para aqui; depois que a equipe agir, "Conferir".
+    if (row.bank === 'CREDIMORAR' && row.status === 'CHECK' && /PASS[ÍI]VEL DE AN[ÁA]LISE/i.test(row.detail || '')) {
+      const leitura = String(row.detail || '').replace(/^Conferindo[^:]*:\s*(Última leitura:\s*)?/i, '');
+      return db.creditAnalysis.update({ where: { id: row.id }, data: { status: 'CHECK', attempt: CHECK_MAX_TRIES, detail: `${leitura} Parei de conferir sozinho (a proposta só anda pelo Portal Parceiros Santander): depois que a equipe seguir com ela, use "Conferir".`.slice(0, 1500) } });
+    }
     const creditas = row.bank === 'CREDITAS' || row.bank === FH_BANK; // Financiamento também leva horas: limite pelo tempo (60 h), como o Creditas
     const maxTries = CHECK_MAX_TRIES + (creditas ? CREDITAS_EXTRA_TRIES : 0);
     const velho = creditas && Date.now() - row.createdAt.getTime() > CREDITAS_MAX_AGE_MS; // Creditas: o limite é o tempo (60 h), não a contagem
