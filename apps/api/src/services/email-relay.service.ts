@@ -42,6 +42,16 @@ Responda SOMENTE com JSON, sem markdown: {"needsClient":true|false,"certeza":"al
 /** O aviso nunca pode trazer resultado de crédito (regra do Fabio 19/10: aprovação só pelo aviso padrão do CRM). Pura (testável). */
 export const temResultadoDeCredito = (t: string): boolean => /(aprovad|pr[eé]-?aprov|parab[eé]ns|cr[eé]dito (foi )?liberad|R\$\s*\d|\d+[.,]\d+\s*%|\bipca\b|\btaxa\b|\bjuros\b|\b\d{2,3}\s*(meses|parcelas)\b|\bparcelas? de\b)/i.test(String(t || ''));
 
+/** Valor da AVALIAÇÃO do imóvel que o banco informa no e-mail ("imóvel avaliado em R$ 300.000,00", "valor de avaliação: R$ …", "avaliação do imóvel: R$ …"). Pura (testável).
+ *  "Valor do imóvel" sozinho não conta (é o que a gente informou na proposta). */
+export function avaliacaoDoImovelNoEmail(texto: string): number | null {
+  const t = String(texto || '').replace(/\s+/g, ' ');
+  const m = /(?:avaliad[oa]\s+(?:em|por)|valor\s+(?:de|da)\s+avalia[cç][aã]o(?:\s+do\s+im[oó]vel)?|avalia[cç][aã]o\s+do\s+im[oó]vel)\s*(?::|-|é|foi\s+de|de|em)?\s*(?:de\s+)?R\$\s*(\d{1,3}(?:\.\d{3})+(?:,\d{2})?|\d{5,9}(?:,\d{2})?)/i.exec(t);
+  if (!m) return null;
+  const v = Number(m[1].replace(/\./g, '').replace(',', '.'));
+  return v >= 30_000 && v <= 50_000_000 ? Math.round(v) : null;
+}
+
 /** Interpreta a resposta da IA (JSON, possivelmente com texto em volta). Pura (testável). */
 export function parseRelayDecision(raw: string): RelayDecision | null {
   const m = /\{[\s\S]*\}/.exec(String(raw || ''));
@@ -107,6 +117,19 @@ export async function processEmailRelay(accountId: string, io: Io): Promise<void
   } finally { running = false; }
 }
 
+async function gravarAvaliacaoDoBanco(leadId: string, cf: Record<string, any>, e: { id: string; subject: string | null; textBody: string | null; snippet: string | null; date: Date; fromAddress: string | null }) {
+  const v = avaliacaoDoImovelNoEmail(cleanEmailForAi(`${e.subject || ''}\n${e.textBody || e.snippet || ''}`, 6000).body);
+  if (!v) return;
+  void cf;
+  const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } }); // fresco: dois e-mails do mesmo card no mesmo ciclo não gravam/anotam duas vezes
+  const bruto = ((fresh?.customFields || {}) as Record<string, any>).valor_imovel;
+  const atual = typeof bruto === 'number' ? bruto : Number(String(bruto ?? '').replace(/[^\d,.]/g, '').replace(/\.(?=\d{3}(\D|$))/g, '').replace(',', '.')) || 0;
+  if (Math.round(atual) === v) return;
+  const brl = (n: number) => n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  await prisma.$executeRaw`UPDATE "Lead" SET "customFields" = COALESCE("customFields", '{}'::jsonb) || ${JSON.stringify({ valor_imovel: v, _valorImovelBanco: { valor: v, antes: atual || null, emailId: e.id, em: new Date().toISOString() } })}::jsonb WHERE id = ${leadId}`;
+  await prisma.note.create({ data: { leadId, type: 'COMMENT', content: `🏠 Valor do imóvel atualizado pela avaliação do banco: R$ ${brl(v)}${atual ? ` (antes R$ ${brl(atual)})` : ''} — e-mail de ${e.fromAddress || 'banco'} em ${quandoBr(e.date)}.` } });
+}
+
 async function marca(leadId: string, id: string, resultado: string) {
   const fresh = await prisma.lead.findUnique({ where: { id: leadId }, select: { customFields: true } });
   const cf = { ...((fresh?.customFields || {}) as Record<string, any>) };
@@ -122,6 +145,9 @@ async function uma(accountId: string, lead: { id: string; name: string; aiAutoRe
     await (require('./ai-team-question.service') as typeof import('./ai-team-question.service')).perguntarProximoPasso({ accountId, leadId: lead.id, evento: `chegou e-mail de ${e.fromAddress}: "${String(e.subject || '').slice(0, 120)}" — ${String(e.snippet || e.textBody || '').replace(/\s+/g, ' ').slice(0, 220)}`, ref: `email:${e.id}`, io: io as any })
       .catch((err: any) => console.error('[Processo] próximo passo (e-mail):', err?.message));
   }
+  // Avaliação do imóvel que o banco informou (Fabio 26/11, Juan Carlos: a Creditas escreveu "imóvel avaliado em R$ 300.000,00" e o card seguiu com os R$ 100 mil da simulação do site —
+  // o "Ajustar" da análise de crédito puxava 100 mil). Vale a avaliação do banco: grava "Valor do imóvel" no card + nota. Antes de tudo, porque o laudo do Inter sai logo abaixo.
+  await gravarAvaliacaoDoBanco(lead.id, cf, e).catch((err: any) => console.warn('[E-mail→avaliação do imóvel]', err?.message));
   // Resultado do LAUDO do Inter (aprovado → Análise Jurídica e questionário; reprovado → laudo-reprovado.service): têm fluxo próprio — não repassa por cima (Fabio 14/11).
   { const ie = require('./inter-email.service') as typeof import('./inter-email.service'); const txt = `${e.textBody || e.snippet || ''}`; if (/inter\.co|bancointer/i.test(e.fromAddress || '') && (ie.laudoReprovouImovel(ie.freshPart(txt)) || ie.vistoriaConcluida(ie.freshPart(txt)))) { await marca(lead.id, e.id, 'IGNORADO (resultado do laudo: fluxo próprio)'); return; } }
   const limpo = cleanEmailForAi(`📧 ${e.subject || ''}\n${e.textBody || e.snippet || ''}`, 1500);
