@@ -434,10 +434,14 @@ async function organizeLead(lead: {
   const simForaDaPasta = (cf._simulacoesForaDaPasta || {}) as Record<string, Motivo>;
 
   const clientFolderName = folderNameFor(lead);
+  const vistosDeFora = (cf._driveDeFora || {}) as Record<string, unknown>;
   const result = await organizeReceivedDocsFolder(lead.accountId, {
     files,
     clientFolderName,
     activeLeadsFolderId: lead.activeLeadsFolderId,
+    // Solto na pasta principal (a equipe subiu direto no Drive — Fabio 26/11: "pra DESNECESSARIO"): sai, menos simulação/evolução das parcelas, o que o próprio CRM
+    // subiu e o arquivo novo que o vigia "de fora" ainda não viu (ele importa pra leitura e o organizador põe na pasta certa). Antes da marca do vigia (16/11) = antigo.
+    raizSolta: (f) => !f.doCrm && !/SIMULA|EVOLUCAO.?(DAS.?)?PARCELAS|^AeF_|^FH_CAIXA/i.test(f.name) && (!!vistosDeFora[f.id] || (!!f.createdTime && f.createdTime < '2026-11-16T21:00:00Z')),
     nameFor: async (f) => {
       if (simForaDaPasta[f.driveFileId]) return nomeForaDaPasta(String(f.fileName).replace(/\.[a-z0-9]{2,5}$/i, ''), simForaDaPasta[f.driveFileId]);
       if (simulationDriveIds.has(f.driveFileId) || SIMULATION_FILE_RE.test(f.fileName)) return ''; // simulação da gente (RAIZ): fica com o nome original
@@ -490,6 +494,7 @@ async function organizeLead(lead: {
     }),
   ];
   if (result.ignored.length) lines.push('', `Não são documentos (foram pra DESNECESSARIO): ${result.ignored.join(', ')}`);
+  if (result.soltos.length) lines.push('', `Soltos na pasta principal (subidos direto no Drive — foram pra DESNECESSARIO): ${result.soltos.join(', ')}`);
   if (simulacoesSairam.length) lines.push('', `Uma simulação só na pasta — as outras foram pra DESNECESSARIO: ${simulacoesSairam.join(', ')}`);
   if (opts.nota !== false) {
     await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
@@ -653,9 +658,10 @@ export async function organizeLeadDocsNow(leadId: string): Promise<void> {
  *  principal só fica a simulação" e "print de tela sem documento vai pra DESNECESSARIO"). Só cards não arquivados com `_driveOrganizedAt`; sem conferência
  *  (sem custo de leitura, fora documento ainda não classificado) e sem nota no card. Um por vez, em segundo plano; o andamento fica em `reorganizacaoEmMassa`. */
 export const reorganizacaoEmMassa: { rodando: boolean; total: number; feitos: number; falhas: { leadId: string; nome: string; erro: string }[]; inicio?: string; fim?: string } = { rodando: false, total: 0, feitos: 0, falhas: [] };
-export async function reorganizarTodasAsPastas(accountId: string): Promise<void> {
+export async function reorganizarTodasAsPastas(accountId: string, soEstes?: string[]): Promise<void> {
   if (reorganizacaoEmMassa.rodando) return;
-  const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "isGroup" = false AND "customFields" ? '_driveOrganizedAt' AND NOT ("customFields" ? '_autoPaused') ORDER BY "updatedAt" DESC`;
+  const todos = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "isGroup" = false AND "customFields" ? '_driveOrganizedAt' AND NOT ("customFields" ? '_autoPaused') ORDER BY "updatedAt" DESC`;
+  const ids = soEstes?.length ? todos.filter((l) => soEstes.includes(l.id)) : todos; // `leadIds` no corpo: só esses cards
   Object.assign(reorganizacaoEmMassa, { rodando: true, total: ids.length, feitos: 0, falhas: [], inicio: new Date().toISOString(), fim: undefined });
   try {
     for (const { id } of ids) {

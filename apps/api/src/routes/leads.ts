@@ -135,7 +135,8 @@ router.post('/reorganizar-pastas', async (req: AuthRequest, res: Response) => {
   if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administrador' });
   const { reorganizarTodasAsPastas, reorganizacaoEmMassa } = await import('../services/received-docs.service');
   if (reorganizacaoEmMassa.rodando) return res.json({ jaRodando: true, ...reorganizacaoEmMassa });
-  reorganizarTodasAsPastas(req.user!.accountId).catch((e: any) => console.error('[DocsRecebidos] reorganização em massa:', e?.message || e));
+  const leadIds = Array.isArray(req.body?.leadIds) ? (req.body.leadIds as unknown[]).map(String) : undefined;
+  reorganizarTodasAsPastas(req.user!.accountId, leadIds).catch((e: any) => console.error('[DocsRecebidos] reorganização em massa:', e?.message || e));
   await new Promise((r) => setTimeout(r, 500));
   res.json(reorganizacaoEmMassa);
 });

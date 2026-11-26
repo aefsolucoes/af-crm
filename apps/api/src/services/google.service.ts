@@ -434,7 +434,9 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
    *  RAIZ (direto na pasta do cliente: só a simulação da gente, com o nome original — `nameFor` devolve ''. Fabio 25/11: print do saldo devedor e
    *  descritivo da parcela vão pra DESNECESSARIO). */
   folderFor?: (file: ReceivedDocFile) => Promise<DocFolder>;
-}): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string; folder: DocFolder }[]; ignored: string[] }> {
+  /** Arquivo solto na pasta principal que não está em `files` (a equipe subiu direto no Drive): true = vai pra DESNECESSARIO, nome original (Fabio 26/11). */
+  raizSolta?: (file: { id: string; name: string; mimeType: string; createdTime: string; doCrm: boolean }) => boolean;
+}): Promise<{ folderId: string; folderUrl: string; named: { from: string; to: string; folder: DocFolder }[]; ignored: string[]; soltos: string[] }> {
   const drive = await getDrive(accountId);
   const conn = await prisma.googleConnection.findUnique({ where: { accountId } });
 
@@ -529,7 +531,23 @@ export async function organizeReceivedDocsFolder(accountId: string, params: {
     named.push({ from: file.fileName, to: name, folder });
   }
 
-  return { folderId: clientFolderId, folderUrl: folderLink(clientFolderId), named, ignored };
+  // Pasta principal: só fica a simulação (Fabio 26/11, "pra DESNECESSARIO"). O que a equipe subiu direto na raiz e o organizador não conhece sai pela regra `raizSolta`.
+  const soltos: string[] = [];
+  if (params.raizSolta) {
+    const conhecidos = new Set(params.files.map((f) => f.driveFileId));
+    const r = await drive.files.list({
+      q: `'${clientFolderId}' in parents and trashed = false and mimeType != 'application/vnd.google-apps.folder'`,
+      fields: 'files(id, name, mimeType, createdTime, appProperties)', pageSize: 200, supportsAllDrives: true, includeItemsFromAllDrives: true,
+    });
+    for (const f of r.data.files || []) {
+      if (!f.id || conhecidos.has(f.id)) continue;
+      if (!params.raizSolta({ id: f.id, name: f.name || '', mimeType: f.mimeType || '', createdTime: f.createdTime || '', doCrm: f.appProperties?.afcrm === '1' })) continue;
+      await drive.files.update({ fileId: f.id, addParents: await folderId('DESNECESSARIO'), removeParents: clientFolderId!, fields: 'id', supportsAllDrives: true });
+      soltos.push(f.name || f.id);
+    }
+  }
+
+  return { folderId: clientFolderId, folderUrl: folderLink(clientFolderId), named, ignored, soltos };
 }
 
 // ─── Base de conhecimento (leitura de documentos da pasta) ──────────────────
