@@ -4,7 +4,7 @@ import { logActivity } from './activity.service';
 
 /**
  * GÊNERO DOS PARTICIPANTES NO CARD (Fabio 06/11: "tô criando um campo no CRM de gênero" → campos fixos "Gênero" e "Gênero 2" = genero_1/genero_2, ao lado
- * do nascimento de cada participante). Vazio, o CRM preenche: o "Gênero" da proposta (site/manual) e, sem ele, o primeiro nome (sexoPeloNome; nome duvidoso
+ * do nascimento de cada participante). Vazio, o CRM preenche: o "Gênero" da proposta (site/manual) — só quando a proposta é DAQUELA pessoa (26/11) — e, sem ele, o primeiro nome (sexoPeloNome; nome duvidoso
  * fica vazio). NUNCA por cima do que a equipe pôs: `_generoAuto` guarda o que o próprio CRM gravou; se o nome do participante mudar, o CRM refaz só o dele.
  * Os formulários (ficha da CAIXA/BRB, Santander HE e FH, proposta pelos documentos) leem pelo `sexoParaFormulario`: o da equipe manda.
  * DOCUMENTO PRIMEIRO (Fabio 07/11: "usar o gênero do documento"): o sexo IMPRESSO no documento de identidade (doc-review → `_docReview[id].sexo`) vai pro card
@@ -32,6 +32,45 @@ export function generoDaProposta2(texto: string): 'Feminino' | 'Masculino' | '' 
   if (i < 0) return '';
   const bloco = t.slice(i).split(/\n\s*\n|\n[^\n]*\*[A-ZÁÉÍÓÚÂÊÔÃÕÇ ]{4,}\*/)[0]; // até a linha em branco ou o próximo título (*IMÓVEL…*)
   return generoDaProposta(bloco);
+}
+
+/** Nome de quem a proposta descreve (1º participante): "Nome completo:" (e-mail do site), "Nome:" (formulário) ou "Cliente:" (proposta manual) — antes do bloco do
+ *  2º participante. '' = a proposta não traz o nome. Pura. */
+export function nomeDaProposta(texto: string): string {
+  const t = String(texto || '');
+  const i = t.search(/2\s*[ºo°]\s*participante/i);
+  const m = /(?:^|\n)[^a-zA-ZÀ-ÿ\n]*(?:nome completo|nome|cliente)[\s*]*:[\s*]*([^\n|*]+)/i.exec(i >= 0 ? t.slice(0, i) : t);
+  return m ? m[1].trim() : '';
+}
+
+/** Nome do 2º participante da proposta: "2º Participante: X" (e-mail do site) ou o "Nome:" do bloco do 2º PARTICIPANTE (proposta manual). Pura. */
+export function nomeDaProposta2(texto: string): string {
+  const t = String(texto || '');
+  const i = t.search(/2\s*[ºo°]\s*participante/i);
+  if (i < 0) return '';
+  const bloco = t.slice(i);
+  const m = /^2\s*[ºo°]\s*participante[\s*]*:[\s*]*([^\n|*]+)/i.exec(bloco) || /\n[^a-zA-ZÀ-ÿ\n]*(?:nome completo|nome)[\s*]*:[\s*]*([^\n|*]+)/i.exec(bloco);
+  return m ? m[1].trim() : '';
+}
+
+const palavras = (s: unknown) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z\s]/g, ' ').split(/\s+/).filter((w) => w && !['de', 'da', 'do', 'das', 'dos', 'e'].includes(w));
+/** A proposta é dessa pessoa? Mesmo primeiro nome e, com sobrenome dos dois lados, algum sobrenome em comum ("Sara Morais" = "Sara Morais de Oliveira").
+ *  Fabio 26/11: o "Gênero" de uma proposta preenchida por OUTRA pessoa ia pro card (Eduardo ficou Feminino pela proposta da Thaíse). Pura. */
+export function mesmaPessoa(nomeProposta: unknown, nomeParticipante: unknown): boolean {
+  const a = palavras(nomeProposta), b = palavras(nomeParticipante);
+  if (!a.length || !b.length || a[0] !== b[0]) return false;
+  if (a.length === 1 || b.length === 1) return true;
+  return a.slice(1).some((w) => b.slice(1).includes(w));
+}
+
+/** Gênero que a proposta dá pro participante `i` com esse nome — só se a proposta for dele (nome confere). Proposta sem nome (formato antigo) vale como antes.
+ *  A proposta preenchida pelo 2º participante (o nome dela é o dele) vale pra ele. Pura. */
+export function generoDaPropostaPara(texto: string, i: 1 | 2, nome: string): 'Feminino' | 'Masculino' | '' {
+  const n1 = nomeDaProposta(texto);
+  if (i === 1) return !n1 || mesmaPessoa(n1, nome) ? generoDaProposta(texto) : '';
+  if (n1 && mesmaPessoa(n1, nome)) return generoDaProposta(texto);
+  const n2 = nomeDaProposta2(texto);
+  return !n2 || mesmaPessoa(n2, nome) ? generoDaProposta2(texto) : '';
 }
 
 /** Gênero do card pelo documento de identidade (Fabio 07/11): o documento mais recente de cada participante com o sexo impresso. Grava `genero_N`, tira do
@@ -98,7 +137,7 @@ export async function preencherGenero(leadId: string, io?: Io): Promise<number> 
       const msg = await prisma.message.findFirst({ where: { leadId, direction: 'INBOUND', OR: MARCAS_PROPOSTA.map((m) => ({ content: { contains: m } })) }, orderBy: { createdAt: 'desc' }, select: { content: true } });
       proposta = msg?.content || '';
     }
-    const novo = (i === 1 ? generoDaProposta(proposta || '') : generoDaProposta2(proposta || '')) || generoPeloNome(nome);
+    const novo = generoDaPropostaPara(proposta || '', i as 1 | 2, nome) || generoPeloNome(nome); // proposta de OUTRA pessoa não conta (26/11): vai pelo nome
     if (!novo || novo === atual) continue;
     patch[`genero_${i}`] = novo;
     auto[i] = novo;

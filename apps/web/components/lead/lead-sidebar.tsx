@@ -25,6 +25,38 @@ interface LeadSidebarProps {
 
 const COMPACT_MAIN_KEYS = ['participante_1', 'falando_com', 'telefone_1', 'cpf_1'];
 
+const VINCULO_OPTS = ['CLT', 'Autônomo', 'Empresário', 'Aposentado', 'Servidor Público', 'Profissional Liberal', 'Outro'];
+
+/** Campos fixos dos participantes (aba Principal). */
+const BUILTIN_MAIN_FIELDS: { key: string; label: string; type?: 'select'; options?: string[] }[] = [
+  { key: 'participante_1', label: 'Participante 1' },
+  // Nome social (Fabio 07/11): "Participante" fica com o nome de REGISTRO (documento/CPF — bancos, cartório, extensões); a IA e as mensagens chamam pelo nome social.
+  { key: 'nome_social_1', label: 'Nome social' },
+  // Quem escreve no WhatsApp quando NÃO é o titular (ex.: a esposa que preencheu a proposta): o CRM e a IA cumprimentam por esse nome.
+  { key: 'falando_com',   label: 'Quem fala no WhatsApp' },
+  { key: 'falando_com_relacao', label: 'Relação com o titular', type: 'select', options: ['Esposa', 'Marido', 'Filho(a)', 'Pai/Mãe', 'Sócio(a)', 'Contador(a)', 'Outro'] },
+  { key: 'telefone_1',    label: 'Telefone' },
+  { key: 'cpf_1',         label: 'CPF' },
+  { key: 'nascimento_1',  label: 'Nascimento', type: undefined },
+  // Gênero de cada participante (Fabio 06/11): vai pra ficha da CAIXA, Santander e Credimorar; vazio, o CRM preenche pela proposta do próprio participante ou pelo primeiro nome.
+  { key: 'genero_1',      label: 'Gênero', type: 'select', options: ['Feminino', 'Masculino'] },
+  { key: 'renda_1',       label: 'Renda' },
+  { key: 'email_1',       label: 'E-mail' },
+  { key: 'vinculo_1',     label: 'Tipo de vínculo', type: 'select', options: VINCULO_OPTS },
+  { key: 'participante_2', label: 'Participante 2' },
+  { key: 'nome_social_2', label: 'Nome social 2' },
+  { key: 'telefone_2',    label: 'Telefone 2' },
+  { key: 'cpf_2',         label: 'CPF 2' },
+  { key: 'nascimento_2',  label: 'Nascimento 2' },
+  { key: 'genero_2',      label: 'Gênero 2', type: 'select', options: ['Feminino', 'Masculino'] },
+  { key: 'renda_2',       label: 'Renda 2' },
+  { key: 'email_2',       label: 'E-mail 2' },
+  { key: 'vinculo_2',     label: 'Tipo de vínculo 2', type: 'select', options: VINCULO_OPTS },
+];
+// Campo criado na tela com a MESMA chave de um fixo (Fabio 26/11: o "Gênero" criado em 06/11 ficou com a chave genero_1 e aparecia duas vezes, embaixo de
+// "Tipo de vínculo 2"): não repete na aba Principal — é o mesmo valor do fixo.
+const BUILTIN_MAIN_KEYS = new Set(BUILTIN_MAIN_FIELDS.map((f) => f.key));
+
 type FieldValue = string | number | null | undefined;
 
 function maskPhone(value: string): string {
@@ -223,7 +255,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
   const hideDuplicated = activeTab === 'Financiamento' && !!creditAnalyses && creditAnalyses.history.length > 0;
   // Home Equity não tem entrada (Fabio 28/10: "o card de Home Equity não deve ter o campo Entrada, porque não tem") — só Financiamento usa.
   const semEntrada = /home equity/i.test(lead.pipeline?.department?.name || '');
-  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab && !(hideDuplicated && FIELDS_FROM_ANALYSES.includes(f.key)) && !(semEntrada && f.key === 'valor_entrada')).sort((a, b) => a.order - b.order);
+  const fieldsForTab = fieldDefs.filter(f => f.tab === activeTab && !(activeTab === 'Principal' && BUILTIN_MAIN_KEYS.has(f.key)) && !(hideDuplicated && FIELDS_FROM_ANALYSES.includes(f.key)) && !(semEntrada && f.key === 'valor_entrada')).sort((a, b) => a.order - b.order);
 
   const saveFieldValue = async (key: string, value: string) => {
     setSaving(true);
@@ -451,33 +483,7 @@ export function LeadSidebar({ lead, onRefresh, className, compact = false }: Lea
 
           {/* ── Campos built-in de Participantes (aba Principal) ── */}
           {activeTab === 'Principal' && (() => {
-            const VINCULO_OPTS = ['CLT', 'Autônomo', 'Empresário', 'Aposentado', 'Servidor Público', 'Profissional Liberal', 'Outro'];
-
-            const builtinFields: { key: string; label: string; type?: 'select'; options?: string[] }[] = [
-              { key: 'participante_1', label: 'Participante 1' },
-              // Nome social (Fabio 07/11): "Participante" fica com o nome de REGISTRO (documento/CPF — bancos, cartório, extensões); a IA e as mensagens chamam pelo nome social.
-              { key: 'nome_social_1', label: 'Nome social' },
-              // Quem escreve no WhatsApp quando NÃO é o titular (ex.: a esposa que preencheu a proposta): o CRM e a IA cumprimentam por esse nome.
-              { key: 'falando_com',   label: 'Quem fala no WhatsApp' },
-              { key: 'falando_com_relacao', label: 'Relação com o titular', type: 'select', options: ['Esposa', 'Marido', 'Filho(a)', 'Pai/Mãe', 'Sócio(a)', 'Contador(a)', 'Outro'] },
-              { key: 'telefone_1',    label: 'Telefone' },
-              { key: 'cpf_1',         label: 'CPF' },
-              { key: 'nascimento_1',  label: 'Nascimento', type: undefined },
-              // Gênero de cada participante (Fabio 06/11): vai pra ficha da CAIXA, Santander e Credimorar; vazio, o CRM preenche pelo primeiro nome.
-              { key: 'genero_1',      label: 'Gênero', type: 'select', options: ['Feminino', 'Masculino'] },
-              { key: 'renda_1',       label: 'Renda' },
-              { key: 'email_1',       label: 'E-mail' },
-              { key: 'vinculo_1',     label: 'Tipo de vínculo', type: 'select', options: VINCULO_OPTS },
-              { key: 'participante_2', label: 'Participante 2' },
-              { key: 'nome_social_2', label: 'Nome social 2' },
-              { key: 'telefone_2',    label: 'Telefone 2' },
-              { key: 'cpf_2',         label: 'CPF 2' },
-              { key: 'nascimento_2',  label: 'Nascimento 2' },
-              { key: 'genero_2',      label: 'Gênero 2', type: 'select', options: ['Feminino', 'Masculino'] },
-              { key: 'renda_2',       label: 'Renda 2' },
-              { key: 'email_2',       label: 'E-mail 2' },
-              { key: 'vinculo_2',     label: 'Tipo de vínculo 2', type: 'select', options: VINCULO_OPTS },
-            ];
+            const builtinFields = BUILTIN_MAIN_FIELDS;
 
             const visibleFields = expanded
               ? builtinFields

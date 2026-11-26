@@ -7,9 +7,13 @@ const F_LISTA = new Set(('beatriz liz laiz thaiz taiz raquel rachel isabel mabel
   + 'elizabeth elisabeth elizabet elisabet margaret janet juliet scarlet lourdes lurdes ines mercedes dolores gladys iris thais tais lais doris agnes '
   + 'carmen carmem miriam mirian myriam karen karin kristen ellen hellen helen evelyn evelin jocelyn jocelin marilyn marlyn jaquelin lilian lillian vivian jilian '
   + 'susan suzan megan ingrid astrid sigrid yasmin yasmim jasmin jasmim nair lucimar rosimar dulcimar guiomar mary nancy daisy deisy shirley kelly kely nely '
-  + 'suely cely sirley marly socorro zoe chloe noemi naomi marilu malu lu sirlei rosinei lucinei gracinei').split(' '));
+  + 'suely cely sirley marly socorro zoe chloe noemi naomi marilu malu lu sirlei rosinei lucinei gracinei '
+  // Fabio 26/11 (cards com "Masculino" pelo nome): Carol, Karol, Jennyfer, Heidi, Monique, Luci, Vasti, Celeste, Keyte, Glaydes, Iranildes, Elianes…
+  + 'carol karol jennyfer jennifer jenifer jenyfer heidi monique angelique luci vasti celeste kate keyte glaydes gleydes gleides iranildes mirtes elianes').split(' '));
 const M_LISTA = new Set(('luca lucca nicola joshua jeova juca mustafa jose rene wallace noe davi levi henri ari eli rui ruy luigi giovanni gianni yuri iuri ravi '
-  + 'rony roni willy jhony jhonny johnny wesley henry harry jimmy danny fredy andy rudy kenneth keith seth joseph ralph franklin').split(' '));
+  + 'rony roni willy jhony jhonny johnny wesley henry harry jimmy danny fredy andy rudy kenneth keith seth joseph ralph franklin '
+  // Fabio 26/11 (cards com "Feminino" pelo nome): Amauri, Osni, Djalma, Jhonata, Bruce, Jessé, Antoine, Geovane…
+  + 'amauri mauri lauri osni djalma jhonata jonata jonatha jhonatha johnata bruce jesse antoine jovane geovane giovane jeovane geovani giovani jovani wayne dwayne').split(' '));
 const DUVIDA = new Set('darci darcy juraci jaci jacy ariel kim jordan sasha'.split(' '));
 
 const semAcento = (t: unknown) => String(t ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
@@ -21,7 +25,7 @@ export function sexoPeloNome(nome: unknown): 'M' | 'F' | null {
   if (F_LISTA.has(n)) return 'F';
   if (M_LISTA.has(n)) return 'M';
   if (/a$/.test(n)) return 'F';
-  if (/e$/.test(n)) return /(ane|ene|ine|one|une|ele|elle|ise|isse|ice|ce|ete|ette|ide|ilde|ude|ie|ze|se|ange)$/.test(n) ? 'F' : 'M';
+  if (/e$/.test(n)) return /(ane|ene|ine|one|une|ele|elle|ille|ole|nne|yne|ise|isse|ice|ce|ete|ette|ide|ilde|ude|ie|ze|se|ange)$/.test(n) ? 'F' : 'M'; // + Camille, Nicole, Rayanne, Lorrayne (26/11)
   if (/(ah|len|lyn)$/.test(n)) return 'F';                         // Sarah, Suelen, Evelyn
   if (/eci$/.test(n)) return 'M';                                  // Valdeci, Aldeci
   if (/(li|ni|si|zi|ri|ly|ny)$/.test(n)) return 'F';               // Sueli, Marli, Ivani, Rosi, Suzi, Mari, Rosemeri
