@@ -363,7 +363,7 @@ async function gravarChaves(leadId: string, set: Record<string, unknown>, tirarF
 
 async function organizeLead(lead: {
   id: string; name: string; accountId: string; customFields: unknown; activeLeadsFolderId: string;
-}): Promise<void> {
+}, opts: { nota?: boolean } = {}): Promise<void> { // nota: false = sem nota no card nem registro de atividade (reorganização em massa)
   // O print do SALDO DEVEDOR é a ÚNICA captura de tela que fica na pasta do cliente (Fabio 15/10) — mesmo se o arquivo se chamar "Captura de tela…".
   const saldoPrintId: string | undefined = ((lead.customFields as any) || {})._saldoDevedor?.attachmentId;
   const attachments = (await prisma.messageAttachment.findMany({
@@ -399,7 +399,7 @@ async function organizeLead(lead: {
   aplicarConferencia(docInfo, (cf._docReview || {}) as Record<string, any>, [...buyers, ...vendedores]); // nome e pasta pela leitura da conferência quando ela é melhor (Fabio 24/11)
   if (!files.length) {
     await gravarChaves(lead.id, { _driveOrganizedAt: new Date().toISOString() });
-    await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📁 Card em Documentação Recebida, mas nenhum documento do cliente foi encontrado no Drive (anexos do WhatsApp). A pasta não foi organizada automaticamente.' } });
+    if (opts.nota !== false) await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: '📁 Card em Documentação Recebida, mas nenhum documento do cliente foi encontrado no Drive (anexos do WhatsApp). A pasta não foi organizada automaticamente.' } });
     return;
   }
 
@@ -491,11 +491,13 @@ async function organizeLead(lead: {
   ];
   if (result.ignored.length) lines.push('', `Não são documentos (foram pra DESNECESSARIO): ${result.ignored.join(', ')}`);
   if (simulacoesSairam.length) lines.push('', `Uma simulação só na pasta — as outras foram pra DESNECESSARIO: ${simulacoesSairam.join(', ')}`);
-  await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
-  logActivity({
-    accountId: lead.accountId, userId: null, userName: 'Organizador de documentos', action: 'lead_edited', leadId: lead.id, leadName: lead.name,
-    summary: `organizou a pasta no Drive (${result.named.length} documentos) e preencheu "Pasta no Drive"`,
-  });
+  if (opts.nota !== false) {
+    await prisma.note.create({ data: { leadId: lead.id, type: 'COMMENT', content: lines.join('\n') } });
+    logActivity({
+      accountId: lead.accountId, userId: null, userName: 'Organizador de documentos', action: 'lead_edited', leadId: lead.id, leadName: lead.name,
+      summary: `organizou a pasta no Drive (${result.named.length} documentos) e preencheu "Pasta no Drive"`,
+    });
+  }
   console.log(`[DocsRecebidos] ${lead.name} (${lead.id}): pasta organizada, ${result.named.length} documentos, ${result.ignored.length} ignorados`);
 }
 
@@ -645,4 +647,33 @@ export async function organizeLeadDocsNow(leadId: string): Promise<void> {
   if (!lead) throw new Error('Card não encontrado');
   if (!folder) throw new Error('O setor desse card não tem a pasta LEADS ATIVOS configurada no Drive');
   await organizeLead({ id: lead.id, name: lead.name, accountId: lead.accountId, customFields: lead.customFields, activeLeadsFolderId: folder });
+}
+
+/** Reorganiza TODAS as pastas já montadas da conta com as regras de hoje (Fabio 26/11: "arruma as pastas dos outros clientes também" — depois de "na pasta
+ *  principal só fica a simulação" e "print de tela sem documento vai pra DESNECESSARIO"). Só cards não arquivados com `_driveOrganizedAt`; sem conferência
+ *  (sem custo de leitura, fora documento ainda não classificado) e sem nota no card. Um por vez, em segundo plano; o andamento fica em `reorganizacaoEmMassa`. */
+export const reorganizacaoEmMassa: { rodando: boolean; total: number; feitos: number; falhas: { leadId: string; nome: string; erro: string }[]; inicio?: string; fim?: string } = { rodando: false, total: 0, feitos: 0, falhas: [] };
+export async function reorganizarTodasAsPastas(accountId: string): Promise<void> {
+  if (reorganizacaoEmMassa.rodando) return;
+  const ids = await prisma.$queryRaw<{ id: string }[]>`SELECT id FROM "Lead" WHERE "accountId" = ${accountId} AND archived = false AND "isGroup" = false AND "customFields" ? '_driveOrganizedAt' AND NOT ("customFields" ? '_autoPaused') ORDER BY "updatedAt" DESC`;
+  Object.assign(reorganizacaoEmMassa, { rodando: true, total: ids.length, feitos: 0, falhas: [], inicio: new Date().toISOString(), fim: undefined });
+  try {
+    for (const { id } of ids) {
+      const lead = await prisma.lead.findUnique({ where: { id }, select: { id: true, name: true, accountId: true, customFields: true, status: true, pipeline: { select: { name: true, department: { select: { activeLeadsFolderId: true } } } } } });
+      const folder = lead?.pipeline?.department?.activeLeadsFolderId;
+      // Só card ABERTO: o organizador põe a pasta em LEADS ATIVOS — Ganho/Perdido (pasta em CONCLUIDOS / LEADS FRIOS, drive-lifecycle) ficaria fora do lugar.
+      const aberto = !!lead && (require('./drive-lifecycle.service') as typeof import('./drive-lifecycle.service')).situacaoDoCard(String(lead.status), lead.pipeline?.name || '') === 'OPEN';
+      try {
+        if (lead && folder && aberto) await organizeLead({ id: lead.id, name: lead.name, accountId: lead.accountId, customFields: lead.customFields, activeLeadsFolderId: folder }, { nota: false });
+      } catch (e: any) {
+        reorganizacaoEmMassa.falhas.push({ leadId: id, nome: lead?.name || '', erro: String(e?.message || e).slice(0, 200) });
+        console.error(`[DocsRecebidos] reorganização em massa — falhou ${lead?.name} (${id}):`, e?.message || e);
+      }
+      reorganizacaoEmMassa.feitos++;
+      if (aberto) await new Promise((r) => setTimeout(r, 1500)); // folga pro limite da API do Drive
+    }
+  } finally {
+    reorganizacaoEmMassa.rodando = false;
+    reorganizacaoEmMassa.fim = new Date().toISOString();
+  }
 }

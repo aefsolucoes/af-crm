@@ -128,6 +128,23 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ─── /api/leads/reorganizar-pastas ────────────────────────────────────────────
+// Reorganiza todas as pastas do Drive já montadas com as regras de hoje (Fabio 26/11), em segundo plano. Só ADMIN. GET = andamento.
+// Registrado ANTES de '/:id' para não ser capturado como um id.
+router.post('/reorganizar-pastas', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administrador' });
+  const { reorganizarTodasAsPastas, reorganizacaoEmMassa } = await import('../services/received-docs.service');
+  if (reorganizacaoEmMassa.rodando) return res.json({ jaRodando: true, ...reorganizacaoEmMassa });
+  reorganizarTodasAsPastas(req.user!.accountId).catch((e: any) => console.error('[DocsRecebidos] reorganização em massa:', e?.message || e));
+  await new Promise((r) => setTimeout(r, 500));
+  res.json(reorganizacaoEmMassa);
+});
+router.get('/reorganizar-pastas', async (req: AuthRequest, res: Response) => {
+  if (req.user!.role !== 'ADMIN') return res.status(403).json({ error: 'Só administrador' });
+  const { reorganizacaoEmMassa } = await import('../services/received-docs.service');
+  res.json(reorganizacaoEmMassa);
+});
+
 // ─── GET /api/leads/duplicate-groups ──────────────────────────────────────────
 // Agrupa TODOS os leads duplicados da conta (mesmo telefone ou mesmo nome).
 // Registrado ANTES de '/:id' para não ser capturado como um id.
