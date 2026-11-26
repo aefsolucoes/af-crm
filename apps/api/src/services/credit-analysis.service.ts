@@ -1819,27 +1819,35 @@ export async function releaseOrphans(db: Db, p: { accountId: string; bank: strin
 }
 
 /** Quadro da aba: clientes do Home Equity em Pré-Análise (e quem teve análise nas últimas 3 semanas) × bancos. */
-export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[] }) {
+export async function board(db: Db, p: { accountId: string; scopeDepartmentIds: string[]; includeLeadId?: string }) {
   await expireStuck(db, { accountId: p.accountId });
   const since = new Date(Date.now() - 90 * 86_400_000);
   const recent = await db.creditAnalysis.findMany({ where: { accountId: p.accountId, createdAt: { gte: since } }, select: { leadId: true } });
-  const recentIds = Array.from(new Set(recent.map((r) => r.leadId)));
+  // Card aberto pelo botão "Análise" (Fabio 26/11): o Juan Carlos estava em "Crédito Aprovado" sem análise nos últimos 90 dias e não aparecia na tela — o "Rodar" saiu no
+  // cliente que estava marcado (Claudemir). Ele entra na lista como qualquer outro.
+  const recentIds = Array.from(new Set([...recent.map((r) => r.leadId), ...(p.includeLeadId ? [p.includeLeadId] : [])]));
   const deptScope = p.scopeDepartmentIds.length ? { OR: [{ departmentId: { in: p.scopeDepartmentIds } }, { departmentId: null }] } : {};
+  const base = {
+    accountId: p.accountId, archived: false, isGroup: false,
+    pipeline: { AND: [deptScope, { department: { name: { contains: 'Home Equity', mode: 'insensitive' as const } } }] },
+  };
+  const select = {
+    id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true, aiAutoReplyActive: true,
+    stage: { select: { name: true } }, pipeline: { select: { name: true } },
+    creditAnalyses: { orderBy: { createdAt: 'desc' as const }, take: 60 },
+    creditOverrides: { select: { bank: true, data: true } },
+  };
   const leads = await db.lead.findMany({
     where: {
-      accountId: p.accountId, archived: false, isGroup: false,
-      pipeline: { AND: [deptScope, { department: { name: { contains: 'Home Equity', mode: 'insensitive' } } }] },
+      ...base,
       OR: [{ status: 'OPEN', stage: { name: { startsWith: 'Pré-An', mode: 'insensitive' } } }, { status: 'OPEN', stage: { name: { startsWith: 'Análise CAIXA', mode: 'insensitive' } } }, ...(recentIds.length ? [{ id: { in: recentIds } }] : [])],
     },
-    select: {
-      id: true, name: true, value: true, status: true, customFields: true, stageEnteredAt: true, aiAutoReplyActive: true,
-      stage: { select: { name: true } }, pipeline: { select: { name: true } },
-      creditAnalyses: { orderBy: { createdAt: 'desc' }, take: 60 },
-      creditOverrides: { select: { bank: true, data: true } },
-    },
+    select,
     orderBy: { updatedAt: 'desc' },
     take: 300,
   });
+  // O card do botão "Análise" ficou de fora do limite de 300: entra assim mesmo.
+  if (p.includeLeadId && !leads.some((l) => l.id === p.includeLeadId)) leads.push(...(await db.lead.findMany({ where: { ...base, id: p.includeLeadId }, select })));
   // Quando o card ENTROU na Pré-Análise (Fabio 14/10: "quero data e hora que o card entrou"): se está nela agora, é o `stageEnteredAt`; se já saiu
   // (aprovado/reprovado/movido), a anotação "Estágio: … → "Pré-Analise"" mais recente.
   const preNotes = await db.note.findMany({

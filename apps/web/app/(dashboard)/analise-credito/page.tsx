@@ -99,9 +99,12 @@ function ResultModal({ lead, bank, analysis, onClose, onSaved }: { lead: BoardLe
 export default function AnaliseCreditoPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  // Card que abriu a tela pelo botão "Análise" (?leadId=): vai junto no pedido pra entrar na lista mesmo fora da Pré-Análise e sem análise recente (Fabio 26/11 — o Juan
+  // Carlos não aparecia e o "Rodar" saiu no cliente que estava marcado, o Claudemir).
+  const [leadDoCard] = useState<string | null>(() => (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('leadId') : null));
   const { data, isLoading, dataUpdatedAt } = useQuery<Board>({
     queryKey: ['credit-board'],
-    queryFn: async () => (await api.get('/api/credit-analysis/board')).data,
+    queryFn: async () => (await api.get('/api/credit-analysis/board', { params: leadDoCard ? { leadId: leadDoCard } : undefined })).data,
     refetchInterval: 15_000,
     refetchIntervalInBackground: true, // aba em segundo plano (o Fabio fica no portal do banco) também atualiza — o padrão do navegador era pausar (14/10)
   });
@@ -188,15 +191,16 @@ export default function AnaliseCreditoPage() {
   }, []);
 
   // Link vindo do card (?leadId=): ACHA o cliente (Fabio 26/10: "botão no card para achar as avaliações daquele cliente na Análise de Crédito") — busca pelo nome (procura nas duas abas),
-  // abre a linha dele e rola até ela. Sem análise nenhuma: avisa.
-  const leadDoLink = useRef<string | null>(typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('leadId') : null);
+  // abre a linha dele e rola até ela. Fabio 26/11: o cliente do card já vem MARCADO pra rodar (antes a Andreia marcou outro da lista e rodou o Claudemir no lugar do Juan).
+  const leadDoLink = useRef<string | null>(leadDoCard);
   useEffect(() => {
     const id = leadDoLink.current;
     if (!id || !data?.leads) return;
     leadDoLink.current = null;
     const l = data.leads.find((x) => x.id === id);
-    if (!l) { toast('Esse cliente ainda não tem análise de crédito nem está na Pré-Análise.', 'error'); return; }
+    if (!l) { toast('Esse cliente não é do Home Equity (ou você não tem acesso ao funil dele).', 'error'); return; }
     setBusca(l.card?.name1 || l.name);
+    setSelected([id]);
     setOpen(id);
     setTimeout(() => document.getElementById(`lead-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }), 300);
   }, [data]);
@@ -205,7 +209,8 @@ export default function AnaliseCreditoPage() {
   const leads = useMemo(() => {
     // Três abas sem repetir ninguém: Pré-Análise, Análise CAIXA (Fabio 11/11: quem está na etapa aparece aqui mesmo sem ter rodado em banco nenhum) e Já rodados.
     const naCaixa = allLeads.filter((l) => l.inCaixa);
-    const jaRodados = allLeads.filter((l) => l.ran && !l.inPre && !l.inCaixa).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime());
+    // O card que abriu a tela pelo botão "Análise" fica aqui mesmo sem nunca ter rodado (fora da Pré-Análise e da CAIXA não teria aba nenhuma).
+    const jaRodados = allLeads.filter((l) => (l.ran || l.id === leadDoCard) && !l.inPre && !l.inCaixa).sort((a, b) => new Date(b.lastRunAt || 0).getTime() - new Date(a.lastRunAt || 0).getTime());
     const base = view === 'pre' ? allLeads.filter((l) => l.inPre) : view === 'caixa' ? naCaixa : jaRodados;
     const q = busca.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
     const qDig = q.replace(/\D/g, '');
@@ -217,7 +222,7 @@ export default function AnaliseCreditoPage() {
       const docs = [l.card.cpf1, l.card.cpf2, ...(l.history || []).flatMap((a) => [(a as any).holderCpf, a.proposalNumber])].map((v) => String(v || '').replace(/\D/g, ''));
       return texto.includes(q) || (qDig.length >= 3 && docs.some((d) => d.includes(qDig)));
     });
-  }, [allLeads, view, busca]);
+  }, [allLeads, view, busca, leadDoCard]);
   const allSelected = leads.length > 0 && leads.every((l) => selected.includes(l.id));
   const offline = useMemo(() => banks.filter((b) => !data?.extensions?.[b]?.online), [banks, data]);
 
@@ -653,6 +658,16 @@ export default function AnaliseCreditoPage() {
         <Modal title="Enviar propostas aos bancos?" onClose={() => setConfirm(false)}>
           <div className="space-y-3 text-sm text-slate-600">
             <p>A extensão vai <strong>enviar de verdade</strong> a proposta de {selected.length} cliente(s) para {banks.map((b) => BANKS.find((x) => x.key === b)!.short).join(', ')}; onde o cliente já foi rodado, só consulta a proposta.</p>
+            {/* Nome de quem vai rodar (Fabio 26/11: o "1 cliente(s)" não dizia quem — rodou o Claudemir no lugar do Juan Carlos) */}
+            {(() => {
+              const nomes = selected.map((id) => allLeads.find((l) => l.id === id)?.name || 'cliente fora da lista');
+              return (
+                <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-700">
+                  <p className="font-medium mb-1">Vai rodar:</p>
+                  <ul className="list-disc pl-4 space-y-0.5">{nomes.slice(0, 8).map((n, i) => <li key={`${n}-${i}`} className="font-semibold">{n}</li>)}{nomes.length > 8 && <li>e mais {nomes.length - 8}…</li>}</ul>
+                </div>
+              );
+            })()}
             {dups.length > 0 && (
               <label className="flex items-center gap-2 text-xs text-slate-600 cursor-pointer"><input type="checkbox" checked={forceRun} onChange={(e) => setForceRun(e.target.checked)} /> Rodar de novo mesmo assim (cria proposta nova no banco)</label>
             )}

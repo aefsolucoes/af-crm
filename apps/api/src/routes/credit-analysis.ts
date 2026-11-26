@@ -27,7 +27,9 @@ const fail = (res: Response, err: any, fallback: string, code = 500) => res.stat
 router.get('/board', async (req: AuthRequest, res: Response) => {
   try {
     const scope = await getScopeDepartmentIds(req.user!.accountId, req.user!.id, req.user!.role);
-    res.json({ leads: await board(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope }), extensions: extensionStatus(req.user!.accountId) });
+    // `leadId`: o card que abriu a tela pelo botão "Análise" entra na lista mesmo fora da Pré-Análise e sem análise recente (Fabio 26/11, Juan Carlos).
+    const leadId = typeof req.query.leadId === 'string' && req.query.leadId ? req.query.leadId : undefined;
+    res.json({ leads: await board(prisma, { accountId: req.user!.accountId, scopeDepartmentIds: scope, includeLeadId: leadId }), extensions: extensionStatus(req.user!.accountId) });
   } catch (err) { fail(res, err, 'Erro ao carregar as análises'); }
 });
 
