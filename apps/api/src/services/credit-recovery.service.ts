@@ -21,6 +21,10 @@ const BANKS_FH = ['CREDIMORAR_FH', 'INTER_FH', 'ITAU_FH'];
 const NAO_ACHEI = /n[aã]o achei o cliente na lista|ainda n[aã]o apareceu na lista|proposta aberta pelo n[uú]mero n[aã]o traz/i;
 const SO_SIMULACAO = /SIMULA[ÇC][ÃA]O[^\n]*Ainda sem resultado/i;
 const SANTANDER_MANUAL = /AN[ÁA]LISE MANUAL ABERTA/i;
+/** Credimorar "Passível de Análise" (Fabio 27/11, Claudemir: "por que a extensão está buscando resultado de análise do Claudemir?"): a proposta foi ENVIADA e só anda pelo
+ *  Portal Parceiros Santander — reler a lista não muda nada. A conferência já para sozinha nesse status (afterReport, 26/11), mas a retomada das 7h via a RODADA (RUN + "conferir")
+ *  e abria outra cadeia de 18 conferências todo dia. Como a análise manual: espera a equipe seguir no portal e usar "Conferir". */
+const SANTANDER_PASSIVEL = /PASS[ÍI]VEL DE AN[ÁA]LISE/i;
 const NAO_ACHEI_MIN = 30; // a lista do portal pode demorar a mostrar a proposta recém-enviada
 const SIMULACAO_MIN = 120; // Santander leva um tempo pra sair de "Simulação"
 const RUN_GAP_COBRANCA_MS = 3 * 3600_000; // cliente cobrando de novo não dispara outra rodada em menos de 3 h
@@ -69,6 +73,7 @@ export function planRecovery(rows: RecRow[], opts: { now?: number; loginNeeded?:
     if (!ultimaRodada) continue;
     const desde = mine.filter((r) => r.createdAt.getTime() >= ultimaRodada.createdAt.getTime());
     if (desde.some((r) => SANTANDER_MANUAL.test(r.detail || ''))) continue; // análise manual aberta: espera os documentos
+    if (bank === 'CREDIMORAR' && desde.some((r) => r.kind === 'CHECK' && SANTANDER_PASSIVEL.test(r.detail || ''))) continue; // enviada, só anda pelo Portal Parceiros Santander
 
     if (efetiva.status === 'FAILED') {
       const d = efetiva.detail || '';
